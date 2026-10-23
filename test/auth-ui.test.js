@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { authMessage, authView, backupAuthView, changedProviders } from '../src/sidepanel/auth-ui.js';
+import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from '../src/sidepanel/auth-ui.js';
 import { setLanguage } from '../src/sidepanel/i18n.js';
 import { errorResponse } from '../src/lib/errors.js';
 
@@ -96,4 +96,28 @@ test('a failed request carries the code the panel translates', async () => {
   } finally {
     delete globalThis.chrome;
   }
+});
+
+test('a redraw while Claude waits for its code still shows the code field of that sign-in', () => {
+  // The panel knew the provider as signed out, then the worker asked for the code.
+  let state = { connected: false, provider: 'claude', login: null };
+  state = withLoginEvent(state, { type: 'auth-event', provider: 'claude', attemptId: 'a1', kind: 'opened' });
+  state = withLoginEvent(state, { type: 'auth-prompt', provider: 'claude', attemptId: 'a1', kind: 'manual_code' });
+
+  const view = authView('claude', state, 'a1');
+
+  assert.equal(view.needsCode, true, 'the code field stays');
+  assert.equal(view.attempt, 'a1', 'the attempt id is kept for the submit');
+  assert.equal(view.message, '', 'no "interrupted" note for a sign-in that is still running');
+});
+
+test('a failure event replaces the waiting state with the failure', () => {
+  let state = withLoginEvent(null, { type: 'auth-prompt', provider: 'claude', attemptId: 'a1', kind: 'manual_code' });
+  state = withLoginEvent(state, { type: 'auth-error', provider: 'claude', attemptId: 'a1', code: 'timed-out', message: 'x' });
+
+  const view = authView('claude', state, 'a1');
+
+  assert.equal(view.needsCode, false);
+  assert.equal(view.attempt, null);
+  assert.equal(view.message, authMessage('timed-out'));
 });

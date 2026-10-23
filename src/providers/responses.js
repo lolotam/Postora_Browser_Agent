@@ -80,49 +80,62 @@ export class ResponsesSession {
     let usage = null;
     let completed = false;
     let streamed = false;
-    for await (const { data } of readSse(response, signal)) {
-      if (data === '[DONE]') break;
-      const event = JSON.parse(data);
-      switch (event.type) {
-        case 'response.output_text.delta':
-          streamed = true;
-          onEvent({ type: 'text-delta', delta: event.delta });
-          break;
-        case 'response.reasoning_summary_text.delta':
-          onEvent({ type: 'reasoning-delta', delta: event.delta });
-          break;
-        case 'response.reasoning_summary_part.done':
-          onEvent({ type: 'reasoning-delta', delta: '\n\n' });
-          break;
-        case 'response.output_item.done':
-          items.push(event.item);
-          break;
-        case 'response.completed':
-          completed = true;
-          usage = event.response?.usage ?? null;
-          break;
-        case 'response.failed':
-        case 'response.incomplete':
-          if (streamed) onEvent({ type: 'text-reset' }); // a half answer must not follow the backup's
-          throw new Error(event.response?.error?.message ?? event.response?.incomplete_details?.reason ?? 'The model response failed.');
-        case 'error':
-          if (streamed) onEvent({ type: 'text-reset' });
-          throw new Error(event.message ?? event.error?.message ?? 'The model returned an error.');
-        default:
-          break;
+    let wasReset = false;
+    // A half answer must not stay on screen, nor be followed by the backup's.
+    const resetText = () => {
+      if (!streamed || wasReset) return;
+      wasReset = true;
+      onEvent({ type: 'text-reset' });
+    };
+    try {
+      for await (const { data } of readSse(response, signal)) {
+        if (data === '[DONE]') break;
+        const event = JSON.parse(data);
+        switch (event.type) {
+          case 'response.output_text.delta':
+            streamed = true;
+            onEvent({ type: 'text-delta', delta: event.delta });
+            break;
+          case 'response.reasoning_summary_text.delta':
+            onEvent({ type: 'reasoning-delta', delta: event.delta });
+            break;
+          case 'response.reasoning_summary_part.done':
+            onEvent({ type: 'reasoning-delta', delta: '\n\n' });
+            break;
+          case 'response.output_item.done':
+            items.push(event.item);
+            break;
+          case 'response.completed':
+            completed = true;
+            usage = event.response?.usage ?? null;
+            break;
+          case 'response.failed':
+          case 'response.incomplete':
+            resetText();
+            throw new Error(event.response?.error?.message ?? event.response?.incomplete_details?.reason ?? 'The model response failed.');
+          case 'error':
+            resetText();
+            throw new Error(event.message ?? event.error?.message ?? 'The model returned an error.');
+          default:
+            break;
+        }
       }
+    } catch (err) {
+      // A body that fails to read, the idle timeout or a malformed event.
+      resetText();
+      throw err;
     }
     // The turn only counts when the response completed; a stream that ends
     // early leaves the conversation as it was.
     if (!completed) {
-      if (streamed) onEvent({ type: 'text-reset' });
+      resetText();
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
     }
     let output;
     try {
       output = parseOutput(items, usage);
     } catch (err) {
-      if (streamed) onEvent({ type: 'text-reset' });
+      resetText();
       throw err;
     }
     this.input.push(...items.map(withoutId));

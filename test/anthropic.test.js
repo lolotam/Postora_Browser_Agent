@@ -455,3 +455,43 @@ test('a screenshot travels as a base64 image block', async () => {
   const body = JSON.parse(calls[0].init.body);
   assert.deepEqual(body.messages[0].content[1], { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'QUJD' } });
 });
+
+test('a connection that drops after some text withdraws the text', async () => {
+  signedIn();
+  const encoder = new TextEncoder();
+  const lines = [
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Half' } },
+  ].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
+  stubFetch(() => new Response(new ReadableStream({
+    // The lines are read first; the connection drops on the read after them
+    // (an error raised at once would discard what was queued).
+    pull(controller) {
+      if (lines.length) controller.enqueue(encoder.encode(lines.shift()));
+      else controller.error(new TypeError('network error'));
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+  const session = new AnthropicSession({ auth: 'account', model: 'claude-opus-5-5', effort: '', systemPrompt: 'SYS', tools: [] });
+  session.addUserMessage('task');
+  const events = [];
+
+  await assert.rejects(session.next({ onEvent: (e) => events.push(e) }), /network error/);
+
+  assert.deepEqual(events.map((e) => e.type), ['text-delta', 'text-reset'], 'withdrawn once');
+  assert.equal(session.messages.length, 1, 'the failed turn is not kept');
+});
+
+test('a malformed event after some text withdraws the text', async () => {
+  signedIn();
+  const start = { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+  const delta = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Half' } };
+  stubFetch(() => new Response(`data: ${JSON.stringify(start)}\n\ndata: ${JSON.stringify(delta)}\n\ndata: {not json\n\n`, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+  const session = new AnthropicSession({ auth: 'account', model: 'claude-opus-5-5', effort: '', systemPrompt: 'SYS', tools: [] });
+  session.addUserMessage('task');
+  const events = [];
+
+  await assert.rejects(session.next({ onEvent: (e) => events.push(e) }), SyntaxError);
+
+  assert.deepEqual(events.map((e) => e.type), ['text-delta', 'text-reset']);
+  assert.equal(session.messages.length, 1);
+});

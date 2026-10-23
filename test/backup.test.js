@@ -39,6 +39,15 @@ test('a backup carries the settings and the signed-in accounts back after a rein
   assert.equal(store['accountAuth.claude'], undefined, 'a provider the file does not have is not written');
 });
 
+test('a backup taken right after the update still carries the old ChatGPT sign-in', async () => {
+  store.chatgptAuth = { accessToken: 'legacy-at', refreshToken: 'legacy-rt', expiresAt: 1700000000000 };
+
+  const file = await exportBackup();
+
+  assert.equal(file.accounts.chatgpt.access, 'legacy-at');
+  assert.equal(file.accounts.chatgpt.refresh, 'legacy-rt');
+});
+
 test('a backup without an account restores the settings only', async () => {
   await importBackup({ format: 'browser-agent-backup', version: 2, settings: { maxSteps: 12 }, accounts: {} });
   assert.equal(store.settings.maxSteps, 12);

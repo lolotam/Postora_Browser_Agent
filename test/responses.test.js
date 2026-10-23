@@ -98,3 +98,41 @@ test('a completed turn keeps the answer and the calls', async () => {
   assert.equal(turn.usage.total_tokens, 9);
   assert.equal(session.input.length, 3, 'the answer and the call are kept for the next turn');
 });
+
+/** A stream that sends these SSE lines, then fails as a dropped connection does. */
+function droppedStream(sent) {
+  const lines = [...sent];
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    // The lines are read first; the connection drops on the read after them
+    // (an error raised at once would discard what was queued).
+    pull(controller) {
+      if (lines.length) controller.enqueue(encoder.encode(lines.shift()));
+      else controller.error(new TypeError('network error'));
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+test('a connection that drops after some text withdraws the text', async () => {
+  stubFetch(() => droppedStream([`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'Half' })}\n\n`]));
+  const session = makeSession();
+  session.addUserMessage('task');
+  const events = [];
+
+  await assert.rejects(session.next({ onEvent: (e) => events.push(e) }), /network error/);
+
+  assert.deepEqual(events.map((e) => e.type), ['text-delta', 'text-reset'], 'withdrawn once');
+  assert.equal(session.input.length, 1, 'the failed turn is not kept');
+});
+
+test('a malformed event after some text withdraws the text', async () => {
+  stubFetch(() => new Response(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'Half' })}\n\ndata: {not json\n\n`, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+  const session = makeSession();
+  session.addUserMessage('task');
+  const events = [];
+
+  await assert.rejects(session.next({ onEvent: (e) => events.push(e) }), SyntaxError);
+
+  assert.deepEqual(events.map((e) => e.type), ['text-delta', 'text-reset']);
+  assert.equal(session.input.length, 1);
+});

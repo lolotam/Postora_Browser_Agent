@@ -122,6 +122,15 @@ async function ensureMigrated(provider) {
 }
 
 /**
+ * Moves every sign-in of an older version into its per-provider key now, for a
+ * reader of the raw keys (the backup) that would otherwise miss one nothing has
+ * asked for since the update.
+ */
+export async function migrateLegacyAccounts() {
+  await ensureMigrated('chatgpt');
+}
+
+/**
  * Registers the login attempt that may store a credential for this provider.
  * The record's generation now is what a later store is checked against, so a
  * sign-out or a newer sign-in in between drops the result.

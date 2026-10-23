@@ -1,7 +1,7 @@
 import { renderMarkdown } from './markdown.js';
 import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
 import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
-import { authMessage, authView, backupAuthView, changedProviders } from './auth-ui.js';
+import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
 import { request } from './request.js';
@@ -213,15 +213,18 @@ function onEvent(event) {
       break;
     case 'auth-event':
       // The worker opened the sign-in page, or it has a device code to show.
+      authState[event.provider] = withLoginEvent(authState[event.provider], event);
       authAttempt[event.provider] = event.attemptId;
       if (event.kind === 'device_code') showDeviceCode(event.provider, event.userCode, event.verificationUrl);
       break;
     case 'auth-prompt':
       // The flow asks for the code the provider's page shows.
+      authState[event.provider] = withLoginEvent(authState[event.provider], event);
       authAttempt[event.provider] = event.attemptId;
       showCodePrompt(event.provider, true);
       break;
     case 'auth-error':
+      authState[event.provider] = withLoginEvent(authState[event.provider], event);
       showAuthError(event.provider, event.message, event.code);
       break;
     default:

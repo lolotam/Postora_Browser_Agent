@@ -62,6 +62,35 @@ export function authView(provider, state, attempt = null, note = '') {
 }
 
 /**
+ * A provider's known state after a sign-in event from the worker, so a redraw
+ * between two auth-status answers draws the sign-in as it is now, not as an
+ * attempt the worker lost.
+ */
+export function withLoginEvent(state, event) {
+  const known = state ?? { connected: false, provider: event.provider };
+  const login = known.login?.id === event.attemptId ? known.login : { id: event.attemptId, provider: event.provider };
+  switch (event.type) {
+    case 'auth-event':
+      return {
+        ...known,
+        login: {
+          ...login,
+          phase: 'authorizing',
+          needsCode: false,
+          deviceCode: event.userCode ?? login.deviceCode ?? null,
+          verificationUrl: event.verificationUrl ?? login.verificationUrl ?? null,
+        },
+      };
+    case 'auth-prompt':
+      return { ...known, login: { ...login, phase: 'awaiting-code', needsCode: true } };
+    case 'auth-error':
+      return { ...known, login: { ...login, phase: 'failed', needsCode: false, code: event.code, message: event.message } };
+    default:
+      return known;
+  }
+}
+
+/**
  * What the backup frame shows: the note that it uses the sign-in above, or the
  * sign-in of its own provider, when the main frame does not show that one.
  */

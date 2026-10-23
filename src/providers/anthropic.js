@@ -138,7 +138,7 @@ export class AnthropicSession {
     // The turn only counts when the message stopped; a stream that ends early
     // leaves the conversation as it was.
     if (!turn.stopped) {
-      if (turn.streamed) onEvent({ type: 'text-reset' });
+      resetText(turn, onEvent);
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
     }
     const content = turn.blocks.map(finalBlock).filter(Boolean);
@@ -150,7 +150,7 @@ export class AnthropicSession {
     // A reply that ran out of output room is not an answer; a turn with complete
     // calls still is.
     if (turn.stopReason === 'max_tokens' && !toolCalls.length) {
-      if (turn.streamed) onEvent({ type: 'text-reset' });
+      resetText(turn, onEvent);
       throw new Error('The reply hit the output limit before it was finished.');
     }
     this.messages.push({ role: 'assistant', content });
@@ -227,13 +227,26 @@ export class AnthropicSession {
  * One handler per event type.
  */
 async function readAnthropicStream(response, { signal, onEvent }) {
-  const state = { blocks: [], byIndex: new Map(), usage: null, stopReason: null, stopped: false, streamed: false };
-  for await (const { data } of readSse(response, signal)) {
-    const event = JSON.parse(data);
-    const handler = STREAM_HANDLERS[event.type];
-    if (handler) handler(state, event, onEvent);
+  const state = { blocks: [], byIndex: new Map(), usage: null, stopReason: null, stopped: false, streamed: false, wasReset: false };
+  try {
+    for await (const { data } of readSse(response, signal)) {
+      const event = JSON.parse(data);
+      const handler = STREAM_HANDLERS[event.type];
+      if (handler) handler(state, event, onEvent);
+    }
+  } catch (err) {
+    // A body that fails to read, the idle timeout or a malformed event.
+    resetText(state, onEvent);
+    throw err;
   }
   return state;
+}
+
+/** Takes back the text streamed so far, once: a half answer must not stay on screen. */
+function resetText(state, onEvent) {
+  if (!state.streamed || state.wasReset) return;
+  state.wasReset = true;
+  onEvent({ type: 'text-reset' });
 }
 
 /** What each Anthropic stream event does to the turn being read. */
@@ -281,7 +294,7 @@ const STREAM_HANDLERS = {
       // on arguments nobody wrote.
       entry.input = toolInput(entry.json);
     } catch (err) {
-      if (state.streamed) onEvent({ type: 'text-reset' });
+      resetText(state, onEvent);
       throw err;
     }
   },
@@ -293,7 +306,7 @@ const STREAM_HANDLERS = {
     state.stopped = true;
   },
   error: (state, event, onEvent) => {
-    if (state.streamed) onEvent({ type: 'text-reset' });
+    resetText(state, onEvent);
     throw new Error(event.error?.message ?? 'The model returned an error.');
   },
 };

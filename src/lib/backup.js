@@ -5,12 +5,15 @@
 
 import { mergeSettings, ACCOUNT_PROVIDERS } from './settings.js';
 import { credentialOf } from './credentials.js';
-import { ACCOUNT_STORAGE_KEYS, storeCredential } from '../providers/account-auth.js';
+import { ACCOUNT_STORAGE_KEYS, migrateLegacyAccounts, storeCredential } from '../providers/account-auth.js';
 
 const FORMAT = 'browser-agent-backup';
 const VERSION = 2;
 
 export async function exportBackup() {
+  // A ChatGPT sign-in from before the update is still under its old key until
+  // something asks for it; the backup must not leave it out.
+  await migrateLegacyAccounts();
   const stored = await chrome.storage.local.get(['settings', ...ACCOUNT_STORAGE_KEYS]);
   return {
     format: FORMAT,
