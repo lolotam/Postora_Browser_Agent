@@ -158,12 +158,19 @@ export function modelListRoute(settings) {
  */
 export function settingsProblem(settings) {
   if (!slotSettings(settings).model) return 'err.pickModel';
+  if (needsAnthropicKey(settings)) return 'err.anthropicKey';
   if (settings.replyLanguage.enabled && !settings.replyLanguage.language) return 'err.pickReplyLanguage';
   if (settings.fallback.enabled && !slotSettings(settings.fallback).model) return 'err.fallbackModel';
+  if (settings.fallback.enabled && needsAnthropicKey(settings.fallback)) return 'err.fallbackAnthropicKey';
   if (settings.fast.enabled && !settings.fast.apiKey) return 'err.fastKey';
   if (settings.fast.enabled && !settings.fast.baseUrl) return 'err.fastUrl';
   if (settings.fast.enabled && settings.fast.fallback.enabled && !settings.fast.fallback.apiKey) return 'err.fastFallbackKey';
   return null;
+}
+
+/** A Claude slot set to an Anthropic API key that has none: every request would fail. */
+function needsAnthropicKey(slot) {
+  return slot.provider === 'claude' && slot.claude?.auth === 'apiKey' && !slot.claude.apiKey?.trim();
 }
 
 export async function loadSettings() {

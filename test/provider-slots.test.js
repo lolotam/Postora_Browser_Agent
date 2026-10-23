@@ -155,3 +155,21 @@ test('every sign-in failure the worker can send has a message in every language'
     }
   }
 });
+
+test('a Claude slot set to an API key is not saved without one', () => {
+  const main = mergeSettings({ provider: 'claude', claude: { auth: 'apiKey', apiKey: '  ', model: 'claude-sonnet-4-6' } });
+  assert.equal(settingsProblem(main), 'err.anthropicKey');
+  main.claude.apiKey = 'sk-ant-api03-key';
+  assert.equal(settingsProblem(main), null);
+
+  const account = mergeSettings({ provider: 'claude', claude: { auth: 'account', apiKey: '', model: 'claude-sonnet-4-6' } });
+  assert.equal(settingsProblem(account), null, 'a Claude account needs no key');
+
+  const backup = mergeSettings({
+    provider: 'chatgpt', chatgpt: { model: 'gpt-5' },
+    fallback: { enabled: true, provider: 'claude', claude: { auth: 'apiKey', apiKey: '', model: 'claude-sonnet-4-6' } },
+  });
+  assert.equal(settingsProblem(backup), 'err.fallbackAnthropicKey');
+  backup.fallback.enabled = false;
+  assert.equal(settingsProblem(backup), null, 'a backup that is off is not checked');
+});
