@@ -43,7 +43,16 @@ const THINKING_RULES = [
   // Claude Sonnet 5 still allows the thinking to be turned off; the 5.5 of every
   // family does not.
   { pattern: /^claude-sonnet-5(?:-\d{8})?$/, mode: 'adaptive', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], allowOff: true, maxTokens: 128000 },
-  { pattern: /^claude-(?:opus|sonnet|haiku|fable)-5/, mode: 'adaptive', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], allowOff: false, maxTokens: 128000 },
+  { pattern: /^claude-fable-5(?:-\d{8})?$/, mode: 'adaptive', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], allowOff: false, maxTokens: 128000 },
+  // These take thinking-block binding (pi-ai: compat.supportsMidConvoEffort), so
+  // a block whose prefix changed is dropped by the server instead of refused.
+  { pattern: /^claude-(?:opus|sonnet|haiku|fable)-5/, mode: 'adaptive', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], allowOff: false, binding: true, maxTokens: 128000 },
+  // Mythos takes adaptive thinking only; pi-ai has no row for it, so its output
+  // limit is the modest default.
+  { pattern: /^claude-mythos-/, mode: 'adaptive', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], allowOff: false, maxTokens: 32000 },
+  // A later generation nobody knows yet is assumed to think adaptively, as every
+  // family from 4.6 on does: a token budget would be refused.
+  { pattern: /^claude-[a-z]+-(?:[5-9]|\d{2,})/, mode: 'adaptive', efforts: ['low', 'medium', 'high'], allowOff: false, maxTokens: 32000 },
 ];
 
 // A model nobody knows about thinks with a budget, like the ones before it, and
@@ -59,6 +68,25 @@ function anthropicCapability(model) {
   return THINKING_RULES.find((rule) => rule.pattern.test(id)) ?? DEFAULT_THINKING;
 }
 
+// A reply cut short by the output limit or by the end of the context window.
+const TRUNCATED = ['max_tokens', 'model_context_window_exceeded'];
+
+// The betas a model with thinking-block binding needs (pi-ai anthropic-messages.js:117-118, 851-853).
+const BINDING_BETAS = ['mid-conversation-output-config-2026-07-01', 'thinking-binding-controls-2026-08-01'];
+
+/**
+ * Whether older tool results may be shortened. A signed thinking block is bound
+ * to everything before it, so shortening that history would get the request
+ * refused, unless the model drops such blocks itself (binding) or does not think.
+ */
+function mayCompact(model, effort) {
+  const capability = anthropicCapability(model);
+  if (capability.binding) return true;
+  const type = anthropicThinking(model, effort)?.thinking?.type;
+  const thinks = type === 'adaptive' || type === 'enabled' || !capability.allowOff;
+  return !thinks;
+}
+
 /** The efforts a model takes, for the settings form. */
 export function anthropicEfforts(model) {
   return [...anthropicCapability(model).efforts];
@@ -72,6 +100,12 @@ export function anthropicEfforts(model) {
 export function anthropicThinking(model, effort) {
   const capability = anthropicCapability(model);
   const value = String(effort ?? '').trim().toLowerCase();
+  if (capability.binding) {
+    // Always adaptive with binding, so the shortened history of a long task
+    // never turns a kept thinking block into a refused request.
+    const thinking = { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } };
+    return capability.efforts.includes(value) ? { thinking, output_config: { effort: value } } : { thinking };
+  }
   if (!value) return undefined; // the model decides for itself
   if (value === 'off') return capability.allowOff ? { thinking: { type: 'disabled' } } : undefined;
   if (!capability.efforts.includes(value)) return undefined;
@@ -130,7 +164,7 @@ export class AnthropicSession {
   }
 
   async next({ signal, onEvent = () => {}, toolChoice = 'auto' }) {
-    compactMessages(this.messages);
+    if (mayCompact(this.model, this.effort)) compactMessages(this.messages);
     this.retryWaitMs = 0;
 
     const response = await this.post(toolChoice, signal);
@@ -149,7 +183,7 @@ export class AnthropicSession {
     const text = turn.blocks.filter((b) => b.type === 'text').map((b) => b.text).join('');
     // A reply that ran out of output room is not an answer; a turn with complete
     // calls still is.
-    if (turn.stopReason === 'max_tokens' && !toolCalls.length) {
+    if (TRUNCATED.includes(turn.stopReason) && !toolCalls.length) {
       resetText(turn, onEvent);
       throw new Error('The reply hit the output limit before it was finished.');
     }
@@ -161,6 +195,7 @@ export class AnthropicSession {
     const auth = await resolveAuth(this.auth, this.apiKey, refreshed);
     const headers = {
       ...modelHeaders(auth),
+      ...betaHeader(auth, this.model),
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     };
@@ -347,6 +382,15 @@ function modelHeaders(auth) {
       ? { Authorization: `Bearer ${auth.token}`, 'anthropic-beta': CLAUDE_CODE_IDENTITY.betas.join(','), 'x-app': 'cli' }
       : { 'x-api-key': auth.token }),
   };
+}
+
+/** The anthropic-beta header of a message request: the account's betas and the model's. */
+function betaHeader(auth, model) {
+  const betas = [
+    ...(auth.mode === 'account' ? CLAUDE_CODE_IDENTITY.betas : []),
+    ...(anthropicCapability(model).binding ? BINDING_BETAS : []),
+  ];
+  return betas.length ? { 'anthropic-beta': betas.join(',') } : {};
 }
 
 /** The tool choice in Anthropic's words. */

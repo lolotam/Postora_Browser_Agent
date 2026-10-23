@@ -68,7 +68,7 @@ beforeEach(() => {
 test('an account request carries the Claude Code identity and the system prompt after it', async () => {
   signedIn();
   stubFetch(() => answer());
-  const session = new AnthropicSession({ auth: 'account', model: 'claude-opus-5-5', effort: 'high', systemPrompt: 'SYS', tools: [] });
+  const session = new AnthropicSession({ auth: 'account', model: 'claude-sonnet-4-6', effort: 'high', systemPrompt: 'SYS', tools: [] });
   session.addUserMessage('task');
 
   await session.next({});
@@ -90,7 +90,7 @@ test('an account request carries the Claude Code identity and the system prompt 
     { type: 'text', text: 'SYS' },
   ]);
   assert.equal(body.stream, true);
-  assert.equal(body.model, 'claude-opus-5-5');
+  assert.equal(body.model, 'claude-sonnet-4-6');
 });
 
 test('an API key request sends x-api-key and no identity line', async () => {
@@ -112,7 +112,7 @@ test('an API key request sends x-api-key and no identity line', async () => {
 });
 
 test('adaptive models take an effort and budget models a token budget', async () => {
-  assert.deepEqual(anthropicThinking('claude-opus-5-5', 'high'), { thinking: { type: 'adaptive' }, output_config: { effort: 'high' } });
+  assert.deepEqual(anthropicThinking('claude-opus-5-5', 'high'), { thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } }, output_config: { effort: 'high' } });
   assert.deepEqual(anthropicThinking('claude-sonnet-4-6', 'medium'), { thinking: { type: 'adaptive' }, output_config: { effort: 'medium' } });
   assert.deepEqual(anthropicThinking('claude-sonnet-4-5', 'low'), { thinking: { type: 'enabled', budget_tokens: 2048 } });
   assert.deepEqual(anthropicThinking('claude-sonnet-4-5', 'medium'), { thinking: { type: 'enabled', budget_tokens: 8192 } });
@@ -120,11 +120,11 @@ test('adaptive models take an effort and budget models a token budget', async ()
   // Only a model that allows it can be told not to think.
   assert.deepEqual(anthropicThinking('claude-sonnet-4-5', 'off'), { thinking: { type: 'disabled' } });
   assert.deepEqual(anthropicThinking('claude-sonnet-5', 'off'), { thinking: { type: 'disabled' } });
-  assert.equal(anthropicThinking('claude-opus-5', 'off'), undefined);
-  assert.equal(anthropicThinking('claude-sonnet-5-5', 'off'), undefined, 'Claude Sonnet 5.5 cannot be told not to think');
-  assert.equal(anthropicThinking('claude-haiku-5-5', 'off'), undefined);
+  assert.deepEqual(anthropicThinking('claude-opus-5', 'off'), { thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } } });
+  assert.deepEqual(anthropicThinking('claude-sonnet-5-5', 'off'), { thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } } }, 'Claude Sonnet 5.5 cannot be told not to think');
+  assert.deepEqual(anthropicThinking('claude-haiku-5-5', 'off'), { thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } } });
   // No effort means the model decides for itself.
-  assert.equal(anthropicThinking('claude-opus-5-5', ''), undefined);
+  assert.deepEqual(anthropicThinking('claude-opus-5-5', ''), { thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } } }, 'a binding model always asks for binding');
   assert.deepEqual(anthropicEfforts('claude-opus-4-6'), ['low', 'medium', 'high', 'max']);
   assert.deepEqual(anthropicEfforts('claude-haiku-4-5'), ['low', 'medium', 'high']);
   assert.equal(anthropicEfforts('claude-sonnet-5-5').includes('off'), false);
@@ -144,7 +144,7 @@ test('a model nobody knows gets a modest output limit', async () => {
 test('the request carries the thinking the model takes and room for it', async () => {
   signedIn();
   stubFetch(() => answer());
-  const adaptive = new AnthropicSession({ auth: 'account', model: 'claude-opus-5-5', effort: 'high', systemPrompt: 'SYS', tools: [] });
+  const adaptive = new AnthropicSession({ auth: 'account', model: 'claude-sonnet-4-6', effort: 'high', systemPrompt: 'SYS', tools: [] });
   adaptive.addUserMessage('task');
   await adaptive.next({});
   const adaptiveBody = JSON.parse(calls[0].init.body);
@@ -494,4 +494,85 @@ test('a malformed event after some text withdraws the text', async () => {
 
   assert.deepEqual(events.map((e) => e.type), ['text-delta', 'text-reset']);
   assert.equal(session.messages.length, 1);
+});
+
+/** The screenshots a request body still carries inside its tool results. */
+function screenshotsIn(body) {
+  const images = [];
+  for (const message of body.messages) {
+    for (const block of message.content ?? []) {
+      if (block.type !== 'tool_result') continue;
+      for (const part of block.content ?? []) if (part.type === 'image') images.push(part.source.data);
+    }
+  }
+  return images;
+}
+
+test('a model with thinking binding asks for it, in both modes', async () => {
+  for (const auth of ['account', 'apiKey']) {
+    signedIn();
+    stubFetch(() => answer());
+    const session = new AnthropicSession({ auth, apiKey: 'sk-ant-api03-key', model: 'claude-opus-5-5', effort: 'high', systemPrompt: 'SYS', tools: [] });
+    session.addUserMessage('task');
+    await session.next({});
+
+    const { init } = calls[0];
+    const betas = init.headers['anthropic-beta'].split(',');
+    assert.ok(betas.includes('thinking-binding-controls-2026-08-01'), `${auth}: the binding beta`);
+    assert.ok(betas.includes('mid-conversation-output-config-2026-07-01'), `${auth}: the output config beta`);
+    assert.equal(betas.includes('claude-code-20250219'), auth === 'account', `${auth}: the account betas only with an account`);
+    assert.deepEqual(JSON.parse(init.body).thinking.block_binding, { prefix_mismatch_behavior: 'drop_block' });
+  }
+});
+
+test('a thinking model without binding keeps its history whole, so its signed thinking stays valid', async () => {
+  signedIn();
+  stubFetch(() => answer());
+  const session = new AnthropicSession({ auth: 'account', model: 'claude-sonnet-4-6', effort: 'high', systemPrompt: 'SYS', tools: [] });
+  session.addUserMessage('task');
+  for (let n = 1; n <= 4; n += 1) session.addToolResult(`toolu_${n}`, 'The page', [`data:image/jpeg;base64,SHOT${n}`]);
+
+  await session.next({});
+
+  assert.deepEqual(screenshotsIn(JSON.parse(calls[0].init.body)), ['SHOT1', 'SHOT2', 'SHOT3', 'SHOT4']);
+});
+
+test('the same model with its thinking off shortens old results again', async () => {
+  signedIn();
+  stubFetch(() => answer());
+  const session = new AnthropicSession({ auth: 'account', model: 'claude-sonnet-4-6', effort: 'off', systemPrompt: 'SYS', tools: [] });
+  session.addUserMessage('task');
+  for (let n = 1; n <= 4; n += 1) session.addToolResult(`toolu_${n}`, 'The page', [`data:image/jpeg;base64,SHOT${n}`]);
+
+  await session.next({});
+
+  assert.deepEqual(screenshotsIn(JSON.parse(calls[0].init.body)), ['SHOT4']);
+});
+
+test('a reply cut off by the end of the context window is an error, not an answer', async () => {
+  signedIn();
+  stubFetch(() => sseResponse([
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'The collected results are:' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'model_context_window_exceeded' }, usage: { output_tokens: 7 } },
+    { type: 'message_stop' },
+  ]));
+  const session = new AnthropicSession({ auth: 'account', model: 'claude-opus-5-5', effort: '', systemPrompt: 'SYS', tools: [] });
+  session.addUserMessage('task');
+  const events = [];
+
+  await assert.rejects(session.next({ onEvent: (e) => events.push(e) }), /output limit/);
+
+  assert.ok(events.some((e) => e.type === 'text-reset'), 'the half answer is withdrawn');
+  assert.equal(session.messages.length, 1, 'the cut-off turn is not kept');
+});
+
+test('Mythos and later unknown generations think adaptively, never with a token budget', () => {
+  for (const model of ['claude-mythos-5', 'claude-mythos-5-1', 'claude-opus-7']) {
+    const request = anthropicThinking(model, 'high');
+    assert.equal(request.thinking.type, 'adaptive', model);
+    assert.equal(request.thinking.budget_tokens, undefined, model);
+    assert.equal(anthropicThinking(model, 'off')?.thinking?.type, undefined, `${model} cannot be told not to think`);
+  }
 });
