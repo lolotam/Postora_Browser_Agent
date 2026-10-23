@@ -133,30 +133,75 @@
             <span data-i18n="settings.provider"></span>
             <select id="provider" data-field="provider">
               <option value="chatgpt" data-i18n="settings.provider.chatgpt"></option>
+              <option value="claude" data-i18n="settings.provider.claude"></option>
+              <option value="grok" data-i18n="settings.provider.grok"></option>
               <option value="compatible" data-i18n="settings.provider.compatible"></option>
             </select>
           </label>
 
-          <div id="chatgptSection" class="inset" data-field="chatgptSection">
+          <div id="chatgptSection" class="inset" data-field="chatgptSection" data-provider="chatgpt">
             <div class="row between">
-              <span id="authStatus"></span>
-              <button type="button" id="logoutBtn" data-i18n="auth.logout" hidden></button>
+              <span data-auth="status"></span>
+              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
             </div>
-            <button type="button" class="primary" id="loginBtn" data-i18n="auth.login"></button>
-            <div id="deviceBox" class="device" hidden>
+            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.chatgpt"></button>
+            <div class="device" data-auth="device" hidden>
               <p data-i18n="auth.deviceHelp"></p>
-              <code id="deviceCode" dir="ltr"></code>
+              <code data-auth="deviceCode" dir="ltr"></code>
               <div class="row between">
-                <a id="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
-                <button type="button" id="cancelLoginBtn" data-i18n="common.cancel"></button>
+                <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
+                <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
               </div>
             </div>
+            <small class="error" data-auth="message" hidden></small>
             <details>
               <summary data-i18n="auth.importSummary"></summary>
               <p class="muted"><span data-i18n="auth.importRun"></span> <code dir="ltr">codex login</code> <span data-i18n="auth.importThen"></span> <code dir="ltr">~/.codex/auth.json</code> <span data-i18n="auth.importHere"></span></p>
               <textarea id="authJson" rows="4" dir="ltr" placeholder='{"tokens": {...}}'></textarea>
               <button type="button" id="importBtn" data-i18n="auth.import"></button>
             </details>
+          </div>
+
+          <div id="claudeSection" class="inset" data-field="claudeSection" data-provider="claude" hidden>
+            <div class="row between">
+              <span data-auth="status"></span>
+              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+            </div>
+            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.claude"></button>
+            <div class="device" data-auth="code" hidden>
+              <p data-i18n="auth.codeHelp"></p>
+              <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
+              <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
+            </div>
+            <small class="error" data-auth="message" hidden></small>
+            <label class="field">
+              <span data-i18n="claude.auth"></span>
+              <select data-field="claudeAuth">
+                <option value="account" data-i18n="claude.authAccount"></option>
+                <option value="apiKey" data-i18n="claude.authApiKey"></option>
+              </select>
+            </label>
+            <label class="field">
+              <span data-i18n="claude.apiKey"></span>
+              <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
+            </label>
+          </div>
+
+          <div id="grokSection" class="inset" data-field="grokSection" data-provider="grok" hidden>
+            <div class="row between">
+              <span data-auth="status"></span>
+              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+            </div>
+            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.grok"></button>
+            <div class="device" data-auth="device" hidden>
+              <p data-i18n="auth.deviceHelp"></p>
+              <code data-auth="deviceCode" dir="ltr"></code>
+              <div class="row between">
+                <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
+                <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
+              </div>
+            </div>
+            <small class="error" data-auth="message" hidden></small>
           </div>
 
           <div id="compatibleSection" class="fields" data-field="compatibleSection" hidden>
@@ -201,10 +246,46 @@
             <span data-i18n="settings.provider"></span>
             <select data-field="provider">
               <option value="chatgpt" data-i18n="settings.provider.chatgpt"></option>
+              <option value="claude" data-i18n="settings.provider.claude"></option>
+              <option value="grok" data-i18n="settings.provider.grok"></option>
               <option value="compatible" data-i18n="settings.provider.compatible"></option>
             </select>
           </label>
-          <p class="muted" data-field="chatgptSection" data-i18n="fallback.sameLogin"></p>
+          <p class="muted" data-field="accountNote" data-i18n="fallback.sameLogin" hidden></p>
+          <div class="inset" data-field="fallbackAuth" data-provider="" hidden>
+            <div class="row between">
+              <span data-auth="status"></span>
+              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+            </div>
+            <button type="button" class="primary" data-auth="login"></button>
+            <div class="device" data-auth="device" hidden>
+              <p data-i18n="auth.deviceHelp"></p>
+              <code data-auth="deviceCode" dir="ltr"></code>
+              <div class="row between">
+                <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
+                <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
+              </div>
+            </div>
+            <div class="device" data-auth="code" hidden>
+              <p data-i18n="auth.codeHelp"></p>
+              <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
+              <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
+            </div>
+            <small class="error" data-auth="message" hidden></small>
+          </div>
+          <div class="inset" data-field="claudeSection" hidden>
+            <label class="field">
+              <span data-i18n="claude.auth"></span>
+              <select data-field="claudeAuth">
+                <option value="account" data-i18n="claude.authAccount"></option>
+                <option value="apiKey" data-i18n="claude.authApiKey"></option>
+              </select>
+            </label>
+            <label class="field">
+              <span data-i18n="claude.apiKey"></span>
+              <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
+            </label>
+          </div>
           <div class="fields" data-field="compatibleSection">
             <label class="field"><span data-i18n="compat.preset"></span><select data-field="preset"></select></label>
             <label class="field"><span>Base URL</span><input data-field="baseUrl" dir="ltr" /></label>

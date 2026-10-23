@@ -1,6 +1,7 @@
 // Turns provider errors into a short reason the user can act on (top up credit,
-// fix the key, check the connection). Provider clients embed "HTTP <status>" in
-// their messages, so the status is read from the text. `code` lets the panel
+// fix the key, check the connection) and into the message the provider's own
+// error body carries. Provider clients embed "HTTP <status>" in their
+// messages, so the status is read from the text. `code` lets the panel
 // translate the reason; `reason` is the English fallback for "other".
 
 import { classify } from './retry.js';
@@ -13,6 +14,18 @@ const REASONS = {
   network: 'No connection to the provider',
   'rate-limit': 'Too many requests to the provider right now',
 };
+
+/**
+ * The message a provider error shows: the provider's own words with the status
+ * in front of them. `forbidden` says what a 403 usually means for that
+ * provider.
+ */
+export function providerErrorMessage(label, status, detail, { forbidden = '' } = {}) {
+  const message = providerMessage(detail, 400);
+  if (status === 429) return `${label} usage limit reached for this plan. ${message}`.trim();
+  if (status === 403) return `${label} refused the request (HTTP 403). ${[forbidden, message].filter(Boolean).join(' ')}`.trim();
+  return `${label} request failed (HTTP ${status}): ${message}`;
+}
 
 export function describeFailure(error) {
   const detail = String(error?.message ?? error);

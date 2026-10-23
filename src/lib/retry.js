@@ -99,6 +99,8 @@ export function classify(error, { provider = '' } = {}) {
     return 'transient';
   }
   if (status === 502 || status === 503 || status === 504) return 'transient';
+  // Anthropic answers 529 when the model is overloaded; it clears by itself.
+  if (status === 529) return 'transient';
   return 'fatal';
 }
 

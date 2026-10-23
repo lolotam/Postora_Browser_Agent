@@ -4,7 +4,7 @@
 // a Google sign-in. It is a backup, not sync: each change uploads this computer's
 // settings, and a restore is automatic only on a fresh install.
 
-import { exportBackup, importBackup } from './backup.js';
+import { accountsIn, exportBackup, importBackup, normaliseAccounts } from './backup.js';
 import { googleAccessToken } from './google-account.js';
 import { mergeSettings } from './settings.js';
 
@@ -48,9 +48,13 @@ async function writeBackupFile(token, data, id) {
   return fileId;
 }
 
-/** Settings and the ChatGPT sign-in, without the export time, so unchanged settings hash the same. */
+/**
+ * Settings and the signed-in accounts, without the export time, so unchanged
+ * settings hash the same. The local generation is left out: it moves on every
+ * sign-in, while the credential itself is what a refresh changes.
+ */
 async function backupHash(data) {
-  const bytes = new TextEncoder().encode(JSON.stringify([data.settings, data.chatgptAuth]));
+  const bytes = new TextEncoder().encode(JSON.stringify([data.settings, normaliseAccounts(data.accounts)]));
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -96,10 +100,23 @@ async function upload(getToken) {
   }
 }
 
-/** True when this install has nothing a restore would overwrite: no ChatGPT sign-in, chosen ChatGPT model or API key. */
-export function isFreshSetup({ settings, chatgptAuth }) {
-  const keys = [settings.compatible, settings.fallback.compatible, settings.fast, settings.fast.fallback].map((slot) => slot.apiKey);
-  return !chatgptAuth && !settings.chatgpt.model && !keys.some(Boolean);
+/**
+ * True when this install has nothing a restore would overwrite: no account
+ * sign-in, no stored key of any provider, and no model chosen in any slot.
+ */
+export function isFreshSetup({ settings, accounts }) {
+  const signedIn = Object.values(accounts ?? {}).some(Boolean);
+  // Any key of any provider is existing state, the Anthropic one included.
+  const storedKeys = Object.values(settings.keys ?? {}).some(Boolean);
+  const slotKeys = [
+    settings.compatible, settings.fallback?.compatible, settings.fast, settings.fast?.fallback,
+    settings.claude, settings.fallback?.claude,
+  ].map((slot) => slot?.apiKey);
+  const models = [
+    settings.chatgpt?.model, settings.claude?.model, settings.grok?.model,
+    settings.fallback?.chatgpt?.model, settings.fallback?.claude?.model, settings.fallback?.grok?.model,
+  ];
+  return !signedIn && !storedKeys && !slotKeys.some(Boolean) && !models.some(Boolean);
 }
 
 /** Restores the Drive backup; returns the restored settings. */
@@ -114,8 +131,8 @@ async function restore(getToken) {
   const data = await readBackupFile(token, file.id);
   const settings = await importBackup(data);
   // Records what Drive holds, so restoring does not upload it straight back; a local
-  // ChatGPT sign-in the file lacks (and the import keeps) still gets uploaded.
-  const held = { settings: mergeSettings(data.settings ?? {}), chatgptAuth: data.chatgptAuth ?? null };
+  // sign-in the file lacks (and the import keeps) still gets uploaded.
+  const held = { settings: mergeSettings(data.settings ?? {}), accounts: accountsIn(data) };
   await saveState({ fileId: file.id, at: Date.parse(file.modifiedTime) || Date.now(), hash: await backupHash(held), error: null });
   return settings;
 }

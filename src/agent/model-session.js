@@ -6,8 +6,10 @@ import { buildSystemPrompt } from './prompt.js';
 import { toolDefinitions } from './tools.js';
 import { askWithBackup, fastClientFor } from '../fast/clients.js';
 import { COMPATIBLE_PRESETS, effectiveSettings } from '../lib/settings.js';
+import { AnthropicSession } from '../providers/anthropic.js';
 import { ChatgptSession } from '../providers/chatgpt.js';
 import { CompatibleSession } from '../providers/openai-compatible.js';
+import { GrokAccountSession } from '../providers/responses.js';
 
 /**
  * A provider session for one model slot: the main one or settings.fallback.
@@ -20,6 +22,14 @@ function createProviderSession(slot, settings, conversationId, notify = null) {
   if (slot.provider === 'chatgpt') {
     if (!slot.chatgpt.model) throw new Error('Choose a ChatGPT model in settings first.');
     return new ChatgptSession({ ...slot.chatgpt, systemPrompt, tools, notify });
+  }
+  if (slot.provider === 'claude') {
+    if (!slot.claude.model) throw new Error('Choose a Claude model in settings first.');
+    return new AnthropicSession({ ...slot.claude, systemPrompt, tools, notify });
+  }
+  if (slot.provider === 'grok') {
+    if (!slot.grok.model) throw new Error('Choose a Grok model in settings first.');
+    return new GrokAccountSession({ ...slot.grok, systemPrompt, tools, notify });
   }
   const c = slot.compatible;
   if (!c.model) throw new Error('Choose a model in settings first.');
@@ -43,6 +53,8 @@ export async function testProviderSlot(slot, settings) {
 
 function slotLabel(slot) {
   if (slot.provider === 'chatgpt') return `ChatGPT · ${slot.chatgpt.model}`;
+  if (slot.provider === 'claude') return `Claude · ${slot.claude.model}`;
+  if (slot.provider === 'grok') return `Grok · ${slot.grok.model}`;
   return `${COMPATIBLE_PRESETS[slot.compatible.preset]?.label ?? 'API'} · ${slot.compatible.model}`;
 }
 
@@ -67,7 +79,7 @@ export function createModelSession(settings, { notify, seed = null, conversation
 
 /** Settings that require a new model session when they change. */
 export function modelSessionKey(settings) {
-  return JSON.stringify([settings.provider, settings.chatgpt, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage]);
+  return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage]);
 }
 
 export function createFastAsk(fast, notify) {

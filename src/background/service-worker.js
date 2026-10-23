@@ -3,12 +3,17 @@
 
 import { SessionRunner } from './session-runner.js';
 import { testProviderSlot } from '../agent/model-session.js';
+import { accountLoginState, cancelAccountLogin, startAccountLogin, submitAccountInput, withKeepAlive } from './account-login.js';
 import { fastClientFor } from '../fast/clients.js';
-import { exportBackup, importBackup } from '../lib/backup.js';
-import { COMPATIBLE_PRESETS, FAST_PRESETS, chatModelsFor, loadSettings, saveSettings } from '../lib/settings.js';
-import * as chatgptAuth from '../providers/chatgpt-auth.js';
+import { accountsIn, exportBackup, importBackup } from '../lib/backup.js';
+import { errorResponse } from '../lib/errors.js';
+import { COMPATIBLE_PRESETS, FAST_PRESETS, loadSettings, modelListRoute, saveSettings, slotModels } from '../lib/settings.js';
+import { ACCOUNT_STORAGE_KEYS, accountStatus, signOut } from '../providers/account-auth.js';
+import { importCodexAuthJson } from '../providers/chatgpt-auth.js';
 import { listChatgptModels } from '../providers/chatgpt.js';
+import { CLAUDE_CODE_IDENTITY, anthropicEfforts, listAnthropicModels } from '../providers/anthropic.js';
 import { listCompatibleModels } from '../providers/openai-compatible.js';
+import { listGrokModels } from '../providers/responses.js';
 import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
 import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive-backup.js';
@@ -16,6 +21,7 @@ import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
 
 const GROUP_COLORS = ['cyan', 'blue', 'green', 'yellow', 'purple', 'pink', 'orange', 'red'];
+const DEFAULT_PROVIDER = 'chatgpt';
 const runners = new Map(); // sessionId → SessionRunner
 const loading = new Map(); // sessionId → Promise<SessionRunner>
 const panels = new Set(); // every open panel port, for list updates and sign-in errors
@@ -25,7 +31,6 @@ const reserved = new Set();
 const RESERVATION_MS = 10000;
 const DRIVE_BACKUP_DELAY_MS = 3000; // one upload for a burst of changes (a save writes several keys)
 let driveBackupTimer = null;
-let loginAbort = null;
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 chrome.runtime.onInstalled.addListener(installHeaderRules);
@@ -36,7 +41,7 @@ chrome.tabs.onRemoved.addListener((tabId) => tabSessions.unbindTab(tabId));
 listenToNotifications();
 chrome.permissions.onAdded.addListener(listenToNotifications);
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !(changes.settings || changes.chatgptAuth)) return;
+  if (area !== 'local' || !(changes.settings || ACCOUNT_STORAGE_KEYS.some((key) => changes[key]))) return;
   clearTimeout(driveBackupTimer);
   driveBackupTimer = setTimeout(async () => {
     if (await googleAccount()) await backUpToDrive();
@@ -61,7 +66,22 @@ async function installHeaderRules() {
     action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: `postora-browser-agent/${chrome.runtime.getManifest().version}` }] },
     condition: { urlFilter: '||opencode.ai/zen/', ...own },
   });
-  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1, 2, 3], addRules: rules });
+  // The Claude and xAI sign-in endpoints refuse a browser Origin.
+  [4, 5, 6].forEach((id, i) => rules.push({
+    id,
+    priority: 1,
+    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'origin', operation: 'remove' }] },
+    condition: { urlFilter: ['||platform.claude.com/', '||claude.ai/', '||auth.x.ai/'][i], ...own },
+  }));
+  // The Anthropic API wants the Claude Code identity, and Chrome drops a
+  // User-Agent set in fetch, so it has to be a rule.
+  rules.push({
+    id: 7,
+    priority: 1,
+    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: `claude-cli/${CLAUDE_CODE_IDENTITY.version}` }] },
+    condition: { urlFilter: '||api.anthropic.com/', ...own },
+  });
+  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1, 2, 3, 4, 5, 6, 7], addRules: rules });
 }
 
 function listenToNotifications() {
@@ -130,7 +150,7 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handleRequest(msg, sender).then(
     (result) => sendResponse({ ok: true, result }),
-    (err) => sendResponse({ ok: false, error: err.message }),
+    (err) => sendResponse(errorResponse(err)),
   );
   return true;
 });
@@ -144,22 +164,33 @@ async function handleRequest(msg, sender) {
     case 'save-settings':
       return saveSettings(msg.settings);
     case 'auth-status':
-      return chatgptAuth.getAuthStatus();
+      return authStatusFor(providerOf(msg));
     case 'backup-export':
       return exportBackup();
-    case 'backup-import':
+    case 'backup-import': {
+      // A sign-in still running would poll, keep its tab and overwrite the
+      // record the file brings.
+      for (const provider of Object.keys(accountsIn(msg.data))) await cancelAccountLogin(provider);
       return importBackup(msg.data);
+    }
     case 'auth-start':
-      return startLogin();
+      return startAccountLogin(providerOf(msg), { post: postToPanels });
     case 'auth-cancel':
-      loginAbort?.abort();
+      await cancelAccountLogin(providerOf(msg));
       return null;
+    case 'auth-input':
+      return submitAccountInput(providerOf(msg), msg.attemptId, msg.value);
     case 'auth-import':
-      await chatgptAuth.importCodexAuthJson(msg.text);
-      return chatgptAuth.getAuthStatus();
-    case 'auth-logout':
-      await chatgptAuth.logout();
-      return chatgptAuth.getAuthStatus();
+      // A sign-in still running would poll, keep its tab and keep the worker awake.
+      await cancelAccountLogin('chatgpt');
+      await importCodexAuthJson(msg.text);
+      return authStatusFor('chatgpt');
+    case 'auth-logout': {
+      const provider = providerOf(msg);
+      await cancelAccountLogin(provider);
+      await signOut(provider);
+      return authStatusFor(provider);
+    }
     case 'fast-test': {
       const ask = fastClientFor(msg.config);
       const { answers, model } = await ask({
@@ -170,7 +201,7 @@ async function handleRequest(msg, sender) {
       return { model, noul: answers.greeting?.noul ?? null };
     }
     case 'provider-test':
-      return testProviderSlot(msg.slot, await loadSettings());
+      return withKeepAlive(async () => testProviderSlot(msg.slot, await loadSettings()));
     case 'list-fast-models': {
       const fixed = FAST_PRESETS[msg.config.provider]?.models;
       if (fixed) return fixed.map((id) => ({ id, name: id, efforts: [], decision: true }));
@@ -178,10 +209,27 @@ async function handleRequest(msg, sender) {
     }
     case 'list-models': {
       const settings = msg.settings ?? (await loadSettings());
-      if (settings.provider === 'chatgpt') return listChatgptModels();
-      // The agent works through tool calls, so models known not to support them are left out.
-      const list = (await listCompatibleModels(settings.compatible.baseUrl, settings.compatible.apiKey)).filter((m) => !m.decision && m.tools !== false);
-      return chatModelsFor(settings.compatible.preset, list);
+      // The model list needs a valid token, and a refresh takes longer than the
+      // worker may idle, so it is kept awake until the token is stored.
+      const route = modelListRoute(settings);
+      if (route === 'chatgpt') return withKeepAlive(() => listChatgptModels());
+      if (route === 'claude') {
+        return withKeepAlive(async () => {
+          const list = await listAnthropicModels({ auth: settings.claude?.auth ?? 'account', apiKey: settings.claude?.apiKey ?? '' });
+          return withChosenModel(list, settings.claude?.model);
+        });
+      }
+      if (route === 'grok') return withKeepAlive(() => listGrokModels());
+      const preset = settings.compatible.preset;
+      let list = [];
+      try {
+        // The agent works through tool calls, so models known not to support them are left out.
+        list = (await listCompatibleModels(settings.compatible.baseUrl, settings.compatible.apiKey)).filter((m) => !m.decision && m.tools !== false);
+      } catch (err) {
+        // A provider that serves no list of its own falls back to the preset's.
+        if (!slotModels(preset, []).length) throw err;
+      }
+      return slotModels(preset, list);
     }
     case 'sessions-list':
       return (await store.listSessions()).map((meta) => ({ ...meta, running: Boolean(runners.get(meta.id)?.running) }));
@@ -266,18 +314,28 @@ async function deleteSession(id) {
   return null;
 }
 
-async function startLogin() {
-  loginAbort?.abort();
-  const device = await chatgptAuth.startDeviceLogin();
-  const controller = new AbortController();
-  loginAbort = controller;
-  await chrome.tabs.create({ url: device.verificationUrl, active: true });
-  // fetch/setTimeout polling does not count as activity; without this the worker
-  // is killed ~30s in while the user signs in, and the poll silently dies.
-  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
-  // Success reaches the panel through chrome.storage.onChanged; only failures need a message.
-  chatgptAuth.completeDeviceLogin(device, controller.signal).finally(() => clearInterval(keepAlive)).catch((err) => {
-    for (const port of panels) port.postMessage({ type: 'auth-error', message: err.message });
-  });
-  return { userCode: device.userCode, verificationUrl: device.verificationUrl };
+/** The provider a message is about; the panel only names one for the newer providers. */
+function providerOf(msg) {
+  return msg.provider || DEFAULT_PROVIDER;
+}
+
+/** The account status of a provider, with the state of any sign-in running for it. */
+async function authStatusFor(provider) {
+  return { ...await accountStatus(provider), provider, login: accountLoginState(provider) };
+}
+
+/**
+ * The model the user chose, with the efforts Anthropic's own table gives it,
+ * even when the provider's list does not name it. The panel asks for the
+ * efforts of the model it shows, and it cannot compute them itself.
+ */
+function withChosenModel(list, model) {
+  const id = String(model ?? '').trim();
+  if (!id || list.some((m) => m.id === id)) return list;
+  return [...list, { id, name: id, description: '', efforts: anthropicEfforts(id), defaultEffort: null }];
+}
+
+/** Sends a message to every open panel. */
+function postToPanels(message) {
+  for (const port of panels) port.postMessage(message);
 }

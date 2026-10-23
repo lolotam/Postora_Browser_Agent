@@ -15,6 +15,7 @@ test('classification: rate limits and overloads are transient; daily, billing an
   assert.equal(classify(http(429, geminiMinute)), 'transient');
   assert.equal(classify(http(429, 'Provider returned error')), 'transient'); // OpenRouter free model
   assert.equal(classify(http(503, 'Service temporarily overloaded')), 'transient'); // NVIDIA
+  assert.equal(classify(http(529, 'Overloaded')), 'transient'); // Anthropic's overloaded model
   assert.equal(classify(http(402, 'Insufficient account funds')), 'exhausted');
   assert.equal(classify(http(429, 'insufficient_quota: check your billing')), 'exhausted');
   assert.equal(classify(http(429, 'usage limit reached'), { provider: 'chatgpt' }), 'exhausted');

@@ -7,11 +7,13 @@ globalThis.chrome = {
     local: {
       get: async (keys) => Object.fromEntries([].concat(keys).filter((k) => k in local).map((k) => [k, structuredClone(local[k])])),
       set: async (obj) => Object.assign(local, structuredClone(obj)),
+      remove: async (key) => { delete local[key]; },
     },
   },
 };
 
-const { afterGoogleSignIn, backUpToDrive, driveBackupState, restoreFromDrive } = await import('../src/lib/drive-backup.js');
+const { afterGoogleSignIn, backUpToDrive, driveBackupState, isFreshSetup, restoreFromDrive } = await import('../src/lib/drive-backup.js');
+const { mergeSettings } = await import('../src/lib/settings.js');
 
 const getToken = async () => 'ya29.token';
 let drive; // the fake appDataFolder: { id, content } or null
@@ -38,6 +40,7 @@ function stubDrive({ status } = {}) {
 }
 
 const setUp = { provider: 'compatible', compatible: { preset: 'openrouter', apiKey: 'or-key', model: 'openai/gpt-5' } };
+const credential = (access) => ({ type: 'oauth', access, refresh: 'r', expires: Date.now() + 3600e3 });
 
 beforeEach(() => {
   for (const k of Object.keys(local)) delete local[k];
@@ -62,10 +65,10 @@ test('the first backup creates the file, later changes update it, unchanged sett
 });
 
 test('a reinstall gets its settings and ChatGPT sign-in back at Google sign-in', async () => {
-  drive = { id: 'file1', content: { format: 'browser-agent-backup', version: 1, settings: setUp, chatgptAuth: { tokens: { refresh_token: 'r' } } } };
+  drive = { id: 'file1', content: { format: 'browser-agent-backup', version: 1, settings: setUp, chatgptAuth: { accessToken: 'at', refreshToken: 'rt', expiresAt: 1234 } } };
   const { restored } = await afterGoogleSignIn({ getToken });
   assert.equal(restored.compatible.apiKey, 'or-key');
-  assert.deepEqual(local.chatgptAuth, { tokens: { refresh_token: 'r' } });
+  assert.equal(local['accountAuth.chatgpt'].credential.access, 'at');
 
   calls = [];
   await backUpToDrive({ getToken });
@@ -90,12 +93,46 @@ test('overlapping backups make one file and leave the newest settings in Drive',
   assert.equal(drive.content.settings.maxSteps, 25);
 });
 
-test('a local ChatGPT sign-in that the restored file lacks is still uploaded afterwards', async () => {
+test('a local sign-in that the restored file lacks is still uploaded afterwards', async () => {
   drive = { id: 'file1', content: { format: 'browser-agent-backup', version: 1, settings: setUp, chatgptAuth: null } };
-  local.chatgptAuth = { tokens: { refresh_token: 'local' } };
+  local['accountAuth.chatgpt'] = { generation: 1, credential: credential('local') };
   await restoreFromDrive({ getToken });
   await backUpToDrive({ getToken });
-  assert.deepEqual(drive.content.chatgptAuth, { tokens: { refresh_token: 'local' } });
+  assert.equal(drive.content.accounts.chatgpt.access, 'local');
+});
+
+test('a refreshed token is uploaded again, and the generation on its own is not', async () => {
+  local.settings = setUp;
+  local['accountAuth.chatgpt'] = { generation: 1, credential: { type: 'oauth', access: 'first', refresh: 'r1', expires: 1 } };
+  await backUpToDrive({ getToken });
+  assert.equal(drive.content.accounts.chatgpt.access, 'first');
+
+  // A refresh rotates the token: the fingerprint changes, so Drive is updated.
+  local['accountAuth.chatgpt'] = { generation: 1, credential: { type: 'oauth', access: 'second', refresh: 'r2', expires: 2 } };
+  calls = [];
+  await backUpToDrive({ getToken });
+  assert.deepEqual(calls, ['PATCH /upload/drive/v3/files/file1']);
+  assert.equal(drive.content.accounts.chatgpt.access, 'second');
+
+  // The generation moves on every sign-in; it is not part of the fingerprint.
+  local['accountAuth.chatgpt'] = { generation: 9, credential: { type: 'oauth', access: 'second', refresh: 'r2', expires: 2 } };
+  calls = [];
+  await backUpToDrive({ getToken });
+  assert.deepEqual(calls, [], 'the generation alone changes nothing');
+});
+
+test('an install with an account record is not a fresh one', () => {
+  assert.equal(isFreshSetup({ settings: mergeSettings({}), accounts: {} }), true);
+  assert.equal(isFreshSetup({ settings: mergeSettings({}), accounts: { claude: credential('at') } }), false, 'a Claude record is existing state');
+  assert.equal(isFreshSetup({ settings: mergeSettings({ chatgpt: { model: 'gpt-5' } }), accounts: {} }), false);
+});
+
+test('an install with only an Anthropic key is not a fresh one', () => {
+  const withKey = mergeSettings({ claude: { apiKey: 'sk-ant-key' } });
+  assert.equal(withKey.keys.anthropic, 'sk-ant-key');
+  assert.equal(isFreshSetup({ settings: withKey, accounts: {} }), false, 'a stored key is existing state');
+  const backupKey = mergeSettings({ fallback: { claude: { apiKey: 'sk-ant-key' } } });
+  assert.equal(isFreshSetup({ settings: backupKey, accounts: {} }), false, 'the backup slot counts too');
 });
 
 test('a Drive error is kept for the account menu, not thrown', async () => {

@@ -4,14 +4,29 @@
 import { t } from './i18n.js';
 import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
 import { bindTestButton } from './test-button.js';
+import { ANTHROPIC_GROUP } from '../lib/keys.js';
+import { ACCOUNT_PROVIDERS, slotSettings as slotOf } from '../lib/settings.js';
 
 const TRANSLATED_EFFORTS = { '': 'effort.default', off: 'effort.off', on: 'effort.on' };
-const FALLBACK_EFFORTS = { chatgpt: ['low', 'medium', 'high', 'xhigh'], reasoning_effort: ['off', 'low', 'medium', 'high'], glm: ['on', 'off'], none: [], gemini: ['minimal', 'low', 'medium', 'high'] };
+// The efforts a model list does not name. MiniMax cannot stop thinking, so it
+// offers no Off. Claude and Grok name the efforts of each model in their own
+// list, so these are only what the form shows before that list arrives.
+const FALLBACK_EFFORTS = {
+  chatgpt: ['low', 'medium', 'high', 'xhigh'],
+  reasoning_effort: ['off', 'low', 'medium', 'high'],
+  glm: ['on', 'off'],
+  none: [],
+  gemini: ['minimal', 'low', 'medium', 'high'],
+  minimax: ['low', 'medium', 'high', 'xhigh', 'max'],
+  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  grok: ['low', 'medium', 'high', 'xhigh'],
+};
 
-const slotOf = (s) => (s.provider === 'chatgpt' ? s.chatgpt : s.compatible);
-
-export function createProviderForm(root, { request, getPresets, keyStore }) {
+export function createProviderForm(root, { request, getPresets, keyStore, onChange = null }) {
   const f = (name) => root.querySelector(`[data-field="${name}"]`);
+  // Hides a field this form does not have: the backup frame has no sign-in
+  // sections, only the note that the account is the one above.
+  const hide = (name, hidden) => { const el = f(name); if (el) el.hidden = hidden; };
   // Last filled values; also remembers the other provider's model while switching.
   let saved = null;
   let models = [];
@@ -22,7 +37,13 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
 
   function fill(s) {
     latestLoad += 1; // a model list still loading belongs to the values being replaced
-    saved = { provider: s.provider, chatgpt: { ...s.chatgpt }, compatible: { ...s.compatible } };
+    saved = {
+      provider: s.provider,
+      chatgpt: { ...s.chatgpt },
+      claude: { ...s.claude },
+      grok: { ...s.grok },
+      compatible: { ...s.compatible },
+    };
     f('preset').innerHTML = Object.entries(getPresets()).map(([id, p]) => `<option value="${id}">${escapeAttr(p.label)}</option>`).join('');
     f('provider').value = s.provider;
     f('preset').value = s.compatible.preset;
@@ -30,6 +51,12 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
     f('apiKey').value = s.compatible.apiKey;
     preset = s.compatible.preset;
     customKey = preset === 'custom' ? s.compatible.apiKey : '';
+    if (f('claudeAuth')) f('claudeAuth').value = s.claude.auth;
+    // The Anthropic key is one key for the whole app, so the shared one wins.
+    if (f('claudeApiKey')) {
+      keyStore.show(f('claudeApiKey'), ANTHROPIC_GROUP);
+      if (!f('claudeApiKey').value) f('claudeApiKey').value = s.claude.apiKey ?? '';
+    }
     f('modelInput').value = slotOf(s).model;
     models = [];
     syncSections();
@@ -41,6 +68,7 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
     const next = structuredClone(saved);
     next.provider = f('provider').value;
     Object.assign(next.compatible, compatibleFields());
+    Object.assign(next.claude, claudeFields());
     const slot = slotOf(next);
     slot.model = f('modelInput').value.trim();
     slot.effort = f('effort').value;
@@ -48,31 +76,51 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
   }
 
   const compatibleFields = () => ({ preset: f('preset').value, baseUrl: f('baseUrl').value.trim(), apiKey: f('apiKey').value.trim() });
+  const claudeFields = () => ({ auth: f('claudeAuth')?.value ?? 'account', apiKey: f('claudeApiKey')?.value.trim() ?? '' });
 
   function syncSections() {
-    const chatgpt = f('provider').value === 'chatgpt';
-    f('chatgptSection').hidden = !chatgpt;
-    f('compatibleSection').hidden = chatgpt;
+    const provider = f('provider').value;
+    hide('chatgptSection', provider !== 'chatgpt');
+    hide('claudeSection', provider !== 'claude');
+    hide('grokSection', provider !== 'grok');
+    hide('compatibleSection', provider !== 'compatible');
   }
 
   function renderModels() {
     renderPicker(f('modelSelect'), f('modelInput'), models, f('modelSearch'));
   }
 
+  /** The efforts of the chosen model, or the ones its provider takes. */
   function renderEfforts(selected) {
     const model = models.find((m) => m.id === f('modelInput').value.trim());
-    const style = f('provider').value === 'chatgpt' ? 'chatgpt' : getPresets()[f('preset').value]?.thinkingStyle ?? 'reasoning_effort';
-    const levels = model?.efforts?.length ? model.efforts : FALLBACK_EFFORTS[style];
+    const levels = model?.efforts?.length ? model.efforts : FALLBACK_EFFORTS[effortStyle()];
     const options = ['', ...levels];
     f('effort').innerHTML = options.map((e) => `<option value="${escapeAttr(e)}">${escapeAttr(TRANSLATED_EFFORTS[e] ? t(TRANSLATED_EFFORTS[e]) : e)}${model?.defaultEffort === e ? t('effort.defaultMark') : ''}</option>`).join('');
     f('effort').value = options.includes(selected) ? selected : '';
+  }
+
+  /** The thinking style of the chosen provider: its own, or the preset's. */
+  function effortStyle() {
+    const provider = f('provider').value;
+    if (provider === 'chatgpt' || provider === 'claude' || provider === 'grok') return provider;
+    return getPresets()[f('preset').value]?.thinkingStyle ?? 'reasoning_effort';
+  }
+
+  /** A provider that signs in with an account needs one before it lists models. */
+  function needsSignIn(draft) {
+    if (ACCOUNT_PROVIDERS.includes(draft.provider)) {
+      // A Claude slot that pays with an API key needs no sign-in.
+      if (draft.provider === 'claude' && draft.claude.auth === 'apiKey') return false;
+      return true;
+    }
+    return false;
   }
 
   async function loadModels(showErrors = false) {
     const draft = read();
     // Numbered before any wait, so a slower earlier load (or a fill since) never wins.
     const load = ++latestLoad;
-    if (draft.provider === 'chatgpt' && !(await request('auth-status')).connected) return;
+    if (needsSignIn(draft) && !(await request('auth-status', { provider: draft.provider })).connected) return;
     if (load !== latestLoad) return;
     f('modelInfo').textContent = t('model.loading');
     try {
@@ -94,6 +142,7 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
     leaving.model = f('modelInput').value.trim();
     leaving.effort = f('effort').value;
     Object.assign(saved.compatible, compatibleFields());
+    Object.assign(saved.claude, claudeFields());
     saved.provider = f('provider').value;
     f('modelInput').value = slotOf(saved).model;
     models = [];
@@ -101,6 +150,7 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
     renderModels();
     renderEfforts(slotOf(saved).effort);
     loadModels();
+    onChange?.(saved.provider);
   });
   f('preset').addEventListener('change', () => {
     if (preset === 'custom') customKey = f('apiKey').value.trim();
@@ -119,8 +169,21 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
     renderEfforts(models.find((m) => m.id === f('modelSelect').value)?.defaultEffort ?? '');
   });
   f('modelInput').addEventListener('input', () => renderEfforts(f('effort').value));
+  // A model id typed by hand is not in the list, so the list is asked again for
+  // the efforts Anthropic's own table gives it.
+  f('modelInput').addEventListener('change', () => {
+    if (f('provider').value === 'claude') loadModels();
+  });
+  // Switching between a Claude account and an Anthropic key changes what the
+  // model list needs, so it is loaded again.
+  f('claudeAuth')?.addEventListener('change', () => {
+    saved.claude = { ...saved.claude, ...claudeFields() };
+    loadModels();
+    onChange?.(saved.provider);
+  });
   f('refresh').addEventListener('click', () => loadModels(true));
   keyStore.register(f('apiKey'), () => f('preset').value);
+  if (f('claudeApiKey')) keyStore.register(f('claudeApiKey'), () => ANTHROPIC_GROUP);
   bindTestButton({
     button: f('test'),
     result: f('testResult'),
@@ -137,6 +200,9 @@ export function createProviderForm(root, { request, getPresets, keyStore }) {
     read,
     loadModels,
     model: () => f('modelInput').value.trim(),
+    provider: () => f('provider').value,
+    /** How the Claude slot connects: its account or an Anthropic key. */
+    claude: () => claudeFields(),
     rerender() {
       renderModels();
       renderEfforts(f('effort').value);

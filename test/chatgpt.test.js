@@ -11,14 +11,20 @@ globalThis.chrome = {
       remove: async (key) => { delete store[key]; },
     },
   },
+  tabs: { create: async () => ({ id: 1 }) },
+  runtime: { getPlatformInfo: async () => ({}) },
 };
 
-const { startDeviceLogin, completeDeviceLogin, getAuthStatus } = await import('../src/providers/chatgpt-auth.js');
+const { startAccountLogin } = await import('../src/background/account-login.js');
+const { accountStatus } = await import('../src/providers/account-auth.js');
 const { ChatgptSession, listChatgptModels } = await import('../src/providers/chatgpt.js');
 
 const jwt = (claims) => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.s`;
-const accessToken = jwt({ exp: Math.floor(Date.now() / 1000) + 3600, 'https://api.openai.com/auth': { chatgpt_account_id: 'acc_9' } });
-const idToken = jwt({ email: 'me@x.y', 'https://api.openai.com/auth': { chatgpt_account_id: 'acc_9', chatgpt_plan_type: 'pro' } });
+const accessToken = jwt({
+  exp: Math.floor(Date.now() / 1000) + 3600,
+  email: 'me@x.y',
+  'https://api.openai.com/auth': { chatgpt_account_id: 'acc_9', chatgpt_plan_type: 'pro' },
+});
 
 function sseResponse(events) {
   const body = events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
@@ -34,30 +40,43 @@ function stubFetch(handler) {
   };
 }
 
+async function until(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('the sign-in did not finish');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 beforeEach(() => {
   for (const k of Object.keys(store)) delete store[k];
 });
 
-test('device login exchanges the approved code and stores identity', async () => {
-  stubFetch((url, init, n) => {
+test('the device login exchanges the approved code and stores the identity', async () => {
+  stubFetch((url) => {
     if (url.endsWith('/deviceauth/usercode')) return Response.json({ device_auth_id: 'dev1', user_code: 'ABCD-1234', interval: '1' });
-    if (url.endsWith('/deviceauth/token')) {
-      return n === 2 ? new Response('', { status: 403 }) : Response.json({ authorization_code: 'code1', code_verifier: 'ver1', code_challenge: 'ch' });
-    }
-    if (url.endsWith('/oauth/token')) return Response.json({ id_token: idToken, access_token: accessToken, refresh_token: 'rt1' });
+    if (url.endsWith('/deviceauth/token')) return Response.json({ authorization_code: 'code1', code_verifier: 'ver1' });
+    if (url.endsWith('/oauth/token')) return Response.json({ access_token: accessToken, refresh_token: 'rt1', expires_in: 3600 });
     throw new Error(`unexpected ${url}`);
   });
-  const device = await startDeviceLogin();
-  assert.equal(device.userCode, 'ABCD-1234');
-  assert.equal(device.verificationUrl, 'https://auth.openai.com/codex/device');
-  await completeDeviceLogin(device);
+  const events = [];
+
+  const shown = await startAccountLogin('chatgpt', { post: (event) => events.push(event) });
+
+  assert.equal(shown.userCode, 'ABCD-1234');
+  assert.equal(shown.verificationUrl, 'https://auth.openai.com/codex/device');
+  await until(() => events.some((event) => event.type === 'auth-success'));
 
   const exchange = calls.find((c) => c.url.endsWith('/oauth/token'));
   const form = new URLSearchParams(exchange.init.body);
   assert.equal(form.get('grant_type'), 'authorization_code');
   assert.equal(form.get('code_verifier'), 'ver1');
   assert.equal(form.get('redirect_uri'), 'https://auth.openai.com/deviceauth/callback');
-  assert.deepEqual(await getAuthStatus(), { connected: true, email: 'me@x.y', planType: 'pro', accountId: 'acc_9' });
+  const status = await accountStatus('chatgpt');
+  assert.equal(status.connected, true);
+  assert.equal(status.email, 'me@x.y');
+  assert.equal(status.planType, 'pro');
+  assert.equal(status.accountId, 'acc_9');
 });
 
 // Regression 2026-10: client_version=0.99.0 got only a hidden model back, so the
@@ -139,7 +158,11 @@ test('ChatgptSession moves the system prompt into input when instructions are re
   store.chatgptAuth = { accessToken, refreshToken: 'rt', accountId: 'acc_9', expiresAt: Date.now() + 3600e3 };
   stubFetch((_url, _init, n) => (n === 1
     ? Response.json({ detail: 'Instructions are not valid' }, { status: 400 })
-    : sseResponse([{ type: 'response.output_item.done', item: { type: 'message', content: [{ type: 'output_text', text: 'ok' }] } }])));
+    // A turn only counts once the response completed, so the stream says so.
+    : sseResponse([
+      { type: 'response.output_item.done', item: { type: 'message', content: [{ type: 'output_text', text: 'ok' }] } },
+      { type: 'response.completed', response: { usage: { total_tokens: 3 } } },
+    ])));
   const session = new ChatgptSession({ model: 'gpt-x', effort: '', systemPrompt: 'SYS', tools: [] });
   session.addUserMessage('task');
   const turn = await session.next({});
@@ -155,4 +178,12 @@ test('ChatgptSession reports plan usage limits clearly', async () => {
   const session = new ChatgptSession({ model: 'gpt-x', effort: '', systemPrompt: 'SYS', tools: [] });
   session.addUserMessage('task');
   await assert.rejects(session.next({}), /usage limit reached for this plan/);
+});
+
+test('ChatgptSession says what a refusal of the Codex backend means', async () => {
+  store.chatgptAuth = { accessToken, refreshToken: 'rt', accountId: 'acc_9', expiresAt: Date.now() + 3600e3 };
+  stubFetch(() => Response.json({ error: { message: 'no Codex access' } }, { status: 403 }));
+  const session = new ChatgptSession({ model: 'gpt-x', effort: '', systemPrompt: 'SYS', tools: [] });
+  session.addUserMessage('task');
+  await assert.rejects(session.next({}), /refused the request \(HTTP 403\)\. The plan may not include Codex access/);
 });

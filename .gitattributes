@@ -1,0 +1,2 @@
+# esbuild writes LF; test/vendor.test.js compares the committed bundle byte for byte.
+src/vendor/pi-oauth.js -text

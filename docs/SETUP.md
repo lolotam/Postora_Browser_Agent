@@ -40,7 +40,7 @@ There is nothing to build. The folder that contains `manifest.json` (the repo ro
 
 When you pull new code later, return to `chrome://extensions` and click the **reload ↻** button on the extension card.
 
-**Keep your settings:** use **reload ↻**, not **Remove**. Chrome deletes an extension's stored data (settings, API keys, ChatGPT sign-in) when it is removed. Before removing it, open Settings → **Settings backup** → **Download backup**; after loading it again, use **Restore from file**. The backup file holds your keys, so keep it private.
+**Keep your settings:** use **reload ↻**, not **Remove**. Chrome deletes an extension's stored data (settings, API keys, account sign-ins) when it is removed. Before removing it, open Settings → **Settings backup** → **Download backup**; after loading it again, use **Restore from file**. The backup file holds your keys, so keep it private.
 
 The manifest pins the extension ID to `bhoimdlegicacjkholpfcokajpiimbcn`, so it stays the same whichever folder you load it from. The first load after this change still starts empty, because the previous ID came from the folder path.
 
@@ -81,16 +81,43 @@ If the file does not exist, Codex stored the tokens in your OS keychain instead.
 
 > ⚠️ **Gotcha: shared refresh token.** After an import, the extension and the Codex CLI hold the **same** refresh token. OpenAI rotates refresh tokens, so when one of them refreshes, the other is signed out ("session expired"). Either stop using the CLI on that login, or prefer 4A, which creates a separate session.
 
-### 4C. Claude and Grok account authentication
+### 4C. Claude account sign-in (paste the code)
 
-- **Anthropic Claude:** Select Claude and connect via your Claude account (Claude Pro / Team / Max) or enter an Anthropic API key. Direct account sign-in enables full access to Claude models directly.
-- **xAI Grok:** Select xAI Grok and connect via your Grok account (SuperGrok subscription) or enter an xAI API key. Direct account sign-in enables using your SuperGrok subscription directly.
+1. Select **"اشتراك Claude"** (Claude subscription) and click **"تسجيل الدخول بحساب Claude"** (Sign in with Claude).
+2. A new tab opens at `claude.ai`. Sign in and approve the request.
+3. Claude shows you a code (it looks like `code#state`). Copy it.
+4. Paste it into the code field in the panel and press **"إرسال الرمز"** (Submit the code).
+5. The panel shows **"متصل"** (Connected), and the model list loads.
+
+The code is single-use and expires like any authorization code. The extension opens the page itself, because that page's address carries the PKCE verifier, which never reaches the panel.
+
+**Prefer an API key?** In the same Claude section, switch **"طريقة الدخول لـ Claude"** (Claude access) to **"مفتاح Anthropic API"** (Anthropic API key) and paste an `sk-ant-api…` key. That key is shared with the backup slot, like every other provider key.
+
+### 4D. Grok account sign-in (device code)
+
+1. Select **"اشتراك Grok"** (Grok subscription) and click **"تسجيل الدخول بحساب Grok"** (Sign in with Grok).
+2. A new tab opens at `auth.x.ai`, and the panel shows a one-time code such as `ABCD-1234`.
+3. Sign in to your SuperGrok / X Premium account in that tab, enter the code, and approve.
+4. The panel shows **"متصل"** (Connected), and the model list loads.
+
+> ⚠️ **Not verified yet.** The Grok account path has not been checked against a live SuperGrok / X Premium account. The transport is the one pi-ai uses for xAI, but no live account has been driven through it. An **xAI API key** works today, through the **xAI (Grok)** preset.
+
+### 4E. MiniMax
+
+Two presets, each with its own key:
+
+| Preset | Key | Address | Default model |
+|---|---|---|---|
+| **MiniMax** | pay-as-you-go key | `https://api.minimax.io/v1` | `MiniMax-M3.1-Flash` |
+| **MiniMax Coding Plan** | `sk-cp-…` key | `https://api.minimax.io/v1` | `MiniMax-M3.1-Flash` |
+
+MiniMax always thinks, so its reasoning effort has no "Off" level. It serves no model list of its own, so the extension shows the fixed one above.
 
 ---
 
 ## 5. Choose the model and reasoning effort
 
-After you connect, the model list loads automatically from your account (`/backend-api/codex/models`). Exactly which models you see depends on your plan.
+After you connect, the model list loads automatically from your account (`/backend-api/codex/models` for ChatGPT, `/v1/models` for Claude, `/v1/models` for Grok). Exactly which models you see depends on your plan and on the provider.
 
 1. **الموديل (Model):** pick one from the list. Press **↻** to reload it. If the list stays empty, type a model id you know from Codex into the text box.
 2. **مستوى التفكير (Reasoning effort):** the options come from the selected model, for example `low` / `medium` / `high` / `xhigh`.
@@ -130,6 +157,9 @@ What happens next:
 | Symptom | Cause / fix |
 |---|---|
 | "Device-code login is not enabled" | See 4A, or use 4B. |
+| "The sign-in was interrupted — start again" | The service worker restarted while the sign-in was waiting for you. Start the sign-in again; nothing was stored. |
+| "The sign-in was cancelled" | You pressed Cancel. Start the sign-in again. |
+| Claude asks for a code but nothing is shown | Open the tab the extension opened at `claude.ai`, approve, and copy the code it shows (`code#state`) into the panel. |
 | "ChatGPT session expired, please sign in again" | The refresh token was revoked or rotated, often because the CLI shares it (see 4B). Sign in again with 4A. |
 | `HTTP 403` from ChatGPT | Your plan has no Codex access, or OpenAI rejected this client. Check that Codex works for you in the official CLI or app. |
 | "usage limit reached for this plan" (`HTTP 429`) | You hit your Codex limit. Wait for the reset or use a lower reasoning effort. |
@@ -146,7 +176,7 @@ Logging out: Settings → **تسجيل خروج** (Log out). This deletes the st
 ## 8. Security and privacy
 
 - Tokens and API keys are stored in `chrome.storage.local` on your machine. They are **not encrypted**, so don't use this on a shared computer profile.
-- The page text, element list and screenshots of the pages the agent works on are sent to the model provider (OpenAI for Codex).
+- The page text, element list and screenshots of the pages the agent works on are sent to the model provider you chose (OpenAI for a ChatGPT account, Anthropic for Claude, xAI for Grok).
 - Page content is treated as untrusted (prompt-injection defense in the system prompt). That lowers the risk but does not remove it. Don't point the agent at sites where one wrong click can spend money without a confirmation step.
 - The extension asks for broad permissions (`<all_urls>`, `debugger`, `tabs`, `scripting`) because it has to operate any site you choose.
 
@@ -155,7 +185,7 @@ Logging out: Settings → **تسجيل خروج** (Log out). This deletes the st
 ## 9. Development
 
 ```bash
-npm test          # 29 unit tests (node:test), no install needed
+npm test          # unit tests (node:test), no install needed
 npm install
 npm run e2e       # loads the extension in Chromium with mock models
 # If Playwright's Chromium is not installed:
@@ -166,22 +196,27 @@ Project layout:
 
 ```
 manifest.json                      MV3 manifest (side panel, debugger, <all_urls>)
-src/background/service-worker.js   run coordination, panel messaging, login
+src/background/service-worker.js   run coordination, panel messaging
+src/background/account-login.js    the account sign-ins (ChatGPT, Claude, Grok)
 src/agent/agent.js                 observe → decide → act loop
 src/agent/tools.js                 tool schemas + implementations
 src/agent/prompt.js                system prompt and safety rules
 src/browser/controller.js          CDP input, scrolling, screenshots, tab handling
 src/browser/page-scripts.js        injected DOM snapshot / element actions
-src/providers/chatgpt-auth.js      Codex device-code OAuth, refresh, auth.json import
-src/providers/claude-auth.js       Claude account authentication / session
-src/providers/grok-auth.js         xAI / Grok account authentication / session
+src/providers/account-auth.js      one stored credential per account provider, with refresh
+src/providers/chatgpt-auth.js      the auth.json import from the Codex CLI
+src/providers/anthropic.js         Claude: Anthropic Messages API (account token or API key)
+src/providers/responses.js         the Responses API (ChatGPT Codex backend, Grok account)
 src/providers/chatgpt.js           Responses API on chatgpt.com/backend-api/codex
-src/providers/openai-compatible.js Chat Completions (Grok, GLM, Claude, OpenAI, OpenRouter)
+src/providers/openai-compatible.js Chat Completions (Grok, GLM, OpenAI, OpenRouter, MiniMax; Claude only through OpenRouter)
+src/vendor/pi-oauth.js             pi-ai's OAuth login and refresh flows (MIT), bundled
 src/fast/                          optional fast layer (Jev or a gateway chat model)
 src/sidepanel/                     UI (Arabic RTL / English LTR, follows system theme) + safe Markdown renderer
 icons/, _locales/                  logo + PNG icons (scripts/render-icons.mjs), translated store name
 test/                              unit tests + e2e/run-e2e.mjs
 ```
+
+The OAuth sign-in and refresh flows come from [pi-ai](https://github.com/earendil-works/pi) (MIT); see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). pi-ai is used for login and refresh only — no model call goes through it.
 
 ### Adding a provider (roadmap)
 
@@ -204,6 +239,7 @@ To add one:
 
 ## Roadmap
 
-1. ✅ Direct account authentication: ChatGPT subscription (device-code & auth.json fallback), Claude account sign-in, and Grok / SuperGrok account sign-in.
-2. ⏳ API key providers: Anthropic Claude API, xAI Grok API, Z.ai GLM (incl. Coding Plan), OpenAI API key, Google Gemini, OpenRouter, DeepSeek, NVIDIA NIM.
+1. ✅ Direct account authentication: ChatGPT subscription (device code & auth.json fallback) and Claude account sign-in (paste the code Claude shows after you approve).
+2. ⏳ API key providers: Anthropic Claude API, xAI Grok API, Z.ai GLM (incl. Coding Plan), OpenAI API key, Google Gemini, OpenRouter, DeepSeek, NVIDIA NIM, MiniMax (pay-as-you-go and Coding Plan).
 3. ⏳ Jev fast layer: tested end-to-end with a mock only.
+4. ⏳ Grok / SuperGrok account sign-in (device code): implemented, but not yet checked against a live SuperGrok / X Premium account.
