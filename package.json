@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test \"test/**/*.test.js\"",
+    "build:vendor": "node scripts/build-vendor.mjs",
     "e2e": "node test/e2e/run-e2e.mjs",
     "package": "node scripts/package.mjs",
     "store-screenshots": "node scripts/store-screenshots.mjs",

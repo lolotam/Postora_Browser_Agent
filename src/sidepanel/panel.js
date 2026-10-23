@@ -999,10 +999,12 @@ async function init() {
 
 // Tokens land in storage even when the worker that polled for them was restarted
 // and its port to this panel is gone, so storage is the reliable sign-in signal.
+// Every provider's credential has its own accountAuth.* key.
 chrome.storage.onChanged.addListener(async (changes, area) => {
-  if (area !== 'local' || !changes.chatgptAuth) return;
-  showAuth(await request('auth-status'));
-  if (changes.chatgptAuth.newValue) {
+  if (area !== 'local' || !Object.keys(changes).some((key) => key.startsWith('accountAuth.'))) return;
+  const status = await request('auth-status');
+  showAuth(status);
+  if (status.connected) {
     $('deviceBox').hidden = true;
     mainForm.loadModels();
   }
