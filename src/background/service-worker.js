@@ -5,13 +5,15 @@ import { SessionRunner } from './session-runner.js';
 import { testProviderSlot } from '../agent/model-session.js';
 import { accountLoginState, cancelAccountLogin, startAccountLogin, submitAccountInput, withKeepAlive } from './account-login.js';
 import { fastClientFor } from '../fast/clients.js';
-import { exportBackup, importBackup } from '../lib/backup.js';
-import { COMPATIBLE_PRESETS, FAST_PRESETS, loadSettings, saveSettings, slotModels } from '../lib/settings.js';
+import { accountsIn, exportBackup, importBackup } from '../lib/backup.js';
+import { errorResponse } from '../lib/errors.js';
+import { COMPATIBLE_PRESETS, FAST_PRESETS, loadSettings, modelListRoute, saveSettings, slotModels } from '../lib/settings.js';
 import { ACCOUNT_STORAGE_KEYS, accountStatus, signOut } from '../providers/account-auth.js';
 import { importCodexAuthJson } from '../providers/chatgpt-auth.js';
 import { listChatgptModels } from '../providers/chatgpt.js';
-import { CLAUDE_CODE_IDENTITY } from '../providers/anthropic.js';
+import { CLAUDE_CODE_IDENTITY, anthropicEfforts, listAnthropicModels } from '../providers/anthropic.js';
 import { listCompatibleModels } from '../providers/openai-compatible.js';
+import { listGrokModels } from '../providers/responses.js';
 import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
 import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive-backup.js';
@@ -148,7 +150,7 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handleRequest(msg, sender).then(
     (result) => sendResponse({ ok: true, result }),
-    (err) => sendResponse({ ok: false, error: err.message }),
+    (err) => sendResponse(errorResponse(err)),
   );
   return true;
 });
@@ -165,8 +167,12 @@ async function handleRequest(msg, sender) {
       return authStatusFor(providerOf(msg));
     case 'backup-export':
       return exportBackup();
-    case 'backup-import':
+    case 'backup-import': {
+      // A sign-in still running would poll, keep its tab and overwrite the
+      // record the file brings.
+      for (const provider of Object.keys(accountsIn(msg.data))) await cancelAccountLogin(provider);
       return importBackup(msg.data);
+    }
     case 'auth-start':
       return startAccountLogin(providerOf(msg), { post: postToPanels });
     case 'auth-cancel':
@@ -205,7 +211,15 @@ async function handleRequest(msg, sender) {
       const settings = msg.settings ?? (await loadSettings());
       // The model list needs a valid token, and a refresh takes longer than the
       // worker may idle, so it is kept awake until the token is stored.
-      if (settings.provider === 'chatgpt') return withKeepAlive(() => listChatgptModels());
+      const route = modelListRoute(settings);
+      if (route === 'chatgpt') return withKeepAlive(() => listChatgptModels());
+      if (route === 'claude') {
+        return withKeepAlive(async () => {
+          const list = await listAnthropicModels({ auth: settings.claude?.auth ?? 'account', apiKey: settings.claude?.apiKey ?? '' });
+          return withChosenModel(list, settings.claude?.model);
+        });
+      }
+      if (route === 'grok') return withKeepAlive(() => listGrokModels());
       const preset = settings.compatible.preset;
       let list = [];
       try {
@@ -308,6 +322,17 @@ function providerOf(msg) {
 /** The account status of a provider, with the state of any sign-in running for it. */
 async function authStatusFor(provider) {
   return { ...await accountStatus(provider), provider, login: accountLoginState(provider) };
+}
+
+/**
+ * The model the user chose, with the efforts Anthropic's own table gives it,
+ * even when the provider's list does not name it. The panel asks for the
+ * efforts of the model it shows, and it cannot compute them itself.
+ */
+function withChosenModel(list, model) {
+  const id = String(model ?? '').trim();
+  if (!id || list.some((m) => m.id === id)) return list;
+  return [...list, { id, name: id, description: '', efforts: anthropicEfforts(id), defaultEffort: null }];
 }
 
 /** Sends a message to every open panel. */

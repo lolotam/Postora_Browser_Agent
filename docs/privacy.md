@@ -22,9 +22,11 @@ The extension does not collect analytics or telemetry, does not show ads, and do
 
 ## AI providers
 
-To work, the extension sends your task and the content of the pages it is working on to the AI provider **you** select in settings. The available providers are OpenAI (API key or ChatGPT account), Anthropic Claude (API key or Claude account), xAI Grok (API key or Grok account), Google Gemini, DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai, and any compatible address you enter yourself. For the optional fast layer, they are TypeSafe, Vercel AI Gateway, OpenCode and OpenRouter. If you turn on a backup provider, it receives the same data when the main provider fails.
+To work, the extension sends your task and the content of the pages it is working on to the AI provider **you** select in settings. The available providers are OpenAI (API key or ChatGPT account), Anthropic Claude (Anthropic API key or Claude account), xAI Grok (xAI API key or Grok account), Google Gemini, DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai, MiniMax (pay-as-you-go or Coding Plan), and any compatible address you enter yourself. For the optional fast layer, they are TypeSafe, Vercel AI Gateway, OpenCode and OpenRouter. If you turn on a backup provider, it receives the same data when the main provider fails.
 
 What each provider does with that data is governed by its own privacy policy and your agreement with it. Do not give the agent tasks on pages whose content you are not willing to share with your provider.
+
+Account sign-ins are unofficial: they use the providers' own OAuth endpoints, not an official client of theirs.
 
 ## Google sign-in and Drive backup (optional)
 
@@ -42,7 +44,7 @@ Feedback is sent only when you submit it. It contains your message, the rating, 
 
 ## Other network requests
 
-- To use an account sign-in (such as ChatGPT, Claude, or Grok), the extension contacts the respective provider's sign-in and session services. It also reads the public version number of OpenAI's Codex CLI from the npm registry; no user data is sent in that request.
+- To use an account sign-in (ChatGPT, Claude or Grok), the extension contacts the respective provider's sign-in and session services: OpenAI's Codex device-code and token endpoints, Anthropic's authorize page at `claude.ai` and its token endpoint at `platform.claude.com`, and xAI's device-code endpoints at `auth.x.ai`. It also reads the public version number of OpenAI's Codex CLI from the npm registry; no user data is sent in that request.
 - The agent's "web search" step opens a Google search results page in the tab it controls, the same as you searching yourself.
 
 ## Data sharing and sale
@@ -59,6 +61,8 @@ Your data is not sold, not used for advertising, and not used for creditworthine
 ## Security
 
 Keys and tokens are stored in the extension's local storage on your computer and sent only over HTTPS to the provider they belong to. A custom provider address you enter yourself may use plain HTTP, for example a local model on your own machine. The agent asks for your confirmation before payments, sending messages, deleting data or typing passwords.
+
+The sign-in pages are opened by the extension itself, not by the panel, because the authorization address carries a PKCE verifier that must not reach the panel. No token, refresh token, API key or authorization code is ever logged, and never sent to the panel by the extension.
 
 ## Changes to this policy
 

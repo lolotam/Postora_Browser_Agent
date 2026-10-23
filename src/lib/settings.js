@@ -3,6 +3,12 @@
 import { keyGroup, shareKeys } from './keys.js';
 import { STORE_BUILD } from './build.js';
 
+/** The providers that sign in with an account, in the order they are listed. */
+export const ACCOUNT_PROVIDERS = ['chatgpt', 'claude', 'grok'];
+
+/** The name each account provider is shown under. */
+export const PROVIDER_LABELS = { chatgpt: 'ChatGPT', claude: 'Claude', grok: 'Grok' };
+
 // Main model and backup providers (both use this list). thinkingStyle 'none' sends
 // no reasoning parameter, for APIs whose models reject reasoning_effort; 'gemini'
 // offers no Off, because Gemini 3 thinking cannot be turned off; 'minimax' always
@@ -88,6 +94,10 @@ export const FAST_PRESETS = {
 export const DEFAULT_SETTINGS = {
   provider: 'chatgpt',
   chatgpt: { model: '', effort: '' },
+  // The Claude slot signs in with a Claude account or pays with an Anthropic key.
+  claude: { auth: 'account', apiKey: '', model: '', effort: '' },
+  // The Grok slot signs in with a Grok account; an xAI key goes through the preset.
+  grok: { model: '', effort: '' },
   compatible: { preset: 'xai', baseUrl: COMPATIBLE_PRESETS.xai.baseUrl, apiKey: '', model: COMPATIBLE_PRESETS.xai.model, effort: '' },
   fast: {
     enabled: false, mode: 'auto', provider: 'typesafe', baseUrl: 'https://api.typesafe.ai', apiKey: '', model: 'jev-latest', minProb: 0.6, riskyMax: 0.3,
@@ -98,6 +108,8 @@ export const DEFAULT_SETTINGS = {
     enabled: false,
     provider: 'compatible',
     chatgpt: { model: '', effort: '' },
+    claude: { auth: 'account', apiKey: '', model: '', effort: '' },
+    grok: { model: '', effort: '' },
     compatible: { preset: 'openrouter', baseUrl: COMPATIBLE_PRESETS.openrouter.baseUrl, apiKey: '', model: '', effort: '' },
   },
   maxSteps: 40,
@@ -120,6 +132,40 @@ export function effectiveSettings(settings) {
   return STORE_BUILD ? { ...settings, allowJavascript: false } : settings;
 }
 
+/**
+ * The settings of the slot a provider uses: its model, its effort and its key.
+ * The main settings and a backup slot have the same shape.
+ */
+export function slotSettings(settings) {
+  if (settings.provider === 'chatgpt') return settings.chatgpt;
+  if (settings.provider === 'claude') return settings.claude;
+  if (settings.provider === 'grok') return settings.grok;
+  return settings.compatible;
+}
+
+/**
+ * The model list a slot's provider needs: the account providers have their
+ * own, every other provider goes through the OpenAI-compatible list.
+ */
+export function modelListRoute(settings) {
+  return ACCOUNT_PROVIDERS.includes(settings.provider) ? settings.provider : 'compatible';
+}
+
+/**
+ * The i18n key of the first thing that blocks saving, or null. The model is
+ * the one of the slot the chosen provider uses, so a Claude or Grok slot is
+ * saved with its own model, whatever the compatible slot holds.
+ */
+export function settingsProblem(settings) {
+  if (!slotSettings(settings).model) return 'err.pickModel';
+  if (settings.replyLanguage.enabled && !settings.replyLanguage.language) return 'err.pickReplyLanguage';
+  if (settings.fallback.enabled && !slotSettings(settings.fallback).model) return 'err.fallbackModel';
+  if (settings.fast.enabled && !settings.fast.apiKey) return 'err.fastKey';
+  if (settings.fast.enabled && !settings.fast.baseUrl) return 'err.fastUrl';
+  if (settings.fast.enabled && settings.fast.fallback.enabled && !settings.fast.fallback.apiKey) return 'err.fastFallbackKey';
+  return null;
+}
+
 export async function loadSettings() {
   const { settings } = await chrome.storage.local.get('settings');
   return mergeSettings(settings);
@@ -136,6 +182,8 @@ export function mergeSettings(stored = {}) {
     ...DEFAULT_SETTINGS,
     ...stored,
     chatgpt: { ...DEFAULT_SETTINGS.chatgpt, ...(stored.chatgpt ?? {}) },
+    claude: { ...DEFAULT_SETTINGS.claude, ...(stored.claude ?? {}) },
+    grok: { ...DEFAULT_SETTINGS.grok, ...(stored.grok ?? {}) },
     compatible: { ...DEFAULT_SETTINGS.compatible, ...(stored.compatible ?? {}) },
     fast: {
       ...DEFAULT_SETTINGS.fast,
@@ -147,6 +195,8 @@ export function mergeSettings(stored = {}) {
       ...DEFAULT_SETTINGS.fallback,
       ...(stored.fallback ?? {}),
       chatgpt: { ...DEFAULT_SETTINGS.fallback.chatgpt, ...(stored.fallback?.chatgpt ?? {}) },
+      claude: { ...DEFAULT_SETTINGS.fallback.claude, ...(stored.fallback?.claude ?? {}) },
+      grok: { ...DEFAULT_SETTINGS.fallback.grok, ...(stored.fallback?.grok ?? {}) },
       compatible: { ...DEFAULT_SETTINGS.fallback.compatible, ...(stored.fallback?.compatible ?? {}) },
     },
     keys: { ...(stored.keys ?? {}) },

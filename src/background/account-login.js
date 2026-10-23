@@ -3,7 +3,8 @@
 // authorization URL can carry a PKCE verifier, so the worker opens it and the
 // panel never sees it.
 
-import { ACCOUNT_PROVIDERS, accountFlow, beginAccountAttempt, cancelAccountAttempt, storeCredential } from '../providers/account-auth.js';
+import { ACCOUNT_ERROR_CODES, accountFlow, beginAccountAttempt, cancelAccountAttempt, storeCredential } from '../providers/account-auth.js';
+import { ACCOUNT_PROVIDERS } from '../lib/settings.js';
 
 const KEEP_ALIVE_MS = 20000;
 // A sign-in nobody finishes stops here, so its keep-alive does not run forever.
@@ -14,6 +15,19 @@ const SIGN_IN_CANCELLED = 'The sign-in was cancelled.';
 const SIGN_IN_SUPERSEDED = 'The sign-in was replaced by another one. Please try again.';
 const SIGN_IN_TIMED_OUT = 'The sign-in timed out after 15 minutes. Please start again.';
 const DEVICE_CODE_DISABLED = 'Device-code sign-in is not enabled. In ChatGPT → Settings → Security, enable device code authorization for Codex, or import auth.json instead.';
+
+/**
+ * The fixed sign-in failures, by the stable code the panel translates. The
+ * English text is the fallback the panel shows when it has no wording for the
+ * code; the upstream text never reaches the panel.
+ */
+export const SIGN_IN_FAILURES = {
+  failed: SIGN_IN_FAILED,
+  cancelled: SIGN_IN_CANCELLED,
+  superseded: SIGN_IN_SUPERSEDED,
+  'timed-out': SIGN_IN_TIMED_OUT,
+  'device-code-disabled': DEVICE_CODE_DISABLED,
+};
 // The login method each provider is asked for, by the option id pi-ai uses.
 const SELECT_OPTION = { chatgpt: 'device_code', claude: 'copy_code' };
 // The phases a sign-in is in while it still waits for the user.
@@ -37,7 +51,7 @@ export async function withKeepAlive(task) {
  * user finishes or gives up.
  */
 export async function startAccountLogin(provider, { post }) {
-  if (!ACCOUNT_PROVIDERS[provider]) throw new Error(`Unknown account provider ${provider}.`);
+  if (!ACCOUNT_PROVIDERS.includes(provider)) throw new Error(`Unknown account provider ${provider}.`);
   const attempt = newAttempt(provider);
   // A new sign-in replaces the one running for this provider.
   const running = attempts.get(provider);
@@ -45,7 +59,7 @@ export async function startAccountLogin(provider, { post }) {
     running.superseded = true;
     running.controller.abort();
     // Its auth-start is answered now, not when its flow notices the abort.
-    running.first.reject(new Error(SIGN_IN_SUPERSEDED));
+    running.first.reject(signInError(SIGN_IN_SUPERSEDED, 'superseded'));
   }
   attempts.set(provider, attempt);
   await beginAccountAttempt(provider, attempt.id);
@@ -65,6 +79,7 @@ function newAttempt(provider) {
     verificationUrl: null,
     needsCode: false,
     message: null,
+    code: null,
     cancelled: false,
     superseded: false,
     timedOut: false,
@@ -83,7 +98,13 @@ async function runAttempt(attempt, { post, first }) {
     const credential = await accountFlow(attempt.provider).login(interactionFor(attempt, { post, first }));
     const stored = await storeCredential(attempt.provider, credential, { attemptId: attempt.id });
     if (!stored) {
-      failAttempt(attempt, { post, first, message: attempt.cancelled ? SIGN_IN_CANCELLED : SIGN_IN_SUPERSEDED });
+      failAttempt(attempt, {
+        post,
+        first,
+        ...(attempt.cancelled
+          ? { message: SIGN_IN_CANCELLED, code: 'cancelled' }
+          : { message: SIGN_IN_SUPERSEDED, code: 'superseded' }),
+      });
       return;
     }
     attempt.phase = 'signed-in';
@@ -91,7 +112,7 @@ async function runAttempt(attempt, { post, first }) {
     first.resolve({ userCode: null, verificationUrl: null });
     post({ type: 'auth-success', provider: attempt.provider });
   } catch (error) {
-    failAttempt(attempt, { post, first, message: safeMessage(attempt, error) });
+    failAttempt(attempt, { post, first, ...safeFailure(attempt, error) });
   } finally {
     clearTimeout(deadline);
   }
@@ -193,6 +214,7 @@ export function accountLoginState(provider) {
     verificationUrl: attempt.verificationUrl,
     needsCode: attempt.needsCode,
     message: attempt.message,
+    code: attempt.code,
   };
 }
 
@@ -215,37 +237,54 @@ export async function cancelAccountLogin(provider) {
   attempt.cancelled = true;
   attempt.needsCode = false;
   attempt.controller.abort();
-  attempt.first.reject(new Error(SIGN_IN_CANCELLED));
+  attempt.first.reject(signInError(SIGN_IN_CANCELLED, 'cancelled'));
   cancelAccountAttempt(provider);
   return null;
 }
 
-function failAttempt(attempt, { post, first, message }) {
+function failAttempt(attempt, { post, first, message, code }) {
   attempt.phase = attempt.cancelled ? 'cancelled' : 'failed';
   attempt.message = message;
+  // The stable code, so the panel can show its own wording for it.
+  attempt.code = code;
   // auth-start is always answered, even for a sign-in another one replaced
   // (rejecting an answered one does nothing).
-  first.reject(new Error(message));
+  first.reject(signInError(message, code));
   if (attempt.superseded) return;
-  post({ type: 'auth-error', provider: attempt.provider, attemptId: attempt.id, message });
+  post({ type: 'auth-error', provider: attempt.provider, attemptId: attempt.id, message, code });
 }
 
-/** The message the panel shows; the upstream text is never shown. */
-function safeMessage(attempt, error) {
-  if (attempt.timedOut) return SIGN_IN_TIMED_OUT;
-  if (attempt.superseded) return SIGN_IN_SUPERSEDED;
+/**
+ * The message and the stable code of a failed sign-in. The upstream text is
+ * never shown; the panel translates the code.
+ */
+function safeFailure(attempt, error) {
+  if (attempt.timedOut) return { message: SIGN_IN_TIMED_OUT, code: 'timed-out' };
+  if (attempt.superseded) return { message: SIGN_IN_SUPERSEDED, code: 'superseded' };
   const text = String(error?.message ?? error ?? '');
-  if (error?.name === 'AbortError' || /cancelled/i.test(text)) return SIGN_IN_CANCELLED;
+  if (error?.name === 'AbortError' || /cancelled/i.test(text)) return { message: SIGN_IN_CANCELLED, code: 'cancelled' };
   // pi-ai's Codex flow, when the account has not turned device-code sign-in on.
-  if (/device code login is not enabled/i.test(text)) return DEVICE_CODE_DISABLED;
-  return SIGN_IN_FAILED;
+  if (/device code login is not enabled/i.test(text)) return { message: DEVICE_CODE_DISABLED, code: 'device-code-disabled' };
+  // The credential store's own fixed problems: an expired sign-in, a refresh
+  // that failed, a token that came back incomplete.
+  if (error?.code && ACCOUNT_ERROR_CODES[error.code]) return { message: error.message, code: error.code };
+  return { message: SIGN_IN_FAILED, code: 'failed' };
 }
 
-/** A promise the caller resolves later. */
+/**
+ * A promise the caller resolves later.
+ */
 function deferred() {
   let resolve;
   let reject;
   const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
   promise.catch(() => {}); // a failure nobody waits for must not warn
   return { promise, resolve, reject };
+}
+
+/** An error that carries the stable code of the failure, so the panel can translate it. */
+function signInError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }

@@ -117,11 +117,12 @@ test('a cancelled sign-in stops and says so', async () => {
   const failure = await settled('auth-error');
   assert.equal(failure.provider, 'claude');
   assert.match(failure.message, /cancelled/i);
+  assert.equal(failure.code, 'cancelled', 'the panel translates the code, not the English text');
   const state = accountLoginState('claude');
   assert.equal(state.phase, 'cancelled');
   assert.equal(state.needsCode, false);
+  assert.equal(state.code, 'cancelled');
 });
-
 test('a sign-in replaced before it showed anything still answers, and stays quiet', async () => {
   // A request that answers only by being aborted, as a real fetch does.
   const hang = (init) => new Promise((resolve, reject) => {
@@ -165,6 +166,7 @@ test('ChatGPT without device-code sign-in says how to turn it on', async () => {
   await assert.rejects(startAccountLogin('chatgpt', { post }), /device code authorization/i);
   const failure = await settled('auth-error');
   assert.match(failure.message, /auth\.json/);
+  assert.equal(failure.code, 'device-code-disabled');
 });
 
 test('a failed sign-in posts a fixed message, never what the provider answered', async () => {
@@ -173,9 +175,13 @@ test('a failed sign-in posts a fixed message, never what the provider answered',
     throw new Error(`unexpected ${url}`);
   });
 
-  await assert.rejects(startAccountLogin('chatgpt', { post }));
-  const failure = await settled('auth-error');
+  const failure = await startAccountLogin('chatgpt', { post }).catch((err) => err);
   assert.equal(failure.message, 'The sign-in failed. Please try again.');
+  assert.equal(failure.code, 'failed', 'the rejection carries the code the panel translates');
+  const posted = await settled('auth-error');
+  assert.equal(posted.message, 'The sign-in failed. Please try again.');
+  assert.equal(posted.code, 'failed');
+  assert.equal(accountLoginState('chatgpt').code, 'failed', 'the login state carries the code too');
 });
 
 test('the state of a provider without a sign-in is empty', () => {

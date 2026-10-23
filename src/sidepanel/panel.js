@@ -1,20 +1,17 @@
 import { renderMarkdown } from './markdown.js';
 import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
 import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
+import { authMessage, authView, backupAuthView, changedProviders } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
+import { request } from './request.js';
 import { bindTestButton } from './test-button.js';
 import { FEEDBACK_FORM_ID, afterDismissal, afterRating, sendFeedback, shouldAskForRating } from '../lib/feedback.js';
 import { googleAccount, signInWithGoogle, signOutOfGoogle } from '../lib/google-account.js';
-import { RECOMMENDED_SETUP, recommendedSlots } from '../lib/settings.js';
+import { ACCOUNT_PROVIDERS, PROVIDER_LABELS, RECOMMENDED_SETUP, recommendedSlots, settingsProblem, slotSettings } from '../lib/settings.js';
 import { STORE_BUILD } from '../lib/build.js';
 
 const $ = (id) => document.getElementById(id);
-const request = async (type, payload = {}) => {
-  const res = await chrome.runtime.sendMessage({ type, ...payload });
-  if (!res?.ok) throw new Error(res?.error ?? t('err.request'));
-  return res.result;
-};
 
 const ui = { thread: null, pending: [], running: false, question: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
 const MAX_NOTICES = 3;
@@ -24,7 +21,11 @@ let fastPresets = {};
 let fastModels = [];
 let fastFallbackModels = [];
 const loads = { fast: 0, fastFallback: 0 }; // newest request wins when lists load concurrently
-let authStatus = { connected: false };
+// The account providers: what the panel knows about each one's sign-in, the
+// attempt it waits for, and the message its section shows.
+const authState = { chatgpt: null, claude: null, grok: null };
+const authAttempt = { chatgpt: null, claude: null, grok: null };
+const authNote = { chatgpt: '', claude: '', grok: '' };
 
 setLanguage(resolveLanguage('auto', chrome.i18n.getUILanguage()));
 
@@ -36,11 +37,19 @@ setLanguage(resolveLanguage('auto', chrome.i18n.getUILanguage()));
 let port = null;
 let sessionId = null;
 let sessionList = [];
+// The worker was gone and the panel is connected again: its sign-in state may
+// have been lost with it.
+let reconnected = false;
 
 function connect() {
   port = chrome.runtime.connect({ name: `panel:${sessionId}` });
   port.onMessage.addListener(onEvent);
-  port.onDisconnect.addListener(() => { port = null; });
+  port.onDisconnect.addListener(() => { port = null; reconnected = true; });
+  // The worker may have restarted and lost the sign-in it was in the middle of.
+  if (reconnected) {
+    reconnected = false;
+    refreshAuthStates().catch(() => {});
+  }
 }
 
 // Picking the session (as the panel opens, or after a tab switch) takes a round
@@ -198,9 +207,22 @@ function onEvent(event) {
     case 'session-missing':
       showTabSession();
       break;
+    case 'auth-success':
+      authNote[event.provider] = '';
+      refreshAuthState(event.provider).catch(() => {});
+      break;
+    case 'auth-event':
+      // The worker opened the sign-in page, or it has a device code to show.
+      authAttempt[event.provider] = event.attemptId;
+      if (event.kind === 'device_code') showDeviceCode(event.provider, event.userCode, event.verificationUrl);
+      break;
+    case 'auth-prompt':
+      // The flow asks for the code the provider's page shows.
+      authAttempt[event.provider] = event.attemptId;
+      showCodePrompt(event.provider, true);
+      break;
     case 'auth-error':
-      $('deviceBox').hidden = true;
-      showSettingsError(event.message);
+      showAuthError(event.provider, event.message, event.code);
       break;
     default:
       break;
@@ -889,7 +911,8 @@ $('langBtn').addEventListener('click', async () => {
 function applyLanguage(language) {
   setLanguage(language);
   if (!settings) return;
-  showAuth(authStatus);
+  for (const provider of ACCOUNT_PROVIDERS) if (authState[provider]) showAuth(provider, authState[provider]);
+  syncAuthFrames();
   updateChip();
   mainForm.rerender();
   fallbackForm.rerender();
@@ -903,10 +926,16 @@ function applyLanguage(language) {
 // ---------- settings ----------
 
 const keyStore = createKeyStore();
-const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore });
-const fallbackForm = createProviderForm($('fallbackProvider'), { request, getPresets: () => presets, keyStore });
+const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames() });
+const fallbackForm = createProviderForm($('fallbackProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames() });
 keyStore.register($('fastApiKey'), () => $('fastProvider').value);
 keyStore.register($('fastFallbackApiKey'), () => $('fastFallbackProvider').value);
+// A provider's section shows that provider's sign-in, so the status of the one
+// the user picks is asked for.
+$('provider').addEventListener('change', () => {
+  const provider = mainForm.provider();
+  if (ACCOUNT_PROVIDERS.includes(provider)) refreshAuthState(provider).catch(() => {});
+});
 
 $('settingsBtn').addEventListener('click', () => toggleSettings(true));
 
@@ -971,6 +1000,8 @@ function toggleSettings(open) {
   $('chatView').hidden = open;
   $('settingsError').hidden = true;
   if (open) {
+    // The sign-in state may have changed while the panel was closed.
+    refreshAuthStates().catch(() => {});
     mainForm.loadModels();
     if ($('fallbackEnabled').checked) fallbackForm.loadModels();
     loadFastModels();
@@ -990,7 +1021,7 @@ async function init() {
   $('fastProvider').innerHTML = fastOptions;
   $('fastFallbackProvider').innerHTML = fastOptions;
   fillForm();
-  showAuth(await request('auth-status'));
+  await refreshAuthStates();
   updateChip();
   if (!activeModel()) toggleSettings(true);
   mainForm.loadModels();
@@ -999,14 +1030,20 @@ async function init() {
 
 // Tokens land in storage even when the worker that polled for them was restarted
 // and its port to this panel is gone, so storage is the reliable sign-in signal.
-// Every provider's credential has its own accountAuth.* key.
+// Every provider's credential has its own accountAuth.* key, and the keys that
+// changed name the providers they belong to.
 chrome.storage.onChanged.addListener(async (changes, area) => {
-  if (area !== 'local' || !Object.keys(changes).some((key) => key.startsWith('accountAuth.'))) return;
-  const status = await request('auth-status');
-  showAuth(status);
-  if (status.connected) {
-    $('deviceBox').hidden = true;
-    mainForm.loadModels();
+  if (area !== 'local') return;
+  const providers = changedProviders(changes);
+  if (!providers.length) return;
+  for (const provider of providers) {
+    const status = await request('auth-status', { provider }).catch(() => null);
+    if (status) showAuth(provider, status);
+  }
+  // Only the slots that use these providers need their models again.
+  for (const provider of providers) {
+    if (mainForm.provider() === provider) mainForm.loadModels();
+    if ($('fallbackEnabled').checked && fallbackForm.provider() === provider) fallbackForm.loadModels();
   }
 });
 
@@ -1016,6 +1053,7 @@ function fillForm() {
   fallbackForm.fill(settings.fallback);
   $('fallbackEnabled').checked = settings.fallback.enabled;
   syncFallback();
+  syncAuthFrames();
   $('maxSteps').value = settings.maxSteps;
   $('vision').checked = settings.vision;
   $('allowJavascript').checked = settings.allowJavascript;
@@ -1031,7 +1069,8 @@ function fillForm() {
 
 // The tested free setup: offered up front until a provider is set up, then behind a link.
 function syncRecommended(open = false) {
-  const configured = authStatus.connected || Object.values(settings.keys ?? {}).some(Boolean) || Boolean(settings.compatible.apiKey);
+  const signedIn = Object.values(authState).some((state) => state?.connected);
+  const configured = signedIn || Object.values(settings.keys ?? {}).some(Boolean) || Boolean(settings.compatible.apiKey);
   $('recommended').hidden = configured && !open;
   $('showRecommended').hidden = !$('recommended').hidden;
   $('recommendedNote').hidden = true;
@@ -1304,7 +1343,7 @@ async function showRestoredSettings(restored) {
   settings = restored;
   fillForm();
   updateChip();
-  showAuth(await request('auth-status'));
+  await refreshAuthStates();
   mainForm.loadModels();
 }
 
@@ -1314,49 +1353,235 @@ function showBackupStatus(state, text) {
 }
 
 function currentProviderSettings(s = settings) {
-  return s.provider === 'chatgpt' ? s.chatgpt : s.compatible;
+  return slotSettings(s);
 }
 
 function activeModel() {
   return currentProviderSettings().model;
 }
 
-function showAuth(status) {
-  authStatus = status;
-  if (settings) syncRecommended();
-  $('authStatus').textContent = status.connected
-    ? t('auth.connected', { who: `${status.email ?? 'ChatGPT'}${status.planType ? ` — ${status.planType}` : ''}` })
-    : t('auth.disconnected');
-  $('loginBtn').hidden = status.connected;
-  $('logoutBtn').hidden = !status.connected;
+// ---------- account sign-in ----------
+
+/**
+ * The element that holds a provider's sign-in controls, or null when no frame
+ * shows it: the main frame shows the provider of the main slot, the backup
+ * frame shows its own provider when the main one does not.
+ */
+function authRoot(provider) {
+  const main = $('mainProvider').querySelector(`[data-provider="${provider}"]`);
+  if (main && mainForm.provider() === provider) return main;
+  const backup = $('fallbackProvider').querySelector('[data-field="fallbackAuth"]');
+  if (backup && backup.dataset.provider === provider) return backup;
+  return null;
 }
 
-$('loginBtn').addEventListener('click', async () => {
+/** An element of a provider's sign-in controls. */
+function authEl(provider, name) {
+  const root = authRoot(provider);
+  return root ? root.querySelector(`[data-auth="${name}"]`) : null;
+}
+
+/** The provider whose sign-in controls an element belongs to. */
+function providerOfBlock(element) {
+  return element.closest('[data-provider]')?.dataset.provider ?? '';
+}
+
+/** What the panel shows about one provider's sign-in. */
+function showAuth(provider, status) {
+  const state = status ?? { connected: false, provider };
+  authState[provider] = state;
+  const view = authView(provider, state, authAttempt[provider], authNote[provider]);
+  authAttempt[provider] = view.attempt;
+  authNote[provider] = view.message;
+  drawAuth(provider, view);
+  if (settings) syncRecommended();
+}
+
+/** Draws a provider's sign-in controls from what the view says. */
+function drawAuth(provider, view) {
+  const root = authRoot(provider);
+  if (!root) return;
+  const el = (name) => root.querySelector(`[data-auth="${name}"]`);
+  const status = el('status');
+  if (status) status.textContent = view.status;
+  const login = el('login');
+  if (login) login.hidden = view.connected;
+  const logout = el('logout');
+  if (logout) logout.hidden = !view.connected;
+  const device = el('device');
+  if (device) {
+    if (view.deviceCode) {
+      const code = el('deviceCode');
+      if (code) code.textContent = view.deviceCode;
+      const link = el('deviceLink');
+      if (link && view.verificationUrl) link.href = view.verificationUrl;
+      device.hidden = false;
+    } else {
+      device.hidden = true;
+    }
+  }
+  const codeBox = el('code');
+  if (codeBox) codeBox.hidden = !view.needsCode;
+  const message = el('message');
+  if (message) {
+    message.textContent = view.message;
+    message.hidden = !view.message;
+  }
+}
+
+/** The message a provider's section shows under its sign-in buttons. */
+function setAuthMessage(provider, text) {
+  // A signed-in provider has nothing to complain about.
+  const connected = Boolean(authState[provider]?.connected);
+  authNote[provider] = connected ? '' : (text ?? '');
+  const box = authEl(provider, 'message');
+  if (!box) return;
+  box.textContent = authNote[provider];
+  box.hidden = !authNote[provider];
+}
+
+/** The device code of a sign-in, when the provider gave one. */
+function showDeviceCode(provider, code, url) {
+  const box = authEl(provider, 'device');
+  if (!box) return;
+  if (!code) {
+    box.hidden = true;
+    return;
+  }
+  const shown = authEl(provider, 'deviceCode');
+  if (shown) shown.textContent = code;
+  const link = authEl(provider, 'deviceLink');
+  if (link && url) link.href = url;
+  box.hidden = false;
+}
+
+/** The field the code the provider's page shows is pasted into. */
+function showCodePrompt(provider, visible) {
+  const box = authEl(provider, 'code');
+  if (box) box.hidden = !visible;
+}
+
+/** A sign-in that failed: the section says why, in the panel's language. */
+function showAuthError(provider, message, code) {
+  authAttempt[provider] = null;
+  showDeviceCode(provider, null);
+  showCodePrompt(provider, false);
+  setAuthMessage(provider, authMessage(code, message));
+  showSettingsError(authNote[provider]);
+}
+
+/** Draws every provider whose state the panel knows, after the frames changed. */
+function redrawAuth() {
+  for (const provider of ACCOUNT_PROVIDERS) {
+    if (!authState[provider]) continue;
+    const view = authView(provider, authState[provider], authAttempt[provider], authNote[provider]);
+    authAttempt[provider] = view.attempt;
+    authNote[provider] = view.message;
+    drawAuth(provider, view);
+  }
+}
+
+/**
+ * Shows the sign-in each frame needs: the main one for the main slot, and the
+ * backup's own when the main frame does not show that provider.
+ */
+function syncAuthFrames() {
+  const view = backupAuthView({
+    main: mainForm.provider(),
+    backup: fallbackForm.provider(),
+    claudeAuth: fallbackForm.claude().auth,
+  });
+  const note = $('fallbackProvider').querySelector('[data-field="accountNote"]');
+  if (note) note.hidden = !view.note;
+  const block = $('fallbackProvider').querySelector('[data-field="fallbackAuth"]');
+  if (!block) return;
+  block.hidden = !view.signIn;
+  block.dataset.provider = view.signIn ?? '';
+  const login = block.querySelector('[data-auth="login"]');
+  if (login && view.signIn) login.textContent = t(`auth.login.${view.signIn}`);
+  // The blocks moved: what each provider shows is drawn again.
+  redrawAuth();
+}
+
+/** The status of one provider, from the worker. */
+async function refreshAuthState(provider) {
+  const status = await request('auth-status', { provider });
+  showAuth(provider, status);
+  return status;
+}
+
+/** The status of every account provider, from the worker. */
+async function refreshAuthStates() {
+  const statuses = await Promise.all(ACCOUNT_PROVIDERS.map((provider) => request('auth-status', { provider }).catch(() => null)));
+  ACCOUNT_PROVIDERS.forEach((provider, i) => { if (statuses[i]) showAuth(provider, statuses[i]); });
+}
+
+async function startLogin(provider) {
   $('settingsError').hidden = true;
+  setAuthMessage(provider, '');
   try {
-    const { userCode, verificationUrl } = await request('auth-start');
-    $('deviceCode').textContent = userCode;
-    $('deviceLink').href = verificationUrl;
-    $('deviceBox').hidden = false;
+    const { userCode, verificationUrl } = await request('auth-start', { provider });
+    if (userCode) showDeviceCode(provider, userCode, verificationUrl);
+  } catch (err) {
+    // The worker names the failure with a stable code; the panel shows its own
+    // wording for it, the same one the auth-error message carries.
+    setAuthMessage(provider, authMessage(err.code, err.message));
+    showSettingsError(authNote[provider]);
+  }
+}
+
+async function signOutProvider(provider) {
+  try {
+    showAuth(provider, await request('auth-logout', { provider }));
   } catch (err) {
     showSettingsError(err.message);
   }
-});
-$('cancelLoginBtn').addEventListener('click', async () => {
-  await request('auth-cancel');
-  $('deviceBox').hidden = true;
-});
-$('logoutBtn').addEventListener('click', async () => showAuth(await request('auth-logout')));
+}
+
+async function cancelLogin(provider) {
+  await request('auth-cancel', { provider }).catch(() => {});
+  authAttempt[provider] = null;
+  showDeviceCode(provider, null);
+  showCodePrompt(provider, false);
+  setAuthMessage(provider, '');
+}
+
+async function submitCode(provider) {
+  const input = authEl(provider, 'codeInput');
+  const value = input?.value.trim() ?? '';
+  if (!value) return;
+  try {
+    await request('auth-input', { provider, attemptId: authAttempt[provider], value });
+    if (input) input.value = '';
+  } catch (err) {
+    setAuthMessage(provider, authMessage(err.code, err.message));
+    // The attempt may be gone: the status says whether it is still running.
+    refreshAuthState(provider).catch(() => {});
+  }
+}
+
+for (const name of ['login', 'logout', 'cancel', 'codeSubmit']) {
+  for (const button of document.querySelectorAll(`[data-auth="${name}"]`)) {
+    button.addEventListener('click', () => {
+      const provider = providerOfBlock(button);
+      if (!provider) return;
+      if (name === 'login') startLogin(provider);
+      else if (name === 'logout') signOutProvider(provider);
+      else if (name === 'cancel') cancelLogin(provider);
+      else submitCode(provider);
+    });
+  }
+}
+
 $('importBtn').addEventListener('click', async () => {
   try {
-    showAuth(await request('auth-import', { text: $('authJson').value }));
+    showAuth('chatgpt', await request('auth-import', { text: $('authJson').value }));
     $('authJson').value = '';
     mainForm.loadModels(true);
   } catch (err) {
     showSettingsError(err.message);
   }
 });
-
 $('saveBtn').addEventListener('click', async () => {
   const next = readForm();
   const problem = settingsProblem(next);
@@ -1370,20 +1595,9 @@ $('saveBtn').addEventListener('click', async () => {
   toggleSettings(false);
 });
 
-/** The i18n key of the first thing that blocks saving, or null. */
-function settingsProblem(next) {
-  if (!currentProviderSettings(next).model) return 'err.pickModel';
-  if (next.replyLanguage.enabled && !next.replyLanguage.language) return 'err.pickReplyLanguage';
-  if (next.fallback.enabled && !currentProviderSettings(next.fallback).model) return 'err.fallbackModel';
-  if (next.fast.enabled && !next.fast.apiKey) return 'err.fastKey';
-  if (next.fast.enabled && !next.fast.baseUrl) return 'err.fastUrl';
-  if (next.fast.enabled && next.fast.fallback.enabled && !next.fast.fallback.apiKey) return 'err.fastFallbackKey';
-  return null;
-}
-
 function updateChip() {
   const p = currentProviderSettings();
-  const label = settings.provider === 'chatgpt' ? 'ChatGPT' : presets[settings.compatible.preset]?.label ?? 'API';
+  const label = PROVIDER_LABELS[settings.provider] ?? presets[settings.compatible.preset]?.label ?? 'API';
   const fastTag = settings.fast.enabled && settings.fast.apiKey ? ' · ⚡' : '';
   $('modelChip').textContent = p.model ? `${label} · ${p.model}${p.effort ? ` · ${p.effort}` : ''}${fastTag}` : t('model.none');
 }

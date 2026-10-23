@@ -6,16 +6,14 @@
 
 import { anthropicOAuth, openaiCodexOAuth, xaiOAuth } from '../vendor/pi-oauth.js';
 import { chatgptIdentity } from '../lib/jwt.js';
+import { legacyCredential } from '../lib/credentials.js';
+import { ACCOUNT_PROVIDERS } from '../lib/settings.js';
 
-/** The providers this extension can sign in to, and the pi-ai flow each uses. */
-export const ACCOUNT_PROVIDERS = {
-  chatgpt: { flow: 'openaiCodexOAuth', label: 'ChatGPT' },
-  claude: { flow: 'anthropicOAuth', label: 'Claude' },
-  grok: { flow: 'xaiOAuth', label: 'Grok' },
-};
+/** The pi-ai OAuth flow each account provider signs in with. */
+const ACCOUNT_FLOWS = { chatgpt: 'openaiCodexOAuth', claude: 'anthropicOAuth', grok: 'xaiOAuth' };
 
 /** The storage key of every provider's credential record. */
-export const ACCOUNT_STORAGE_KEYS = Object.keys(ACCOUNT_PROVIDERS).map((provider) => `accountAuth.${provider}`);
+export const ACCOUNT_STORAGE_KEYS = ACCOUNT_PROVIDERS.map((provider) => `accountAuth.${provider}`);
 
 const LEGACY_KEY = 'chatgptAuth';
 // A token is refreshed when less than this is left, so pi-ai's own five-minute
@@ -29,13 +27,28 @@ const DEAD_TOKEN_STATUSES = [400, 401, 403];
 const REFRESH_FAILED = 'The sign-in could not be refreshed. Please try again.';
 const SIGN_IN_EXPIRED = 'The sign-in expired. Please sign in again.';
 const SIGN_IN_INCOMPLETE = 'The sign-in is incomplete. Please sign in again.';
+const NOT_CONNECTED = 'The account is not connected. Open settings and sign in.';
+
+/**
+ * The fixed sign-in problems, by a stable code. The panel translates the code
+ * into its own wording; the English text here is only the fallback it shows
+ * when it has no wording for the code.
+ */
+export const ACCOUNT_ERROR_CODES = {
+  'refresh-failed': REFRESH_FAILED,
+  expired: SIGN_IN_EXPIRED,
+  incomplete: SIGN_IN_INCOMPLETE,
+  'not-connected': NOT_CONNECTED,
+};
 
 /** A sign-in problem the panel can show; `retryable` says whether trying again can help. */
 export class AccountAuthError extends Error {
-  constructor(message, { retryable = true } = {}) {
+  constructor(message, { retryable = true, code = '' } = {}) {
     super(message);
     this.name = 'AccountAuthError';
     this.retryable = retryable;
+    // The stable code of this problem, so the panel can translate it.
+    this.code = code;
   }
 }
 
@@ -48,7 +61,7 @@ export function setAccountFlows(replacement) {
 
 /** The pi-ai OAuth flow of a provider. */
 export function accountFlow(provider) {
-  const name = knownProvider(provider).flow;
+  const name = ACCOUNT_FLOWS[knownProvider(provider)];
   const flow = flows[name];
   if (!flow) throw new AccountAuthError(`Unknown account provider ${provider}.`, { retryable: false });
   return flow;
@@ -56,9 +69,8 @@ export function accountFlow(provider) {
 
 /** The provider must be one this extension knows, or a key of junk would be written. */
 function knownProvider(provider) {
-  const known = ACCOUNT_PROVIDERS[provider];
-  if (!known) throw new AccountAuthError(`Unknown account provider ${provider}.`, { retryable: false });
-  return known;
+  if (!ACCOUNT_PROVIDERS.includes(provider)) throw new AccountAuthError(`Unknown account provider ${provider}.`, { retryable: false });
+  return provider;
 }
 
 // One write at a time per provider, so a read-modify-write is never interleaved.
@@ -95,18 +107,10 @@ async function migrateLegacyChatgpt() {
   const old = legacy[LEGACY_KEY];
   if (!old) return;
   const record = await readRecord('chatgpt');
+  const credential = legacyCredential(old);
   // A signed-out record ({ credential: null }) is no reason to drop the old sign-in.
-  if (!record?.credential && old.accessToken) {
-    await writeRecord('chatgpt', (record?.generation ?? 0) + 1, {
-      type: 'oauth',
-      access: old.accessToken,
-      refresh: old.refreshToken,
-      expires: old.expiresAt,
-      accountId: old.accountId ?? null,
-      email: old.email ?? null,
-      planType: old.planType ?? null,
-      idToken: old.idToken ?? null,
-    });
+  if (!record?.credential && credential) {
+    await writeRecord('chatgpt', (record?.generation ?? 0) + 1, credential);
   }
   await chrome.storage.local.remove(LEGACY_KEY);
 }
@@ -166,7 +170,7 @@ export async function getValidCredential(provider, { forceRefresh = false, signa
   await ensureMigrated(provider);
   const record = await readRecord(provider);
   const credential = record?.credential ?? null;
-  if (!credential) throw new AccountAuthError(notConnected(provider), { retryable: false });
+  if (!credential) throw new AccountAuthError(NOT_CONNECTED, { retryable: false, code: 'not-connected' });
   if (!forceRefresh && isFresh(credential)) return credential;
   try {
     return await startRefresh(provider, record, { signal });
@@ -198,7 +202,7 @@ async function refreshCredential(provider, record, { signal }) {
   if (!isUsable(refreshed)) {
     // pi-ai's Anthropic refresh turns an HTTP 200 with an empty body into
     // undefined tokens; the old record stays and the next try may work.
-    throw new AccountAuthError(REFRESH_FAILED, { retryable: true });
+    throw new AccountAuthError(REFRESH_FAILED, { retryable: true, code: 'refresh-failed' });
   }
   return storeRefreshed(provider, record, refreshed);
 }
@@ -211,7 +215,7 @@ function storeRefreshed(provider, record, refreshed) {
       // A sign-out or a newer sign-in happened while the refresh was running.
       const latest = current?.credential ?? null;
       if (latest && isUsable(latest)) return latest;
-      throw new AccountAuthError(notConnected(provider), { retryable: false });
+      throw new AccountAuthError(NOT_CONNECTED, { retryable: false, code: 'not-connected' });
     }
     // pi-ai returns only the tokens; what the record knew besides (email, plan,
     // account id) is kept unless the refresh says otherwise.
@@ -232,7 +236,7 @@ async function refreshError(provider, record, error) {
   return enqueue(provider, async () => {
     const current = await readRecord(provider);
     if (sameRecord(current, record)) await writeRecord(provider, current.generation, null);
-    return new AccountAuthError(SIGN_IN_EXPIRED, { retryable: false });
+    return new AccountAuthError(SIGN_IN_EXPIRED, { retryable: false, code: 'expired' });
   });
 }
 
@@ -322,10 +326,10 @@ export async function storeCredential(provider, credential, { attemptId = null }
   return enqueue(provider, async () => {
     const record = await readRecord(provider);
     if (attemptId && !mayStore(provider, attemptId, record)) return null;
-    if (!hasTokens(credential)) throw new AccountAuthError(SIGN_IN_INCOMPLETE, { retryable: false });
+    if (!hasTokens(credential)) throw new AccountAuthError(SIGN_IN_INCOMPLETE, { retryable: false, code: 'incomplete' });
     // A login must bring a usable token; an imported one may be stale and is
     // refreshed on first use.
-    if (attemptId && !isUsable(credential)) throw new AccountAuthError(SIGN_IN_INCOMPLETE, { retryable: true });
+    if (attemptId && !isUsable(credential)) throw new AccountAuthError(SIGN_IN_INCOMPLETE, { retryable: true, code: 'incomplete' });
     await writeRecord(provider, (record?.generation ?? 0) + 1, credential);
     return credential;
   });
@@ -336,8 +340,4 @@ function mayStore(provider, attemptId, record) {
   const attempt = attempts.get(provider);
   if (!attempt || attempt.id !== attemptId) return false;
   return (record?.generation ?? 0) === attempt.generation;
-}
-
-function notConnected(provider) {
-  return `${ACCOUNT_PROVIDERS[provider]?.label ?? 'The account'} is not connected. Open settings and sign in.`;
 }

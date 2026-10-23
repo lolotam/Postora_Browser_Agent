@@ -6,9 +6,10 @@
 
 | المزوّد | طريقة الدخول | ملاحظات |
 |---|---|---|
-| **اشتراك ChatGPT** (Plus / Pro / Business) | تسجيل دخول بحساب ChatGPT (نفس طريقة Codex CLI) | الموديلات ومستويات التفكير بتتحمّل تلقائيًا من حسابك |
-| **Anthropic Claude** | تسجيل دخول بحساب Claude (Pro / Team / Max) أو API key من console.anthropic.com | دعم تسجيل الدخول المباشر بالحساب أو مفتاح API |
-| **xAI Grok** | تسجيل دخول بحساب Grok (اشتراك SuperGrok) أو API key من console.x.ai | دعم تسجيل الدخول المباشر بالحساب أو مفتاح API منفصل |
+| **اشتراك ChatGPT** (Plus / Pro / Business) | تسجيل دخول بحساب ChatGPT **برمز الجهاز** | يظهر رمز مؤقت في اللوحة تكتبه في صفحة التفعيل، أو تستورد `auth.json` من Codex CLI |
+| **Claude** (Pro / Max) | تسجيل دخول بحساب Claude **بلصق الرمز** الذي يظهر في Claude بعد الموافقة، أو مفتاح Anthropic API | تفتح الإضافة claude.ai، وتوافق على الطلب، ثم تنسخ الرمز وتلصقه في اللوحة |
+| **Grok** (SuperGrok / X Premium) | تسجيل دخول بحساب Grok **برمز الجهاز**، أو مفتاح xAI API | يعمل مفتاح xAI عبر الإعداد المسبق xAI. ⚠️ لم يُتحقق بعد من مسار حساب Grok على حساب حقيقي |
+| **MiniMax** | مفتاح API: إعداد للدفع حسب الاستخدام، وإعداد لـ Coding Plan (مفاتيح `sk-cp-`) | لكل منهما مفتاح خاص، والموديل الافتراضي `MiniMax-M3.1-Flash` |
 | **Z.ai GLM** | API key (أو مفتاح GLM Coding Plan) | فيه preset لـ Coding Plan و preset للـ API العادي |
 | **Google Gemini** | API key من Google AI Studio | عن طريق واجهة Gemini المتوافقة مع OpenAI، ومستويات التفكير مدعومة |
 | **DeepSeek** | API key من platform.deepseek.com | التفكير بيتحدد باختيار الموديل (مفيش مستويات) |
@@ -95,24 +96,28 @@ Chrome بيمسح كل بيانات الإضافة لو **شلتها** (Remove).
 
 ## ربط الحسابات والاشتراكات (ChatGPT / Claude / Grok)
 
-1. من الإعدادات اختار المزوّد المراد وطريقة الدخول بالحساب (مثل **اشتراك ChatGPT**، أو **حساب Claude**، أو **حساب Grok**).
-2. **ChatGPT:** اضغط **تسجيل الدخول بحساب ChatGPT** — هتتفتح صفحة `auth.openai.com/codex/device`، سجّل دخول واكتب الكود الظاهر باللوحة (أو استورد `auth.json` من Codex CLI).
-3. **Claude:** تسجيل دخول بحساب Claude (عبر جلسة المتصفح أو OAuth/Session Token) للوصول المباشر لموديلات Claude بدون وسيط.
-4. **Grok:** تسجيل دخول بحساب Grok / SuperGrok (عبر جلسة الحساب أو OAuth/Session Token) للاستفادة من اشتراكك مباشرة.
-5. بعد نجاح الاتصال، قائمة الموديلات ومستويات التفكير بتتحمّل تلقائيًا.
+1. من الإعدادات اختر المزوّد المطلوب وطريقة الدخول بالحساب (ChatGPT أو Claude أو Grok).
+2. **ChatGPT:** اضغط **تسجيل الدخول بحساب ChatGPT** — تُفتح صفحة `auth.openai.com/codex/device`، وسجّل الدخول واكتب الرمز الظاهر في اللوحة (أو استورد `auth.json` من Codex CLI).
+3. **Claude:** اضغط **تسجيل الدخول بحساب Claude** — تُفتح صفحة claude.ai، وسجّل الدخول ووافق على الطلب، ثم يظهر لك رمز (شكله `code#state`): انسخه والصقه في خانة الرمز في اللوحة واضغط **إرسال الرمز**. وإن كنت لا تريد استخدام الحساب، فاختر **مفتاح Anthropic API** في القسم نفسه.
+4. **Grok:** اضغط **تسجيل الدخول بحساب Grok** — تُفتح صفحة `auth.x.ai`، وسجّل الدخول واكتب الرمز الظاهر في اللوحة. وإن كان لديك مفتاح xAI، استخدمه من الإعداد المسبق **xAI (Grok)** بدل الحساب.
+5. بعد نجاح الاتصال، تُحمَّل قائمة الموديلات ومستويات التفكير تلقائيًا.
 
-## الأدوات اللي الوكيل بيستخدمها
+يحفظ كل تسجيل دخول توكنه في `chrome.storage.local` على جهازك، ويستخدم المزوّد الاحتياطي تسجيل الدخول نفسه، فلا حاجة إلى تسجيل دخول آخر.
+
+## الأدوات التي يستخدمها الوكيل
 
 `read_page` · `navigate` · `web_search` · `click` · `click_at` · `type_text` · `press_key` · `select_option` · `hover` · `scroll` · `get_text` · `screenshot` · `history` · `wait` · `list_tabs` · `switch_tab` · `open_tab` · `close_tab` · `run_javascript` (اختياري) · `ask_user` · `done`
 
-- الضغط والكتابة بيتعملوا عن طريق Chrome DevTools Protocol (`chrome.debugger`)، فبيبقوا أحداث حقيقية زي المستخدم بالظبط وبيشتغلوا على المواقع اللي بتتجاهل الأحداث المصطنعة.
-- قبل الشراء/الدفع/إرسال رسائل/حذف بيانات/كتابة باسوردات، الوكيل **لازم** يسألك ويستنى موافقتك (`ask_user`).
-- محتوى الصفحات بيتعامل معاه كبيانات مش أوامر (حماية من prompt injection) — ودي حماية على مستوى الـ prompt مش ضمان كامل.
+- يتم النقر والكتابة عبر Chrome DevTools Protocol (`chrome.debugger`)، فتكون أحداثًا حقيقية كالتي يصدرها المستخدم، وتعمل على المواقع التي تتجاهل الأحداث المصطنعة.
+- قبل الشراء أو الدفع أو إرسال الرسائل أو حذف البيانات أو كتابة كلمات المرور، **يجب** أن يسألك الوكيل وينتظر موافقتك (`ask_user`).
+- يُعامَل محتوى الصفحات على أنه بيانات لا أوامر (حماية من prompt injection) — وهذه حماية على مستوى الـ prompt وليست ضمانًا كاملًا.
 
-## حاجات لازم تعرفها (بصراحة)
+## أمور يجب أن تعرفها (بصراحة)
 
-- **استخدام اشتراكات وحسابات الـ AI (مثل ChatGPT وClaude وGrok) برّه التطبيقات الرسمية منطقة رمادية.** الإكستنشن بيتصل بواجهات الحسابات والـ OAuth/Session مباشرة دون رعاية رسمية من أصحابها. أي مزوّد ممكن يغيّر واجهاته في أي وقت، والاستخدام بيتحسب من حدود خطتك.
-- **مسارات الاتصال بالحسابات** تُبنى وتُختبر بعناية، وتظهر أي أخطاء أو تجديد للتوكنز مباشرة في الواجهة.
+- **استخدام اشتراكات وحسابات الذكاء الاصطناعي (مثل ChatGPT وClaude وGrok) خارج التطبيقات الرسمية منطقة رمادية.** تتصل الإكستنشن بواجهات الحسابات وواجهات OAuth مباشرة دون رعاية رسمية من أصحابها. وأي مزوّد قد يغيّر واجهاته في أي وقت، والاستخدام يُحتسب ضمن حدود خطتك.
+- **يتطلب تسجيل الدخول إلى Claude لصق الرمز** الذي يظهر في Claude بعد الموافقة. تفتح الإكستنشن الصفحة بنفسها (لأن رابط التفويض يحتوي على PKCE verifier لا يجب أن يصل إلى اللوحة)، ويُستخدم الرمز مرة واحدة فقط وينتهي بانتهاء صلاحيته.
+- **لم يُتحقق بعد من مسار حساب Grok على حساب SuperGrok / X Premium حقيقي** — النقل المستخدم هو نفسه الذي تستخدمه pi-ai، ولكن لم تُجرَ تجربة عملية على حساب حيّ.
+- **تُبنى مسارات الاتصال بالحسابات وتُختبر بعناية**، وتظهر أي أخطاء أو تجديد للتوكنز مباشرة في الواجهة.
 - لما الوكيل يشتغل، كروم بيظهر شريط "Postora Browser Agent started debugging this browser" — ده طبيعي ومطلوب لـ `chrome.debugger`.
 - كروم مش بيسمح لأي إكستنشن يتحكم في صفحات `chrome://` و Chrome Web Store.
 - التوكنز ومفاتيح الـ API متخزنة في `chrome.storage.local` على جهازك (مش متشفرة) ومش بتتبعت لأي حد غير المزوّد اللي اخترته.
@@ -123,17 +128,20 @@ Chrome بيمسح كل بيانات الإضافة لو **شلتها** (Remove).
 ```
 manifest.json
 src/
-  background/service-worker.js   تنسيق التشغيل + الرسائل مع اللوحة + تسجيل الدخول
+  background/service-worker.js   تنسيق التشغيل + الرسائل مع اللوحة
+  background/account-login.js    تشغيل تسجيل دخول الحسابات (ChatGPT / Claude / Grok)
   agent/agent.js                 حلقة observe → decide → act
   agent/tools.js                 تعريف الأدوات وتنفيذها
   agent/prompt.js                تعليمات النظام وقواعد الأمان
   browser/controller.js          التحكم عبر CDP (ضغط، كتابة، سكرول، سكرين شوت)
   browser/page-scripts.js        سكربتات بتتحقن في الصفحة (ترقيم العناصر، قراءة النص)
-  providers/chatgpt-auth.js      تسجيل دخول ChatGPT بالـ device code + refresh
-  providers/claude-auth.js       تسجيل دخول Claude بالحساب وجلب الجلسة
-  providers/grok-auth.js         تسجيل دخول Grok بالحساب (SuperGrok)
+  providers/account-auth.js      تخزين توكنز الحسابات (مفتاح لكل مزوّد) + تجديدها
+  providers/chatgpt-auth.js      استيراد auth.json من Codex CLI
+  providers/anthropic.js         Claude: Anthropic Messages API بحساب Claude أو مفتاح API
+  providers/responses.js         Responses API (ChatGPT Codex + حساب Grok)
   providers/chatgpt.js           Responses API على backend Codex
-  providers/openai-compatible.js Chat Completions (Grok / GLM / OpenAI / OpenRouter)
+  providers/openai-compatible.js Chat Completions (Grok / GLM / OpenAI / OpenRouter / MiniMax؛ Claude عبر OpenRouter فقط)
+  vendor/pi-oauth.js             مسارات OAuth من pi-ai (MIT) — للتسجيل الدخول وتجديد التوكنات فقط
   fast/jev-client.js             TypeSafe System One API (POST /v1/systemone)
   fast/gateway-decision-client.js Jev عن طريق Vercel (POST /v4/ai/decision-model)
   fast/chat-judge-client.js      نفس أسئلة Jev لموديل محادثة (لو اسم الموديل مش decision model)
@@ -151,3 +159,5 @@ npm install
 npm run e2e       # بيحمّل الإكستنشن في Chromium مع موديلات وهمية: سيناريو LLM كامل + سيناريو Jev السريع + سيناريو الطبقة السريعة بموديل محادثة (LLM بيتنادى مرة واحدة بس)
 # لو Chromium بتاع Playwright مش متثبت: CHROMIUM_PATH=/path/to/chrome npm run e2e
 ```
+
+مسارات تسجيل الدخول وتجديد التوكنات مأخوذة من [pi-ai](https://github.com/earendil-works/pi) برخصة MIT — انظر [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
