@@ -91,6 +91,27 @@ test('CompatibleSession maps effort to GLM thinking or reasoning_effort', () => 
   assert.equal('reasoning_effort' in plain, false);
 });
 
+test('CompatibleSession asks MiniMax to split the thinking out, and grades it on the model that reads it', () => {
+  const base = { baseUrl: 'https://api.minimax.io/v1', apiKey: 'k', systemPrompt: 's', tools: [] };
+  const flash = new CompatibleSession({ ...base, model: 'MiniMax-M3.1-Flash', effort: 'high', thinkingStyle: 'minimax' }).requestBody('auto');
+  assert.equal(flash.reasoning_split, true);
+  assert.equal(flash.reasoning_effort, 'high');
+  // The model id is read whatever its case is.
+  const lower = new CompatibleSession({ ...base, model: 'minimax-m3.1-flash', effort: 'xhigh', thinkingStyle: 'minimax' }).requestBody('auto');
+  assert.equal(lower.reasoning_effort, 'xhigh');
+  // The other MiniMax models think at their own depth and ignore ours.
+  const other = new CompatibleSession({ ...base, model: 'MiniMax-M2.7', effort: 'high', thinkingStyle: 'minimax' }).requestBody('auto');
+  assert.equal(other.reasoning_split, true);
+  assert.equal(other.reasoning_effort, undefined);
+  // Nor does a model whose name only starts like it.
+  const lite = new CompatibleSession({ ...base, model: 'MiniMax-M3.1-Flash-lite', effort: 'high', thinkingStyle: 'minimax' }).requestBody('auto');
+  assert.equal(lite.reasoning_effort, undefined);
+  // Without an effort only the split is asked for.
+  const noEffort = new CompatibleSession({ ...base, model: 'MiniMax-M3.1-Flash', effort: '', thinkingStyle: 'minimax' }).requestBody('auto');
+  assert.equal(noEffort.reasoning_split, true);
+  assert.equal(noEffort.reasoning_effort, undefined);
+});
+
 test('OpenCode requests carry one stable session id per conversation; other providers get none', async () => {
   const seen = [];
   globalThis.fetch = async (url, init) => {

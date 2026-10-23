@@ -1,7 +1,9 @@
 // One API key per provider for the whole app: a key entered for OpenRouter in the
 // main slot is used by the backup and the fast layer whenever they pick
 // OpenRouter too. Zen and Go are two OpenCode gateways on the same account key.
-// Custom endpoints differ per URL, so their keys are never shared.
+// Custom endpoints differ per URL, so their keys are never shared. Every other
+// provider keeps its own group, so the two MiniMax plans (pay-as-you-go and the
+// coding plan) never share a key.
 
 const SHARED_GROUP = { 'opencode-zen': 'opencode', 'opencode-go': 'opencode' };
 

@@ -5,7 +5,9 @@ import { STORE_BUILD } from './build.js';
 
 // Main model and backup providers (both use this list). thinkingStyle 'none' sends
 // no reasoning parameter, for APIs whose models reject reasoning_effort; 'gemini'
-// offers no Off, because Gemini 3 thinking cannot be turned off.
+// offers no Off, because Gemini 3 thinking cannot be turned off; 'minimax' always
+// asks for the thinking to be split out of the answer, because MiniMax cannot
+// stop thinking.
 export const COMPATIBLE_PRESETS = {
   openai: { label: 'OpenAI API key', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5', thinkingStyle: 'reasoning_effort', usage: true },
   gemini: { label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash', thinkingStyle: 'gemini', usage: true },
@@ -18,6 +20,10 @@ export const COMPATIBLE_PRESETS = {
   'opencode-go': { label: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', model: 'glm-5.3', thinkingStyle: 'none' },
   'zai-coding': { label: 'Z.ai GLM Coding Plan', baseUrl: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-4.6', thinkingStyle: 'glm' },
   zai: { label: 'Z.ai GLM (API)', baseUrl: 'https://api.z.ai/api/paas/v4', model: 'glm-4.6', thinkingStyle: 'glm' },
+  // MiniMax always thinks; reasoning_split moves the thinking out of the answer.
+  // The coding plan bills separately, so it is a preset of its own with its own key.
+  minimax: { label: 'MiniMax', baseUrl: 'https://api.minimax.io/v1', model: 'MiniMax-M3.1-Flash', thinkingStyle: 'minimax', usage: true, models: ['MiniMax-M3.1-Flash'] },
+  'minimax-coding-plan': { label: 'MiniMax Coding Plan', baseUrl: 'https://api.minimax.io/v1', model: 'MiniMax-M3.1-Flash', thinkingStyle: 'minimax', usage: true, models: ['MiniMax-M3.1-Flash'] },
   custom: { label: 'Custom (OpenAI-compatible)', baseUrl: 'http://localhost:11434/v1', model: '', thinkingStyle: 'reasoning_effort' },
 };
 
@@ -33,6 +39,16 @@ const NOT_CHAT_COMPLETIONS = {
 export function chatModelsFor(presetId, models) {
   const excluded = NOT_CHAT_COMPLETIONS[presetId];
   return excluded ? models.filter((m) => !excluded.test(m.id)) : models;
+}
+
+/**
+ * The models a slot shows: the provider's own list, or the fixed list of the
+ * preset when the provider serves none (MiniMax has no /models).
+ */
+export function slotModels(preset, list) {
+  if (list.length) return chatModelsFor(preset, list);
+  const fixed = COMPATIBLE_PRESETS[preset]?.models ?? [];
+  return fixed.map((id) => ({ id, name: id, efforts: [], decision: false }));
 }
 
 // Fast-layer providers serve decision models (Jev).

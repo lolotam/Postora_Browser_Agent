@@ -158,7 +158,11 @@ test('ChatgptSession moves the system prompt into input when instructions are re
   store.chatgptAuth = { accessToken, refreshToken: 'rt', accountId: 'acc_9', expiresAt: Date.now() + 3600e3 };
   stubFetch((_url, _init, n) => (n === 1
     ? Response.json({ detail: 'Instructions are not valid' }, { status: 400 })
-    : sseResponse([{ type: 'response.output_item.done', item: { type: 'message', content: [{ type: 'output_text', text: 'ok' }] } }])));
+    // A turn only counts once the response completed, so the stream says so.
+    : sseResponse([
+      { type: 'response.output_item.done', item: { type: 'message', content: [{ type: 'output_text', text: 'ok' }] } },
+      { type: 'response.completed', response: { usage: { total_tokens: 3 } } },
+    ])));
   const session = new ChatgptSession({ model: 'gpt-x', effort: '', systemPrompt: 'SYS', tools: [] });
   session.addUserMessage('task');
   const turn = await session.next({});
@@ -174,4 +178,12 @@ test('ChatgptSession reports plan usage limits clearly', async () => {
   const session = new ChatgptSession({ model: 'gpt-x', effort: '', systemPrompt: 'SYS', tools: [] });
   session.addUserMessage('task');
   await assert.rejects(session.next({}), /usage limit reached for this plan/);
+});
+
+test('ChatgptSession says what a refusal of the Codex backend means', async () => {
+  store.chatgptAuth = { accessToken, refreshToken: 'rt', accountId: 'acc_9', expiresAt: Date.now() + 3600e3 };
+  stubFetch(() => Response.json({ error: { message: 'no Codex access' } }, { status: 403 }));
+  const session = new ChatgptSession({ model: 'gpt-x', effort: '', systemPrompt: 'SYS', tools: [] });
+  session.addUserMessage('task');
+  await assert.rejects(session.next({}), /refused the request \(HTTP 403\)\. The plan may not include Codex access/);
 });

@@ -1,20 +1,15 @@
 // Model access through a ChatGPT subscription: the Codex backend speaks the
 // OpenAI Responses API at chatgpt.com/backend-api/codex.
 
-import { requestJson } from '../lib/json.js';
-import { MODEL_IDLE_MS, fetchModel, readSse } from '../lib/sse.js';
-import { ProviderHttpError, readError, withRetry } from '../lib/retry.js';
+import { ResponsesSession } from './responses.js';
 import { getValidAuth } from './chatgpt-auth.js';
-import { kindOf } from '../agent/tool-kinds.js';
-import { NOTEBOOK_HEADER, NOTE_SAVED_ARGS, trimKeepingNotebook, withoutNotebook } from '../agent/notebook.js';
+import { providerErrorMessage } from '../lib/failure.js';
 
 const BASE_URL = 'https://chatgpt.com/backend-api/codex';
 // The backend drops models newer than the asking client, so ask as the newest
 // Codex CLI release on npm. The fallback only matters when npm is unreachable.
 const FALLBACK_CLIENT_VERSION = '0.161.0';
 const CLIENT_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
-const KEEP_FULL_OBSERVATIONS = 2;
-const TRIMMED_OBSERVATION_CHARS = 400;
 
 async function authHeaders(forceRefresh = false) {
   const auth = await getValidAuth({ forceRefresh });
@@ -59,197 +54,35 @@ async function codexClientVersion() {
   }
 }
 
-export class ChatgptSession {
-  constructor({ model, effort, systemPrompt, tools, notify = null }) {
-    this.model = model;
-    this.effort = effort;
-    this.notify = notify;
-    this.systemPrompt = systemPrompt;
-    this.tools = tools;
-    this.input = [];
-    this.pendingImages = [];
-    this.sessionId = crypto.randomUUID();
-    this.instructionsAsField = true;
-  }
-
-  addUserMessage(text, images = []) {
-    this.input.push(userMessage(text, images));
-  }
-
-  addToolResult(callId, output, images = []) {
-    this.input.push({ type: 'function_call_output', call_id: callId, output });
-    this.pendingImages.push(...images);
-  }
-
-  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }) {
-    if (this.pendingImages.length) {
-      this.input.push(userMessage('Screenshot returned by the last tool call:', this.pendingImages));
-      this.pendingImages = [];
-    }
-    compactInput(this.input);
-    this.retryWaitMs = 0;
-
-    const response = await this.post(toolChoice, signal);
-    const items = [];
-    let usage = null;
-    for await (const { data } of readSse(response, signal)) {
-      if (data === '[DONE]') break;
-      const event = JSON.parse(data);
-      switch (event.type) {
-        case 'response.output_text.delta':
-          onEvent({ type: 'text-delta', delta: event.delta });
-          break;
-        case 'response.reasoning_summary_text.delta':
-          onEvent({ type: 'reasoning-delta', delta: event.delta });
-          break;
-        case 'response.reasoning_summary_part.done':
-          onEvent({ type: 'reasoning-delta', delta: '\n\n' });
-          break;
-        case 'response.output_item.done':
-          items.push(event.item);
-          break;
-        case 'response.completed':
-          usage = event.response?.usage ?? null;
-          break;
-        case 'response.failed':
-        case 'response.incomplete':
-          throw new Error(event.response?.error?.message ?? event.response?.incomplete_details?.reason ?? 'The model response failed.');
-        case 'error':
-          throw new Error(event.message ?? event.error?.message ?? 'The model returned an error.');
-        default:
-          break;
-      }
-    }
-
-    this.input.push(...items.map(withoutId));
-    return { ...parseOutput(items, usage), retryWaitMs: this.retryWaitMs };
-  }
-
-  async post(toolChoice, signal, { refreshed = false, deadline = Date.now() + MODEL_IDLE_MS } = {}) {
-    const body = {
-      model: this.model,
-      instructions: this.instructionsAsField ? this.systemPrompt : undefined,
-      input: this.instructionsAsField
-        ? this.input
-        : [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: this.systemPrompt }] }, ...this.input],
-      tools: this.tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })),
-      tool_choice: toolChoice,
-      parallel_tool_calls: true, // a form's fields and its submit can come in one turn
-      reasoning: this.effort ? { effort: this.effort, summary: 'auto' } : { summary: 'auto' },
-      store: false,
-      stream: true,
-      include: ['reasoning.encrypted_content'],
-      prompt_cache_key: this.sessionId,
-    };
-    const headers = {
-      ...(await authHeaders(refreshed)),
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      'OpenAI-Beta': 'responses=experimental',
-      'session-id': this.sessionId,
-      session_id: this.sessionId,
-    };
-    try {
-      return await withRetry(async (remaining) => {
-        let res;
-        try {
-          res = await fetchModel(`${BASE_URL}/responses`, { method: 'POST', credentials: 'omit', signal, headers, body: requestJson(body) }, remaining);
-        } catch (err) {
-          if (err instanceof TypeError) err.network = true;
-          throw err;
-        }
-        if (res.ok) return res;
-        throw new ProviderHttpError(await readError(res, deadline - Date.now()));
-      }, { signal, deadline, provider: 'chatgpt', notify: this.notify, onWait: (ms) => { this.retryWaitMs += ms; } });
-    } catch (err) {
-      if (!(err instanceof ProviderHttpError)) throw err;
-      if (err.status === 401 && !refreshed) return this.post(toolChoice, signal, { refreshed: true, deadline });
-      if (err.status === 400 && this.instructionsAsField && /instruction/i.test(err.detail)) {
-        this.instructionsAsField = false;
-        return this.post(toolChoice, signal, { refreshed, deadline });
-      }
-      const out = new Error(describeError(err.status, err.detail));
-      out.status = err.status;
-      out.detail = err.detail;
-      throw out;
-    }
+/** A ChatGPT subscription through the Responses API the Codex backend speaks. */
+export class ChatgptSession extends ResponsesSession {
+  constructor({ model, effort = '', systemPrompt = '', tools = [], notify = null }) {
+    super({
+      baseUrl: BASE_URL,
+      model,
+      effort,
+      systemPrompt,
+      tools,
+      notify,
+      authHeaders,
+      extraHeaders: (session) => ({
+        'OpenAI-Beta': 'responses=experimental',
+        'session-id': session.sessionId,
+        session_id: session.sessionId,
+      }),
+      // The Codex backend takes the system prompt as a field of its own.
+      instructionsAsField: true,
+      provider: 'chatgpt',
+      describeError: describeChatgptError,
+    });
   }
 }
 
-function userMessage(text, images) {
-  return {
-    type: 'message',
-    role: 'user',
-    content: [
-      { type: 'input_text', text },
-      ...images.map((url) => ({ type: 'input_image', image_url: url, detail: 'auto' })),
-    ],
-  };
-}
-
-/** With store:false the backend keeps nothing, so server item ids must not be echoed back. */
-export function withoutId(item) {
-  const { id, ...rest } = item;
-  return rest;
-}
-
-export function parseOutput(items, usage = null) {
-  const text = items
-    .filter((i) => i.type === 'message')
-    .flatMap((i) => i.content ?? [])
-    .filter((c) => c.type === 'output_text')
-    .map((c) => c.text)
-    .join('');
-  const toolCalls = items
-    .filter((i) => i.type === 'function_call')
-    .map((i) => ({ id: i.call_id, name: i.name, args: safeJson(i.arguments) }));
-  return { text, toolCalls, usage };
-}
-
-/** Shrinks old page observations and screenshots so long tasks stay within context. */
-export function compactInput(input) {
-  const names = new Map(input.filter((i) => i.type === 'function_call').map((i) => [i.call_id, i.name]));
-  const outputs = input.filter((i) => i.type === 'function_call_output');
-  const kindOfResult = (i) => kindOf(names.get(i.call_id));
-  const observations = outputs.filter((i) => !['bookkeeping', 'notes'].includes(kindOfResult(i)));
-  const notebookReads = outputs.filter((i) => kindOfResult(i) === 'notes');
-  // One notebook copy, the latest (see compactMessages).
-  const lastNotebook = input.findLastIndex((i) => i.type === 'function_call_output' && typeof i.output === 'string' && i.output.includes(NOTEBOOK_HEADER));
-  input.forEach((item, n) => {
-    if (item.type === 'function_call_output' && n < lastNotebook && typeof item.output === 'string') item.output = withoutNotebook(item.output);
+/** What a refusal of the Codex backend usually means. */
+function describeChatgptError(status, detail) {
+  return providerErrorMessage('ChatGPT', status, detail, {
+    forbidden: 'The plan may not include Codex access, or OpenAI blocked this client.',
   });
-  for (const item of [...observations.slice(0, -KEEP_FULL_OBSERVATIONS), ...notebookReads.slice(0, -1)]) {
-    if (typeof item.output === 'string') item.output = trimKeepingNotebook(item.output, TRIMMED_OBSERVATION_CHARS);
-  }
-  // Notes already shown in a later notebook copy keep only a marker (see compactMessages).
-  const resultAt = new Map(input.map((i, n) => [i.type === 'function_call_output' ? i.call_id : null, n]));
-  for (const item of input) {
-    if (item.type === 'function_call' && item.name === 'note' && resultAt.get(item.call_id) < lastNotebook) item.arguments = NOTE_SAVED_ARGS;
-  }
-  const withImages = input.filter((i) => i.type === 'message' && i.content?.some((c) => c.type === 'input_image'));
-  for (const message of withImages.slice(0, -1)) {
-    message.content = message.content.map((c) => (c.type === 'input_image' ? { type: 'input_text', text: '[older screenshot removed]' } : c));
-  }
 }
 
-function safeJson(text) {
-  try {
-    return JSON.parse(text || '{}');
-  } catch {
-    return { _raw: text };
-  }
-}
-
-function describeError(status, detail) {
-  let message = detail;
-  try {
-    const parsed = JSON.parse(detail);
-    message = parsed.detail ?? parsed.error?.message ?? parsed.message ?? detail;
-    if (typeof message !== 'string') message = JSON.stringify(message);
-  } catch {
-    // Plain-text error body.
-  }
-  if (status === 429) return `ChatGPT usage limit reached for this plan. ${message}`.trim();
-  if (status === 403) return `ChatGPT refused the request (HTTP 403). The plan may not include Codex access, or OpenAI blocked this client. ${message}`.trim();
-  return `ChatGPT request failed (HTTP ${status}): ${String(message).slice(0, 400)}`;
-}
+export { compactInput, parseOutput, withoutId } from './responses.js';

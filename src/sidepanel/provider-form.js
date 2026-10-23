@@ -6,7 +6,9 @@ import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.
 import { bindTestButton } from './test-button.js';
 
 const TRANSLATED_EFFORTS = { '': 'effort.default', off: 'effort.off', on: 'effort.on' };
-const FALLBACK_EFFORTS = { chatgpt: ['low', 'medium', 'high', 'xhigh'], reasoning_effort: ['off', 'low', 'medium', 'high'], glm: ['on', 'off'], none: [], gemini: ['minimal', 'low', 'medium', 'high'] };
+// The efforts a model list does not name. MiniMax cannot stop thinking, so it
+// offers no Off.
+const FALLBACK_EFFORTS = { chatgpt: ['low', 'medium', 'high', 'xhigh'], reasoning_effort: ['off', 'low', 'medium', 'high'], glm: ['on', 'off'], none: [], gemini: ['minimal', 'low', 'medium', 'high'], minimax: ['low', 'medium', 'high', 'xhigh', 'max'] };
 
 const slotOf = (s) => (s.provider === 'chatgpt' ? s.chatgpt : s.compatible);
 

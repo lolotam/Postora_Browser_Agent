@@ -6,10 +6,11 @@ import { testProviderSlot } from '../agent/model-session.js';
 import { accountLoginState, cancelAccountLogin, startAccountLogin, submitAccountInput, withKeepAlive } from './account-login.js';
 import { fastClientFor } from '../fast/clients.js';
 import { exportBackup, importBackup } from '../lib/backup.js';
-import { COMPATIBLE_PRESETS, FAST_PRESETS, chatModelsFor, loadSettings, saveSettings } from '../lib/settings.js';
+import { COMPATIBLE_PRESETS, FAST_PRESETS, loadSettings, saveSettings, slotModels } from '../lib/settings.js';
 import { ACCOUNT_STORAGE_KEYS, accountStatus, signOut } from '../providers/account-auth.js';
 import { importCodexAuthJson } from '../providers/chatgpt-auth.js';
 import { listChatgptModels } from '../providers/chatgpt.js';
+import { CLAUDE_CODE_IDENTITY } from '../providers/anthropic.js';
 import { listCompatibleModels } from '../providers/openai-compatible.js';
 import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
@@ -75,7 +76,7 @@ async function installHeaderRules() {
   rules.push({
     id: 7,
     priority: 1,
-    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: 'claude-cli/2.1.280' }] },
+    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: `claude-cli/${CLAUDE_CODE_IDENTITY.version}` }] },
     condition: { urlFilter: '||api.anthropic.com/', ...own },
   });
   await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1, 2, 3, 4, 5, 6, 7], addRules: rules });
@@ -205,9 +206,16 @@ async function handleRequest(msg, sender) {
       // The model list needs a valid token, and a refresh takes longer than the
       // worker may idle, so it is kept awake until the token is stored.
       if (settings.provider === 'chatgpt') return withKeepAlive(() => listChatgptModels());
-      // The agent works through tool calls, so models known not to support them are left out.
-      const list = (await listCompatibleModels(settings.compatible.baseUrl, settings.compatible.apiKey)).filter((m) => !m.decision && m.tools !== false);
-      return chatModelsFor(settings.compatible.preset, list);
+      const preset = settings.compatible.preset;
+      let list = [];
+      try {
+        // The agent works through tool calls, so models known not to support them are left out.
+        list = (await listCompatibleModels(settings.compatible.baseUrl, settings.compatible.apiKey)).filter((m) => !m.decision && m.tools !== false);
+      } catch (err) {
+        // A provider that serves no list of its own falls back to the preset's.
+        if (!slotModels(preset, []).length) throw err;
+      }
+      return slotModels(preset, list);
     }
     case 'sessions-list':
       return (await store.listSessions()).map((meta) => ({ ...meta, running: Boolean(runners.get(meta.id)?.running) }));
