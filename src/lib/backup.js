@@ -41,7 +41,14 @@ function signedInAccounts(stored) {
  * record means the provider was not signed in, and the local one is kept.
  */
 export function accountsIn(data) {
-  if (Number(data?.version) >= 2) return normaliseAccounts(data?.accounts);
+  if (Number(data?.version) >= 2) {
+    const { accounts } = data;
+    // Every version-2 file has an accounts object, empty when nobody signed in.
+    if (accounts !== undefined && (accounts === null || typeof accounts !== 'object' || Array.isArray(accounts))) {
+      throw new Error('This backup is damaged: its sign-ins cannot be read.');
+    }
+    return normaliseAccounts(accounts);
+  }
   const credential = credentialOf(data?.chatgptAuth);
   return credential ? { chatgpt: credential } : {};
 }
@@ -60,9 +67,11 @@ export function normaliseAccounts(accounts = {}) {
 export async function importBackup(data) {
   if (data?.format !== FORMAT) throw new Error('This file is not a Postora Browser Agent backup.');
   if (!(data.version <= VERSION)) throw new Error(`This backup was made by a newer version of Postora Browser Agent (format ${data.version}).`);
+  // Read everything first: a damaged file must leave the local settings alone.
+  const accounts = accountsIn(data);
   const values = { settings: mergeSettings(data.settings ?? {}) };
   await chrome.storage.local.set(values);
-  await restoreAccounts(data);
+  await restoreAccounts(accounts);
   return values.settings;
 }
 
@@ -72,8 +81,7 @@ export async function importBackup(data) {
  * is not in it keeps the local one. There are no tombstones: a backup never
  * signs a provider out.
  */
-async function restoreAccounts(data) {
-  const accounts = accountsIn(data);
+async function restoreAccounts(accounts) {
   for (const provider of ACCOUNT_PROVIDERS) {
     const credential = accounts[provider];
     if (!credential) continue;

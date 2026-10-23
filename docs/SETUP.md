@@ -112,6 +112,7 @@ Two presets, each with its own key:
 | **MiniMax Coding Plan** | `sk-cp-…` key | `https://api.minimax.io/v1` | `MiniMax-M3.1-Flash` |
 
 MiniMax always thinks, so its reasoning effort has no "Off" level. It serves no model list of its own, so the extension shows the fixed one above.
+
 ---
 
 ## 5. Choose the model and reasoning effort
@@ -238,7 +239,7 @@ To add one:
 
 ## Roadmap
 
-1. ✅ Direct account authentication: ChatGPT subscription (device code & auth.json fallback), Claude account sign-in (paste the code Claude shows after you approve), and Grok / SuperGrok account sign-in (device code).
+1. ✅ Direct account authentication: ChatGPT subscription (device code & auth.json fallback) and Claude account sign-in (paste the code Claude shows after you approve).
 2. ⏳ API key providers: Anthropic Claude API, xAI Grok API, Z.ai GLM (incl. Coding Plan), OpenAI API key, Google Gemini, OpenRouter, DeepSeek, NVIDIA NIM, MiniMax (pay-as-you-go and Coding Plan).
 3. ⏳ Jev fast layer: tested end-to-end with a mock only.
-4. ⏳ The Grok account path still needs a check against a live SuperGrok / X Premium account.
+4. ⏳ Grok / SuperGrok account sign-in (device code): implemented, but not yet checked against a live SuperGrok / X Premium account.

@@ -17,9 +17,11 @@ Baseline: `0548728`, 211 tests passing. Revision 3, after debate rounds 1 and 2 
    to `chrome.storage.local` before the new credential is returned, and only if the
    stored record is still the one that was refreshed (compare-and-set, see task 2).
 5. Never log, post to the panel, or put in an error message any token, refresh
-   token, API key, PKCE verifier, authorization URL or authorization code. (The
-   Claude authorization URL carries the PKCE verifier in `state` — pi-ai
-   `auth/oauth/anthropic.js:182` — so the worker opens it and the panel never sees it.)
+   token, API key, PKCE verifier, authorization URL (`auth_url`) or authorization
+   code. (The Claude authorization URL carries the PKCE verifier in `state` — pi-ai
+   `auth/oauth/anthropic.js:182` — so the worker opens it and the panel never sees it.
+   A device-code verification URL and user code carry no secret and are shown in the
+   panel; see task 3.)
 6. A ChatGPT user signed in before this change stays signed in after it (migration
    of `chatgptAuth`).
 7. Every user-visible string goes through `src/sidepanel/messages.js` in English and

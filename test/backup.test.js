@@ -88,6 +88,19 @@ test('a provider the file does not have keeps its local sign-in', async () => {
   assert.equal(store['accountAuth.grok'].credential.access, 'local-grok', 'a backup never signs a provider out');
 });
 
+test('a damaged file is refused before it changes anything', async () => {
+  store.settings = { provider: 'compatible', compatible: { preset: 'openrouter', apiKey: 'local-key', model: 'm' } };
+  const before = JSON.stringify(store.settings);
+
+  for (const accounts of [null, 'x', ['a']]) {
+    await assert.rejects(
+      importBackup({ format: 'browser-agent-backup', version: 2, settings: { provider: 'chatgpt' }, accounts }),
+      /damaged/,
+    );
+    assert.equal(JSON.stringify(store.settings), before, `accounts=${JSON.stringify(accounts)} leaves the settings alone`);
+  }
+});
+
 test('files that are not backups, or come from a newer format, are refused', async () => {
   await assert.rejects(importBackup({ tokens: {} }), /not a Postora Browser Agent backup/);
   await assert.rejects(importBackup({ format: 'browser-agent-backup', version: 99, settings: {} }), /newer version/);
