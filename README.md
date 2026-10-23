@@ -2,7 +2,7 @@
 
 A Chrome side-panel extension. Give it a task in Arabic or English and it carries it out in your real browser, one step at a time: it searches, clicks, types, picks from menus, scrolls, switches tabs, and reads and collects information. When it finishes, it returns a **final report** with the results and sources.
 
-**Current focus:** it runs on the model access included in your **ChatGPT plan**, the same sign-in the official Codex CLI uses. You choose the model and the reasoning effort. Other providers come later.
+**Model access & auth:** supports direct account authentication (including ChatGPT plans, Claude accounts, and Grok / SuperGrok accounts) as well as API keys for Anthropic Claude, xAI Grok, OpenAI, Google Gemini, DeepSeek, NVIDIA NIM, OpenRouter, OpenCode, and local models. You choose the model, auth method, and reasoning effort.
 
 👉 **[Full setup guide → docs/SETUP.md](docs/SETUP.md)** · Arabic overview: [docs/README.ar.md](docs/README.ar.md)
 
@@ -13,7 +13,7 @@ A Chrome side-panel extension. Give it a task in Arabic or English and it carrie
    git clone https://github.com/lolotam/Browser-controle.git
    ```
 2. In `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select the repo folder.
-3. Open the side panel (**Alt+Shift+A**) and click **Sign in with ChatGPT**. Enter the code shown in the panel at `auth.openai.com/codex/device`.
+3. Open the side panel (**Alt+Shift+A**) and connect your account (sign in with ChatGPT, Claude, or Grok, or enter an API key).
 4. Pick a model and a reasoning effort, then click **Save**.
 5. Open any website and type a task.
 
@@ -27,7 +27,7 @@ A Chrome side-panel extension. Give it a task in Arabic or English and it carrie
 - **Optional fast layer:** a ⚡ layer can run confident steps without calling the main LLM. It uses TypeSafe's Jev decision model, directly or through Vercel AI Gateway, OpenCode Zen or OpenRouter, for both the fast layer and its backup. It is experimental.
 - **Backup providers:** if the main model's provider fails (plan or quota used up, key rejected, server error, no connection), a backup provider finishes the same task from where it stopped; the fast layer has its own backup decision provider. A red or amber notice under the header says what failed and who took over.
 - **Test connection everywhere:** the main model, its backup, the fast layer and its backup each have a test button that sends a real request with the task's tools and settings, so a wrong key or a model without tool calls shows up before the first task. OpenRouter's list only offers models that support tool calls.
-- **Optional Google sign-in:** the header's account button opens a Google sign-in window; the extension keeps only the name, email and picture, shows the picture in the header, and sends the email with feedback. While signed in, settings, API keys and the ChatGPT sign-in are backed up after every change to a hidden folder of the user's own Google Drive (`appDataFolder`), and a fresh install restores them at sign-in. No backend or client secret is involved.
+- **Optional Google sign-in:** the header's account button opens a Google sign-in window; the extension keeps only the name, email and picture, shows the picture in the header, and sends the email with feedback. While signed in, settings, API keys and account sign-in tokens (ChatGPT, Claude, Grok) are backed up after every change to a hidden folder of the user's own Google Drive (`appDataFolder`), and a fresh install restores them at sign-in. No backend or client secret is involved.
 - **Sessions:** several sessions, saved on your computer, with search, rename and delete. Sessions can run tasks at the same time; each works only in its own Chrome tab group and never brings a tab to the front. The side panel follows the tab in front: a new tab starts on a blank session, and a tab where a task ran (or that the user picked a session for) keeps its session.
 - **Interface:** Arabic or English, light or dark following the system. The agent replies in the language of the task, or always in a language you switch on in settings. Settings can be backed up to a file and restored after reinstalling.
 
@@ -40,11 +40,11 @@ The extension has no server of its own: tasks and page content go only to the AI
 | Part | State |
 |---|---|
 | Browser control + agent loop | ✅ Covered by unit tests and a Chromium end-to-end test (mock model) |
-| Codex / ChatGPT subscription | 🟡 Implemented from the Codex CLI source and tested with mocks; **needs validation on a real account** |
-| Other providers (Gemini, Grok, DeepSeek, NVIDIA NIM, GLM, OpenAI API, OpenRouter) | ⏳ Code exists; model lists checked live where they are public (NVIDIA, OpenRouter); chat not yet tested with real keys |
+| Account authentication (ChatGPT, Claude, Grok subscriptions) | 🟡 Direct subscription/account sign-in methods (ChatGPT via Codex OAuth, Claude and Grok account auth) |
+| Other providers & API keys (Claude, Gemini, Grok, DeepSeek, NVIDIA NIM, GLM, OpenAI API, OpenRouter) | ⏳ Code exists; model lists checked live where they are public (NVIDIA, OpenRouter); configurable with API keys |
 | Fast layer (Jev or a gateway chat model) | ⏳ Experimental, tested with mocks only |
 
-> Using a ChatGPT plan outside OpenAI's own apps is unofficial. OpenAI may change or block it at any time.
+> Using provider account plans or subscriptions outside official apps is unofficial. Providers may change or block endpoints at any time.
 
 ## Development
 

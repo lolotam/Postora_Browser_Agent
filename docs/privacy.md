@@ -12,17 +12,17 @@ The extension has no server of its own. The developer does not receive your task
 |---|---|---|
 | Your tasks and the agent's replies | Every task | Stored on your computer; sent to the AI provider you chose |
 | Content of the pages the agent works on: address, title, visible text, the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
-| API keys and the ChatGPT sign-in tokens you enter | When you save settings | Stored on your computer; each key is sent only to its own provider |
+| API keys and account sign-in tokens (ChatGPT, Claude, Grok) you enter | When you save settings | Stored on your computer; each key/token is sent only to its own provider |
 | Settings | When you save them | Stored on your computer |
 | Google account name, email address and profile picture | Only if you sign in with Google (optional) | Stored on your computer; the picture is shown in the header |
-| A backup of your settings, keys and ChatGPT sign-in | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
+| A backup of your settings, keys and account sign-in tokens | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
 | Feedback message, star rating, and an email address (one you type, or your Google email if signed in) | Only when you press Send in the feedback box, or give a task five stars | Sent to the developer by email through Formspree |
 
 The extension does not collect analytics or telemetry, does not show ads, and does not track the pages you visit when no task is running.
 
 ## AI providers
 
-To work, the extension sends your task and the content of the pages it is working on to the AI provider **you** select in settings. The available providers are OpenAI (API key or ChatGPT account), Google Gemini, xAI, DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai, and any compatible address you enter yourself. For the optional fast layer, they are TypeSafe, Vercel AI Gateway, OpenCode and OpenRouter. If you turn on a backup provider, it receives the same data when the main provider fails.
+To work, the extension sends your task and the content of the pages it is working on to the AI provider **you** select in settings. The available providers are OpenAI (API key or ChatGPT account), Anthropic Claude (API key or Claude account), xAI Grok (API key or Grok account), Google Gemini, DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai, and any compatible address you enter yourself. For the optional fast layer, they are TypeSafe, Vercel AI Gateway, OpenCode and OpenRouter. If you turn on a backup provider, it receives the same data when the main provider fails.
 
 What each provider does with that data is governed by its own privacy policy and your agreement with it. Do not give the agent tasks on pages whose content you are not willing to share with your provider.
 
@@ -42,7 +42,7 @@ Feedback is sent only when you submit it. It contains your message, the rating, 
 
 ## Other network requests
 
-- To use a ChatGPT account, the extension contacts OpenAI's sign-in service. It also reads the public version number of OpenAI's Codex CLI from the npm registry; no user data is sent in that request.
+- To use an account sign-in (such as ChatGPT, Claude, or Grok), the extension contacts the respective provider's sign-in and session services. It also reads the public version number of OpenAI's Codex CLI from the npm registry; no user data is sent in that request.
 - The agent's "web search" step opens a Google search results page in the tab it controls, the same as you searching yourself.
 
 ## Data sharing and sale

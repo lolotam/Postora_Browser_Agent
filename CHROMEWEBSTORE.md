@@ -25,14 +25,14 @@ What you get
 • A live cursor on the page: you see where the agent points and clicks, what it is typing, and a Stop button.
 • Final reports with tables and links to the pages the information came from.
 • Several sessions that can run at the same time, each in its own labelled tab group.
-• Your choice of AI provider: OpenAI (API key or ChatGPT account), Google Gemini, xAI Grok, DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai GLM, or any compatible address, including a model on your own computer.
+• Your choice of AI provider: OpenAI (API key or ChatGPT account), Anthropic Claude (API key or Claude account), Google Gemini, xAI Grok (API key or Grok account), DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai GLM, or any compatible address, including a model on your own computer.
 • A backup provider that takes over the same task if your main provider stops (plan used up, key rejected, server down).
 • An optional fast layer that handles obvious steps quickly and hands anything uncertain to the main model.
 • Arabic and English interface, light and dark themes.
 
 How to use it
 1. Click the toolbar icon to open the side panel.
-2. Open Settings, choose your AI provider, enter your key (or sign in to your ChatGPT account), pick a model, and press "Test connection".
+2. Open Settings, choose your AI provider, enter your key (or sign in to your ChatGPT, Claude, or Grok account), pick a model, and press "Test connection".
 3. Go to the page where the task should start, type the task, and press Enter.
 4. Watch the steps, answer the agent if it asks you something, and read the final report.
 
@@ -55,14 +55,14 @@ Postora - وكيل المتصفح ينفّذ المهام بدلًا منك في
 • مؤشر حي على الصفحة: ترى أين يشير الوكيل وأين يضغط وماذا يكتب، مع زر إيقاف.
 • تقارير نهائية فيها جداول وروابط للصفحات التي جاءت منها المعلومات.
 • عدة جلسات تعمل في نفس الوقت، كل جلسة في مجموعة تبويبات باسمها.
-• تختار مزوّد الذكاء: OpenAI (مفتاح API أو حساب ChatGPT)، وGoogle Gemini، وxAI Grok، وDeepSeek، وNVIDIA، وOpenRouter، وOpenCode، وZ.ai GLM، أو أي عنوان متوافق، حتى موديل يعمل على جهازك.
+• تختار مزوّد الذكاء: OpenAI (مفتاح API أو حساب ChatGPT)، وAnthropic Claude (مفتاح API أو حساب Claude)، وGoogle Gemini، وxAI Grok (مفتاح API أو حساب Grok)، وDeepSeek، وNVIDIA، وOpenRouter، وOpenCode، وZ.ai GLM، أو أي عنوان متوافق، حتى موديل يعمل على جهازك.
 • مزوّد احتياطي يكمل نفس المهمة لو توقف المزوّد الأساسي.
 • طبقة سريعة اختيارية تنفّذ الخطوات الواضحة بسرعة وتترك غير الواضح للموديل الأساسي.
 • واجهة عربية وإنجليزية، ووضع فاتح وداكن.
 
 طريقة الاستخدام
 1. اضغط أيقونة الإضافة لفتح اللوحة الجانبية.
-2. افتح الإعدادات، واختر المزوّد، وأدخل المفتاح (أو سجّل الدخول بحساب ChatGPT)، واختر الموديل، ثم اضغط "اختبار الاتصال".
+2. افتح الإعدادات، واختر المزوّد، وأدخل المفتاح (أو سجّل الدخول بحسابك مثل ChatGPT أو Claude أو Grok)، واختر الموديل، ثم اضغط "اختبار الاتصال".
 3. افتح الصفحة التي تبدأ منها المهمة، واكتب المهمة، واضغط Enter.
 4. تابع الخطوات، وأجب الوكيل لو سألك، واقرأ التقرير النهائي.
 
@@ -123,7 +123,7 @@ Paste each line into the matching field of the dashboard's Privacy tab.
 | Personally identifiable info | Yes (optional) | Yes | Google name, email and picture for sign-in; email attached to feedback | Google (sign-in), Formspree (feedback delivery) |
 | Health info | No | | | |
 | Financial info | No | | | |
-| Authentication info | Yes | Yes | The user's AI provider keys and ChatGPT tokens, each sent only to its own provider; included in the user's own Drive backup | Only the provider each key belongs to; Google Drive (the user's own backup) |
+| Authentication info | Yes | Yes | The user's AI provider keys and account tokens (ChatGPT, Claude, Grok), each sent only to its own provider; included in the user's own Drive backup | Only the provider each key belongs to; Google Drive (the user's own backup) |
 | Personal communications | No | | | |
 | Location | No | | | |
 | Web history | Yes | Yes | Addresses of the pages the agent visits during a task, sent to the AI provider as context | The user's chosen AI provider |
@@ -168,8 +168,8 @@ Paste each line into the matching field of the dashboard's Privacy tab.
 
 ### Known Issues / Limitations (review risks)
 - **`debugger` + `<all_urls>`** puts the item in in-depth review, which can take longer than usual. The justifications above explain both.
-- **ChatGPT account sign-in** reuses the Codex CLI's sign-in and backend. OpenAI may change or block it, and reviewers may question it. The listing describes it neutrally and makes no claim of OpenAI endorsement.
-- Trademarks (OpenAI, ChatGPT, Gemini, Grok…) appear only to name the providers the user can connect, not in the extension name or icon.
+- **Account sign-ins (ChatGPT, Claude, Grok)** connect directly to the respective providers' endpoints. Providers may change or block them, and the listing describes them neutrally without claiming official endorsement.
+- Trademarks (OpenAI, ChatGPT, Anthropic, Claude, Gemini, Grok…) appear only to name the providers the user can connect, not in the extension name or icon.
 
 ### Rejection History
 (none yet)

@@ -1,6 +1,6 @@
-# Full Setup Guide — Codex (ChatGPT subscription) first
+# Full Setup Guide — Provider & Account Setup
 
-This guide takes you from a fresh clone to running your first browser task with the model access included in your ChatGPT plan (the same access the official **Codex CLI** uses). Other providers come later; see [Roadmap](#roadmap).
+This guide takes you from a fresh clone to running your first browser task using account authentication (ChatGPT, Claude, Grok subscriptions) or standard API keys. See [Roadmap](#roadmap).
 
 Time needed: about 10 minutes.
 
@@ -11,11 +11,11 @@ Time needed: about 10 minutes.
 | Need | Details |
 |---|---|
 | Browser | Google Chrome **116 or newer** (or another Chromium browser that supports the Side Panel API and `chrome.debugger`: Edge, Brave, Arc). Check at `chrome://settings/help`. |
-| ChatGPT plan | A plan that includes **Codex** (Plus, Pro, Business, Edu or Enterprise). Usage counts against your plan's Codex limits. |
+| Account plan or API key | Access via ChatGPT plan (Plus, Pro, Business), Claude account (Pro/Team), Grok account (SuperGrok), or an API key from any supported provider (Anthropic, xAI, OpenAI, Google AI Studio, DeepSeek, NVIDIA, etc.). |
 | Git | To clone the repo. |
 | Node.js 20+ | **Optional.** Only needed to run the tests, or for the `auth.json` fallback login (step 4B). The extension itself has no build step. |
 
-> ⚠️ **Honest warning.** Using a ChatGPT plan from a third-party client is not an official OpenAI product. The extension uses the same OAuth client and backend (`chatgpt.com/backend-api/codex`) as the Codex CLI. OpenAI can change or block this at any time. Do not use it for anything you cannot afford to have stop working.
+> ⚠️ **Honest warning.** Using subscription accounts (ChatGPT, Claude, Grok) from a third-party client is not an official product of those providers. Providers can change or block unofficial clients at any time. Do not use them for anything you cannot afford to have stop working.
 
 ---
 
@@ -46,13 +46,13 @@ The manifest pins the extension ID to `bhoimdlegicacjkholpfcokajpiimbcn`, so it 
 
 ---
 
-## 4. Connect your ChatGPT account
+## 4. Connect your AI provider account or key
 
-In the side panel's Settings, keep the provider set to **"اشتراك ChatGPT"** (ChatGPT subscription).
+In the side panel's Settings, choose your provider. You can connect using direct account authentication (ChatGPT subscription, Claude account, Grok account) or an API key.
 
-### 4A. Recommended: device-code sign-in
+### 4A. ChatGPT account sign-in
 
-1. Click **"تسجيل الدخول بحساب ChatGPT"** (Sign in with ChatGPT).
+1. Select **"اشتراك ChatGPT"** (ChatGPT subscription) and click **"تسجيل الدخول بحساب ChatGPT"** (Sign in with ChatGPT).
 2. A new tab opens at `https://auth.openai.com/codex/device`, and the side panel shows a one-time code such as `ABCD-1234`.
 3. In that tab, sign in to ChatGPT (with 2FA if you use it), then enter the code.
 4. Approve the request. Within a few seconds the panel shows **"متصل: you@email — plus/pro"** (Connected).
@@ -61,9 +61,9 @@ The code expires after 15 minutes. If it expires, click the button again.
 
 **If you get "Device-code login is not enabled":** your account or workspace has device-code authorization for Codex turned off. Enable it in ChatGPT → Settings → Security (workspace admins: the workspace security settings), or use 4B.
 
-### 4B. Fallback: import `auth.json` from the Codex CLI
+### 4B. ChatGPT fallback: import `auth.json` from Codex CLI
 
-Use this only if 4A is not possible.
+Use this only if 4A is not possible:
 
 ```bash
 npm install -g @openai/codex
@@ -77,11 +77,14 @@ Codex writes your tokens to:
 | macOS / Linux | `~/.codex/auth.json` |
 | Windows | `%USERPROFILE%\.codex\auth.json` |
 
-If the file does not exist, Codex stored the tokens in your OS keychain instead. Add `cli_auth_credentials_store = "file"` to `~/.codex/config.toml`, then run `codex login` again.
-
-Open the file, copy **all** of its contents, and paste them into **"بديل: استيراد auth.json"** → **استيراد** (Import) in the panel.
+If the file does not exist, Codex stored the tokens in your OS keychain instead. Add `cli_auth_credentials_store = "file"` to `~/.codex/config.toml`, then run `codex login` again. Open the file, copy **all** of its contents, and paste them into **"بديل: استيراد auth.json"** → **استيراد** (Import) in the panel.
 
 > ⚠️ **Gotcha: shared refresh token.** After an import, the extension and the Codex CLI hold the **same** refresh token. OpenAI rotates refresh tokens, so when one of them refreshes, the other is signed out ("session expired"). Either stop using the CLI on that login, or prefer 4A, which creates a separate session.
+
+### 4C. Claude and Grok account authentication
+
+- **Anthropic Claude:** Select Claude and connect via your Claude account (Claude Pro / Team / Max) or enter an Anthropic API key. Direct account sign-in enables full access to Claude models directly.
+- **xAI Grok:** Select xAI Grok and connect via your Grok account (SuperGrok subscription) or enter an xAI API key. Direct account sign-in enables using your SuperGrok subscription directly.
 
 ---
 
@@ -170,8 +173,10 @@ src/agent/prompt.js                system prompt and safety rules
 src/browser/controller.js          CDP input, scrolling, screenshots, tab handling
 src/browser/page-scripts.js        injected DOM snapshot / element actions
 src/providers/chatgpt-auth.js      Codex device-code OAuth, refresh, auth.json import
+src/providers/claude-auth.js       Claude account authentication / session
+src/providers/grok-auth.js         xAI / Grok account authentication / session
 src/providers/chatgpt.js           Responses API on chatgpt.com/backend-api/codex
-src/providers/openai-compatible.js Chat Completions (for future providers)
+src/providers/openai-compatible.js Chat Completions (Grok, GLM, Claude, OpenAI, OpenRouter)
 src/fast/                          optional fast layer (Jev or a gateway chat model)
 src/sidepanel/                     UI (Arabic RTL / English LTR, follows system theme) + safe Markdown renderer
 icons/, _locales/                  logo + PNG icons (scripts/render-icons.mjs), translated store name
@@ -199,6 +204,6 @@ To add one:
 
 ## Roadmap
 
-1. ✅ Codex / ChatGPT subscription: **current focus; validate on a real account first.**
-2. ⏳ Other providers: xAI Grok, Z.ai GLM (incl. Coding Plan), OpenAI API key, OpenRouter. The code path exists in `openai-compatible.js` but has not been tested against the real services yet.
+1. ✅ Direct account authentication: ChatGPT subscription (device-code & auth.json fallback), Claude account sign-in, and Grok / SuperGrok account sign-in.
+2. ⏳ API key providers: Anthropic Claude API, xAI Grok API, Z.ai GLM (incl. Coding Plan), OpenAI API key, Google Gemini, OpenRouter, DeepSeek, NVIDIA NIM.
 3. ⏳ Jev fast layer: tested end-to-end with a mock only.
