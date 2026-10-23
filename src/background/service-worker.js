@@ -12,6 +12,7 @@ import { ACCOUNT_STORAGE_KEYS, accountStatus, signOut } from '../providers/accou
 import { importCodexAuthJson } from '../providers/chatgpt-auth.js';
 import { listChatgptModels } from '../providers/chatgpt.js';
 import { CLAUDE_CODE_IDENTITY, anthropicEfforts, listAnthropicModels } from '../providers/anthropic.js';
+import { headerRules } from './header-rules.js';
 import { listCompatibleModels } from '../providers/openai-compatible.js';
 import { listGrokModels } from '../providers/responses.js';
 import * as store from '../sessions/store.js';
@@ -48,40 +49,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }, DRIVE_BACKUP_DELAY_MS);
 });
 
-// Requests from an extension carry an Origin header the Codex backend does not
-// expect from its CLI; strip it for the two OpenAI hosts this extension calls.
-// OpenCode asks clients to name themselves in the User-Agent instead of sending
-// a browser's or an HTTP library's; only this extension's own requests change.
+// Only this extension's own requests change; see header-rules.js for why each
+// provider needs its rule.
 async function installHeaderRules() {
-  const own = { initiatorDomains: [chrome.runtime.id], resourceTypes: ['xmlhttprequest', 'other'] };
-  const rules = [1, 2].map((id, i) => ({
-    id,
-    priority: 1,
-    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'origin', operation: 'remove' }] },
-    condition: { urlFilter: ['||chatgpt.com/backend-api/codex', '||auth.openai.com/'][i], ...own },
-  }));
-  rules.push({
-    id: 3,
-    priority: 1,
-    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: `postora-browser-agent/${chrome.runtime.getManifest().version}` }] },
-    condition: { urlFilter: '||opencode.ai/zen/', ...own },
+  const rules = headerRules({
+    extensionId: chrome.runtime.id,
+    extensionVersion: chrome.runtime.getManifest().version,
+    claudeCliVersion: CLAUDE_CODE_IDENTITY.version,
   });
-  // The Claude and xAI sign-in endpoints refuse a browser Origin.
-  [4, 5, 6].forEach((id, i) => rules.push({
-    id,
-    priority: 1,
-    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'origin', operation: 'remove' }] },
-    condition: { urlFilter: ['||platform.claude.com/', '||claude.ai/', '||auth.x.ai/'][i], ...own },
-  }));
-  // The Anthropic API wants the Claude Code identity, and Chrome drops a
-  // User-Agent set in fetch, so it has to be a rule.
-  rules.push({
-    id: 7,
-    priority: 1,
-    action: { type: 'modifyHeaders', requestHeaders: [{ header: 'user-agent', operation: 'set', value: `claude-cli/${CLAUDE_CODE_IDENTITY.version}` }] },
-    condition: { urlFilter: '||api.anthropic.com/', ...own },
-  });
-  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1, 2, 3, 4, 5, 6, 7], addRules: rules });
+  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: rules.map((rule) => rule.id), addRules: rules });
 }
 
 function listenToNotifications() {
