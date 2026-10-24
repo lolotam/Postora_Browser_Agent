@@ -1523,15 +1523,17 @@ async function refreshAuthStates() {
  * Opens the port a sign-in's events come on. The port closed with a worker
  * that stopped while the panel stayed open, and the worker the request wakes
  * would post a failure, the code prompt and the device code to no panel.
+ * A session still being picked has no id to connect with yet, as in send().
  */
-function listenForSignIn() {
+async function listenForSignIn() {
+  while (picking) await picking.catch(() => {});
   if (!port && sessionId) connect();
 }
 
 async function startLogin(provider) {
   $('settingsError').hidden = true;
   setAuthMessage(provider, '');
-  listenForSignIn();
+  await listenForSignIn();
   try {
     const { userCode, verificationUrl } = await request('auth-start', { provider });
     if (userCode) showDeviceCode(provider, userCode, verificationUrl);
