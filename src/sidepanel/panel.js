@@ -1,4 +1,4 @@
-import { renderMarkdown } from './markdown.js';
+import { renderMarkdown, reportFileName } from './markdown.js';
 import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
 import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
 import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
@@ -184,6 +184,7 @@ function onEvent(event) {
       node.prepend(heading);
       const totals = totalsLine(event.at);
       if (totals) node.append(totals);
+      node.append(reportActions(event.report));
       if (ui.replayed) askForRating(); // live finals only, not the history replayed on open
       break;
     }
@@ -384,6 +385,90 @@ function totalsLine(end) {
   if (turns > missing) parts.push(t('stats.totalTokens', { input: number(input), output: number(output) }) + (missing ? ` ${t('stats.partial')}` : ''));
   if (fastIn || fastOut) parts.push(t('stats.fast', { input: number(fastIn), output: number(fastOut) }));
   return Object.assign(document.createElement('div'), { className: 'totals', textContent: parts.join(' · ') });
+}
+
+/** Copy and Markdown export, in the report's lower corner. */
+function reportActions(markdown) {
+  const bar = document.createElement('div');
+  bar.className = 'report-actions';
+  const copy = reportButton('report.copy', copySquares());
+  const save = reportButton('report.export', Object.assign(document.createElement('span'), { className: 'md', textContent: 'md' }));
+  copy.addEventListener('click', async () => {
+    try {
+      await copyText(markdown);
+      showCopied(copy);
+    } catch {
+      copy.dataset.i18nTitle = 'report.copyFailed';
+      copy.title = t('report.copyFailed');
+      copy.setAttribute('aria-label', copy.title);
+    }
+  });
+  save.addEventListener('click', () => {
+    const title = sessionLabel(sessionList.find((s) => s.id === sessionId));
+    const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown' }));
+    const name = reportFileName(title, new Date().toISOString().slice(0, 10), t('session.untitled'));
+    Object.assign(document.createElement('a'), { href: url, download: name }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  });
+  bar.append(copy, save);
+  return bar;
+}
+
+function reportButton(labelKey, child) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'ghost';
+  button.dataset.i18nTitle = labelKey;
+  button.title = t(labelKey);
+  button.setAttribute('aria-label', button.title);
+  button.append(child);
+  return button;
+}
+
+/** Two overlapping squares, the usual copy mark. */
+function copySquares() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', '13');
+  svg.setAttribute('height', '13');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = '<rect x="5.4" y="5.4" width="8" height="8" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.4"></rect><path d="M10.4 4.6V3.4A1.4 1.4 0 0 0 9 2H3.4A1.4 1.4 0 0 0 2 3.4V9A1.4 1.4 0 0 0 3.4 10.4H4.6" fill="none" stroke="currentColor" stroke-width="1.4"></path>';
+  return svg;
+}
+
+function showCopied(button) {
+  button.classList.add('copied');
+  button.dataset.i18nTitle = 'report.copied';
+  button.title = t('report.copied');
+  button.setAttribute('aria-label', button.title);
+  const mark = Object.assign(document.createElement('span'), { className: 'tick', textContent: '✓' });
+  button.replaceChildren(mark);
+  setTimeout(() => {
+    button.classList.remove('copied');
+    button.dataset.i18nTitle = 'report.copy';
+    button.title = t('report.copy');
+    button.setAttribute('aria-label', button.title);
+    button.replaceChildren(copySquares());
+  }, 1500);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // The side panel sometimes has no clipboard permission; the selection fallback still works.
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.append(area);
+  area.select();
+  const ok = document.execCommand('copy');
+  area.remove();
+  if (!ok) throw new Error('copy failed');
 }
 
 function clearMessages() {
@@ -1163,6 +1248,7 @@ function fillFastForm(saved) {
   $('fastProvider').value = fast.provider;
   $('fastMode').value = fast.mode;
   $('fastApiKey').value = fast.apiKey;
+  keyStore.refresh($('fastApiKey'));
   $('fastModel').value = fast.model;
   $('fastBaseUrl').value = fast.baseUrl;
   $('fastMinProb').value = fast.minProb;
@@ -1170,6 +1256,7 @@ function fillFastForm(saved) {
   $('fastFallbackEnabled').checked = fast.fallback.enabled;
   $('fastFallbackProvider').value = fast.fallback.provider;
   $('fastFallbackApiKey').value = fast.fallback.apiKey;
+  keyStore.refresh($('fastFallbackApiKey'));
   $('fastFallbackModel').value = fast.fallback.model;
   syncFast();
   syncFastProvider();
@@ -1461,7 +1548,11 @@ function showDeviceCode(provider, code, url) {
 /** The field the code the provider's page shows is pasted into. */
 function showCodePrompt(provider, visible) {
   const box = authEl(provider, 'code');
-  if (box) box.hidden = !visible;
+  if (!box) return;
+  box.hidden = !visible;
+  // Keep the field on screen. The settings page is long, and scrolling to the
+  // error at its bottom hides the field the code was just pasted into.
+  if (visible) box.scrollIntoView({ block: 'nearest' });
 }
 
 /** A sign-in that failed: the section says why, in the panel's language. */
@@ -1470,7 +1561,8 @@ function showAuthError(provider, message, code) {
   showDeviceCode(provider, null);
   showCodePrompt(provider, false);
   setAuthMessage(provider, authMessage(code, message));
-  showSettingsError(authNote[provider]);
+  const box = authEl(provider, 'message');
+  if (box) box.scrollIntoView({ block: 'nearest' });
 }
 
 /** Draws every provider whose state the panel knows, after the frames changed. */

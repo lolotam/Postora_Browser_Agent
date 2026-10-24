@@ -45,6 +45,11 @@ export class BrowserController {
     this.isTakenByOther = isTakenByOther;
     this.groupId = null;
     this.tabId = null;
+    // The tab the task started on stays open. Tabs this session opened are closed
+    // once it leaves them, so a long task does not keep every page in memory.
+    this.homeTabId = null;
+    this.disposable = new Set();
+    this.justClosed = null;
     this.attached = new Set();
     this.overlay = new AgentOverlay(this);
     chrome.debugger.onDetach.addListener(({ tabId }) => this.attached.delete(tabId));
@@ -69,21 +74,65 @@ export class BrowserController {
   async startOn() {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab) throw new Error('No active tab found.');
-    return this.useTab(tab.id);
+    const claimed = await this.useTab(tab.id);
+    this.homeTabId = claimed.id;
+    return claimed;
   }
 
   async useTab(tabId) {
     const tab = await this.claimTab(tabId);
     const previous = this.tabId;
     this.tabId = tabId;
-    if (previous !== null && previous !== tabId) await this.overlay.leave(previous);
+    if (previous !== null && previous !== tabId) {
+      await this.overlay.leave(previous);
+      await this.closeIfLeft(previous);
+    }
     await this.overlay.frame();
     return tab;
   }
 
   async openTab(url) {
     const created = await chrome.tabs.create({ url, active: false });
+    this.disposable.add(created.id);
     return this.useTab(created.id);
+  }
+
+  /** The id of the tab just closed by leaving it, once. */
+  takeClosedNote() {
+    const id = this.justClosed;
+    this.justClosed = null;
+    return id == null ? '' : ` Closed tab ${id} after reading it.`;
+  }
+
+  /** Closes a tab this session opened, once the session has moved on to another. */
+  async closeIfLeft(tabId) {
+    if (tabId == null || tabId === this.tabId || tabId === this.homeTabId || !this.disposable.has(tabId)) return;
+    this.justClosed = tabId;
+    await this.closeOwnedTab(tabId);
+  }
+
+  /** Closes every tab this session opened. The tab the task started on stays. */
+  async closeDisposableTabs() {
+    for (const tabId of [...this.disposable]) await this.closeOwnedTab(tabId);
+  }
+
+  async closeOwnedTab(tabId) {
+    this.disposable.delete(tabId);
+    if (this.homeTabId === tabId) this.homeTabId = null;
+    if (this.attached.has(tabId)) {
+      try {
+        await chrome.debugger.detach({ tabId });
+      } catch {
+        // Already detached, or the tab is already gone.
+      }
+      this.attached.delete(tabId);
+    }
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch {
+      // Already closed.
+    }
+    if (this.tabId === tabId) this.tabId = null;
   }
 
   ownsTab(tab) {

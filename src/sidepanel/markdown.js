@@ -69,3 +69,14 @@ export function renderMarkdown(source = '') {
   closeList();
   return out.join('');
 }
+
+/**
+ * Download name for a report. The session title becomes the file name, with a
+ * day, and it always ends in .md. An untitled session is just "report".
+ */
+export function reportFileName(title, day, untitled = '') {
+  const raw = String(title ?? '').trim();
+  const base = !raw || raw === untitled ? 'report' : raw;
+  const slug = base.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '');
+  return `${slug || 'report'}-${day}.md`;
+}

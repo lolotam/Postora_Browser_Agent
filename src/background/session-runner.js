@@ -205,6 +205,8 @@ export class SessionRunner {
       this.pendingQuestion = null;
       this.clearAskNotices();
       await this.browser.overlay.end();
+      // Pages opened for reading are done once the task is. The starting tab stays.
+      await this.browser.closeDisposableTabs().catch(() => {});
       await this.browser.detachAll();
       this.turnAbort = null;
       this.emit({ type: 'status', running: false });

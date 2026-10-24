@@ -377,7 +377,11 @@ async function resolveAuth(auth, apiKey, refreshed) {
 function modelHeaders(auth) {
   return {
     'anthropic-version': '2023-06-01',
-    'anthropic-dangerous-direct-browser-access': 'true',
+    // A Claude subscription rejects this header: Anthropic treats it as a
+    // browser CORS call and the organization has that turned off (HTTP 401).
+    // Claude Code does not send it. An API key still does, which is what
+    // lets a browser call the API when that organization allows it.
+    ...(auth.mode === 'account' ? {} : { 'anthropic-dangerous-direct-browser-access': 'true' }),
     ...(auth.mode === 'account'
       ? { Authorization: `Bearer ${auth.token}`, 'anthropic-beta': CLAUDE_CODE_IDENTITY.betas.join(','), 'x-app': 'cli' }
       : { 'x-api-key': auth.token }),

@@ -25,6 +25,9 @@ globalThis.chrome = {
       Object.assign(tabs[id], props);
       return { ...tabs[id] };
     },
+    remove: async (id) => {
+      delete tabs[id];
+    },
     group: async ({ tabIds, groupId }) => {
       if (groupId !== undefined && !groups[groupId]) throw new Error(`No group with id: ${groupId}.`);
       const id = groupId ?? nextGroup++;
@@ -76,6 +79,30 @@ test('new tabs open in the background inside the group', async () => {
   assert.equal(tabs[tab.id].active, false);
   assert.equal(tabs[tab.id].groupId, browser.groupId);
   assert.equal(browser.tabId, tab.id);
+});
+
+test('a tab opened for reading closes when the next one opens, and the tab the task started on stays', async () => {
+  const browser = new BrowserController({ title: 'Mine', isTakenByOther: () => null });
+  await browser.startOn();
+  const first = await browser.openTab('https://c.test');
+  assert.equal(browser.takeClosedNote(), '', 'leaving the starting tab does not close it');
+  assert.ok(tabs[1], 'the tab the task started on is still open');
+
+  const second = await browser.openTab('https://d.test');
+  assert.equal(tabs[first.id], undefined, 'the page just read is closed');
+  assert.equal(browser.takeClosedNote(), ` Closed tab ${first.id} after reading it.`);
+  assert.ok(tabs[1]);
+  assert.equal(tabs[second.id].groupId, browser.groupId);
+
+  await browser.useTab(2);
+  assert.ok(tabs[2], 'a tab the user already had is not closed');
+  assert.equal(tabs[second.id], undefined, 'leaving the research tab closes it');
+
+  const third = await browser.openTab('https://e.test');
+  await browser.closeDisposableTabs();
+  assert.equal(tabs[third.id], undefined, 'research tabs close when the task ends');
+  assert.ok(tabs[1]);
+  assert.ok(tabs[2]);
 });
 
 test('when the group is gone (all its tabs closed) the next claim makes a new one', async () => {

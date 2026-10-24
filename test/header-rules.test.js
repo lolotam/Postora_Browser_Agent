@@ -14,8 +14,10 @@ test('the Claude token endpoint is called as Claude Code, not as a browser', () 
   assert.deepEqual(header(rule, 'origin'), { header: 'origin', operation: 'remove' });
 });
 
-test('the Anthropic API is called as Claude Code too', () => {
-  assert.equal(header(ruleFor('||api.anthropic.com/'), 'user-agent').value, 'claude-cli/2.1.280');
+test('the Anthropic API is called as Claude Code, without the extension Origin', () => {
+  const rule = ruleFor('||api.anthropic.com/');
+  assert.equal(header(rule, 'user-agent').value, 'claude-cli/2.1.280');
+  assert.deepEqual(header(rule, 'origin'), { header: 'origin', operation: 'remove' });
 });
 
 test('only the extension\'s own requests are changed, never a page\'s', () => {

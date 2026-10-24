@@ -189,6 +189,16 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .msg.final.partial { border-color: var(--warn); }
 .msg.final h3:first-child { margin: 0 0 6px; font-size: 13px; }
 .msg.final.partial h3:first-child { color: var(--warn); }
+.report-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 8px; }
+.report-actions button {
+  width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px; color: var(--text-2); background: transparent; border: 1px solid transparent;
+}
+.report-actions button:hover { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+.report-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.report-actions svg { width: 13px; height: 13px; stroke-width: 1.4; }
+.report-actions .md { font: 700 9px var(--mono); letter-spacing: 0.02em; }
+.report-actions button.copied { color: var(--success); }
 .msg table { border-collapse: collapse; width: 100%; font-size: 12.5px; display: block; overflow-x: auto; }
 .msg th, .msg td { border: 1px solid var(--border); padding: 4px 6px; text-align: start; }
 .msg pre { font-family: var(--mono); background: var(--surface-2); padding: 8px; border-radius: var(--radius-control); overflow-x: auto; direction: ltr; }
@@ -243,6 +253,16 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent-text)
 .card { border: 1px solid var(--border); border-radius: var(--radius-card); padding: 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 10px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { font-weight: 560; font-size: 11.5px; color: var(--text-2); }
+/* A saved key: hidden, last characters visible, green, with a check. Sign out clears it. */
+.key-saved {
+  display: flex; align-items: center; gap: 8px; min-height: 32px;
+  padding: 4px 6px 4px 10px; border: 1px solid var(--success); border-radius: var(--radius-control);
+  background: var(--success-bg); color: var(--success);
+}
+.key-saved[hidden] { display: none; }
+.key-mask { flex: 1; min-width: 0; font: 13px var(--mono); letter-spacing: 0.08em; }
+.key-mark { font-weight: 700; }
+.key-saved .key-clear { margin-inline-start: auto; color: var(--success); padding: 3px 8px; }
 .check { display: flex; gap: 8px; align-items: flex-start; }
 .check input { width: auto; margin-top: 4px; accent-color: var(--accent-text); }
 /* An on/off switch: the setting changes behaviour, not just a detail. */

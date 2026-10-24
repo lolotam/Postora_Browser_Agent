@@ -14,7 +14,12 @@ const SIGN_IN_FAILED = 'The sign-in failed. Please try again.';
 const SIGN_IN_CANCELLED = 'The sign-in was cancelled.';
 const SIGN_IN_SUPERSEDED = 'The sign-in was replaced by another one. Please try again.';
 const SIGN_IN_TIMED_OUT = 'The sign-in timed out after 15 minutes. Please start again.';
+const SIGN_IN_STATE_MISMATCH = 'That code is from a different sign-in. Start again, then paste the new code.';
+const SIGN_IN_MISSING_CODE = 'No authorization code was found. Paste the whole code shown on the sign-in page.';
 const DEVICE_CODE_DISABLED = 'Device-code sign-in is not enabled. In ChatGPT → Settings → Security, enable device code authorization for Codex, or import auth.json instead.';
+// Failures worth keeping after the service worker goes idle. Cancellation,
+// replacement, and timeout already have their own sentences.
+const RECORDED_FAILURES = new Set(['failed', 'state-mismatch', 'missing-code']);
 
 /**
  * The fixed sign-in failures, by the stable code the panel translates. The
@@ -26,6 +31,8 @@ export const SIGN_IN_FAILURES = {
   cancelled: SIGN_IN_CANCELLED,
   superseded: SIGN_IN_SUPERSEDED,
   'timed-out': SIGN_IN_TIMED_OUT,
+  'state-mismatch': SIGN_IN_STATE_MISMATCH,
+  'missing-code': SIGN_IN_MISSING_CODE,
   'device-code-disabled': DEVICE_CODE_DISABLED,
 };
 // The login method each provider is asked for, by the option id pi-ai uses.
@@ -108,7 +115,7 @@ async function runAttempt(attempt, { post, first }) {
     const credential = await accountFlow(attempt.provider).login(interactionFor(attempt, { post, first }));
     const stored = await storeCredential(attempt.provider, credential, { attemptId: attempt.id });
     if (!stored) {
-      failAttempt(attempt, {
+      await failAttempt(attempt, {
         post,
         first,
         ...(attempt.cancelled
@@ -122,7 +129,7 @@ async function runAttempt(attempt, { post, first }) {
     first.resolve({ userCode: null, verificationUrl: null });
     post({ type: 'auth-success', provider: attempt.provider });
   } catch (error) {
-    failAttempt(attempt, { post, first, ...safeFailure(attempt, error) });
+    await failAttempt(attempt, { post, first, ...safeFailure(attempt, error), error });
   } finally {
     clearTimeout(deadline);
   }
@@ -228,6 +235,17 @@ export function accountLoginState(provider) {
   };
 }
 
+/**
+ * The code the user pasted, as one token. A wrapped copy from the Claude page
+ * carries line breaks, and a single-line field turns those into spaces. Either
+ * one makes Anthropic reject a code that was copied in full.
+ */
+export function pastedAuthCode(value) {
+  const compact = String(value ?? '').replace(/\s+/g, '');
+  const token = compact.match(/[A-Za-z0-9_-]{8,}#[A-Za-z0-9_-]{8,}/);
+  return token ? token[0] : compact;
+}
+
 /** Gives the running sign-in the code the user pasted. */
 export function submitAccountInput(provider, attemptId, value) {
   const attempt = attempts.get(provider);
@@ -236,7 +254,7 @@ export function submitAccountInput(provider, attemptId, value) {
   if (!resolve) throw new Error('That sign-in is not asking for a code.');
   attempt.resolveInput = null;
   attempt.needsCode = false;
-  resolve(String(value ?? ''));
+  resolve(pastedAuthCode(value));
   return null;
 }
 
@@ -252,16 +270,41 @@ export async function cancelAccountLogin(provider) {
   return null;
 }
 
-function failAttempt(attempt, { post, first, message, code }) {
+async function failAttempt(attempt, { post, first, message, code, error }) {
   attempt.phase = attempt.cancelled ? 'cancelled' : 'failed';
   attempt.message = message;
   // The stable code, so the panel can show its own wording for it.
   attempt.code = code;
+  // The write finishes before this function returns. runAttempt is inside
+  // withKeepAlive, so the worker stays up until the record is stored.
+  if (RECORDED_FAILURES.has(code)) await rememberSignInFailure(attempt.provider, error);
   // auth-start is always answered, even for a sign-in another one replaced
   // (rejecting an answered one does nothing).
   first.reject(signInError(message, code));
   if (attempt.superseded) return;
   post({ type: 'auth-error', provider: attempt.provider, attemptId: attempt.id, message, code });
+}
+
+/** Stores the safe description of one failure. A storage error changes nothing the panel shows. */
+async function rememberSignInFailure(provider, error) {
+  const detail = signInFailureDetail(error);
+  const record = {
+    provider,
+    at: Date.now(),
+    kind: detail.kind,
+    status: detail.status,
+    oauthError: detail.oauthError,
+  };
+  try {
+    await chrome.storage.local.set({ authLastFailure: record });
+  } catch {
+    // The panel still hears the fixed failure when the disk write does not.
+  }
+  try {
+    console.info('sign-in failed', record.provider, record.kind, record.status, record.oauthError);
+  } catch {
+    // The console line is for the next look. The panel does not read it.
+  }
 }
 
 /**
@@ -278,7 +321,81 @@ function safeFailure(attempt, error) {
   // The credential store's own fixed problems: an expired sign-in, a refresh
   // that failed, a token that came back incomplete.
   if (error?.code && ACCOUNT_ERROR_CODES[error.code]) return { message: error.message, code: error.code };
+  if (text === 'OAuth state mismatch') return { message: SIGN_IN_STATE_MISMATCH, code: 'state-mismatch' };
+  if (text === 'Missing authorization code') return { message: SIGN_IN_MISSING_CODE, code: 'missing-code' };
   return { message: SIGN_IN_FAILED, code: 'failed' };
+}
+
+/**
+ * A safe description of a failed sign-in. pi-ai's error text embeds the
+ * response body, so nothing here copies that text. Status is read only from
+ * the `status=NNN;` field in front of the body, and only when it is 100–599.
+ * The OAuth name is the top-level `error` string of a parsed JSON body.
+ */
+export function signInFailureDetail(error) {
+  const message = String(error?.message ?? '');
+  if (message === 'OAuth state mismatch') return detail('state-mismatch');
+  if (message === 'Missing authorization code') return detail('missing-code');
+  if (message.startsWith('Token exchange returned invalid JSON')) return detail('invalid-json');
+  if (!message.startsWith('Token exchange request failed')) return detail('other');
+
+  const bodyAt = message.indexOf('; body=');
+  const header = bodyAt === -1 ? message : message.slice(0, bodyAt);
+  const status = httpStatus(header);
+  if (status !== null) return detail('http', status, oauthError(message));
+  if (namesNetworkFailure(header)) return detail('network');
+  return detail('other');
+}
+
+function detail(kind, status = null, oauthErrorName = null) {
+  return { kind, status, oauthError: oauthErrorName };
+}
+
+/** The status field of pi-ai's HTTP error, from the header only. */
+function httpStatus(header) {
+  const match = header.match(/HTTP request failed\. status=(\d{3});/);
+  if (!match) return null;
+  const status = Number(match[1]);
+  return status >= 100 && status <= 599 ? status : null;
+}
+
+/** A transport failure named in the wrapper's details, not inside a body. */
+function namesNetworkFailure(header) {
+  const at = header.indexOf('details=');
+  if (at === -1) return false;
+  const details = header.slice(at);
+  return details.includes('TypeError') || details.includes('Failed to fetch');
+}
+
+/**
+ * The OAuth error name, when the body is a JSON object with a short `error` string.
+ * A trailer pi-ai appends (`stack` and the like) is cut off only when the piece
+ * in front of it parses. A bad cut or a bad value yields null.
+ */
+function oauthError(message) {
+  const marker = '; body=';
+  const at = message.indexOf(marker);
+  if (at === -1) return null;
+  let body = message.slice(at + marker.length);
+  const trailer = body.search(/; (?:code|errno|cause|stack)=/);
+  if (trailer >= 0) {
+    const cut = body.slice(0, trailer);
+    try {
+      JSON.parse(cut);
+      body = cut;
+    } catch {
+      // The trailer text was inside the body. The parse below then fails closed.
+    }
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const name = parsed.error;
+  return typeof name === 'string' && /^[a-z0-9_]{1,32}$/.test(name) ? name : null;
 }
 
 /**

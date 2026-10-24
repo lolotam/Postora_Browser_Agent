@@ -19,8 +19,12 @@ test('a code the worker sends becomes the wording of the panel', () => {
 test('the wording of a code is translated', () => {
   setLanguage('ar', fakeDocument);
   assert.equal(authMessage('cancelled'), 'تم إلغاء تسجيل الدخول.');
+  assert.equal(authMessage('state-mismatch'), 'هذا الكود من محاولة تسجيل دخول أخرى. ابدأ من جديد، ثم الصق الكود الجديد.');
+  assert.equal(authMessage('missing-code'), 'لم يُعثر على كود التفويض. الصق الكود كاملًا كما يظهر في صفحة تسجيل الدخول.');
   setLanguage('en', fakeDocument);
   assert.equal(authMessage('cancelled'), 'The sign-in was cancelled.');
+  assert.equal(authMessage('state-mismatch'), 'That code is from a different sign-in. Start again, then paste the new code.');
+  assert.equal(authMessage('missing-code'), 'No authorization code was found. Paste the whole code shown on the sign-in page.');
 });
 
 test('a signed-in provider shows no failure of an earlier sign-in', () => {

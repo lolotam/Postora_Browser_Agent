@@ -35,6 +35,9 @@ let driveBackupTimer = null;
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 chrome.runtime.onInstalled.addListener(installHeaderRules);
 chrome.runtime.onStartup.addListener(installHeaderRules);
+// A worker that wakes after this file changes still has to install the rules.
+// onInstalled does not run for that wake.
+installHeaderRules();
 chrome.tabs.onRemoved.addListener((tabId) => tabSessions.unbindTab(tabId));
 // chrome.notifications exists only once the optional permission is granted, so the
 // listeners are added at start-up when it is, and again when it is granted later.

@@ -80,7 +80,7 @@ test('an account request carries the Claude Code identity and the system prompt 
   assert.equal(init.headers['anthropic-beta'], 'claude-code-20250219,oauth-2025-04-20');
   assert.equal(init.headers['x-app'], 'cli');
   assert.equal(init.headers['anthropic-version'], '2023-06-01');
-  assert.equal(init.headers['anthropic-dangerous-direct-browser-access'], 'true');
+  assert.equal(init.headers['anthropic-dangerous-direct-browser-access'], undefined);
   assert.equal(init.headers['Content-Type'], 'application/json');
   // The service worker sends this version as the User-Agent of the request.
   assert.equal(CLAUDE_CODE_IDENTITY.version, '2.1.280');
@@ -104,6 +104,7 @@ test('an API key request sends x-api-key and no identity line', async () => {
   assert.equal(init.headers['x-api-key'], 'sk-ant-api03-key');
   assert.equal(init.headers.Authorization, undefined);
   assert.equal(init.headers['x-app'], undefined);
+  assert.equal(init.headers['anthropic-dangerous-direct-browser-access'], 'true');
   const body = JSON.parse(init.body);
   // An API key pays for the cache, so the last system block and the last tool
   // carry the breakpoint.
@@ -442,6 +443,7 @@ test('the model list names the models with the efforts they take', async () => {
   ]);
   assert.equal(calls[0].url, 'https://api.anthropic.com/v1/models');
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${ACCOUNT_TOKEN}`);
+  assert.equal(calls[0].init.headers['anthropic-dangerous-direct-browser-access'], undefined);
 });
 
 test('a screenshot travels as a base64 image block', async () => {

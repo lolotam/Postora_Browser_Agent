@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAgent } from '../src/agent/agent.js';
 import { formatSnapshot, normalizeUrl, toolDefinitions } from '../src/agent/tools.js';
-import { renderMarkdown } from '../src/sidepanel/markdown.js';
+import { renderMarkdown, reportFileName } from '../src/sidepanel/markdown.js';
 
 /** Scripted provider session: returns the queued turns in order and records results. */
 function scriptedSession(turns) {
@@ -101,6 +101,13 @@ test('renderMarkdown escapes HTML and only links http(s) URLs', () => {
   assert.ok(!html.includes('<img'));
   assert.ok(!html.includes('href="javascript:'));
   assert.match(html, /<a href="https:\/\/a\.b"/);
+});
+
+test('a report downloads as a markdown file named after the session', () => {
+  assert.equal(reportFileName('Cheapest laptops', '2026-10-24'), 'Cheapest-laptops-2026-10-24.md');
+  assert.equal(reportFileName('New session', '2026-10-24', 'New session'), 'report-2026-10-24.md');
+  assert.equal(reportFileName('أرخص لابتوب', '2026-10-24'), 'أرخص-لابتوب-2026-10-24.md');
+  assert.equal(reportFileName('a/b:c', '2026-10-24'), 'a-b-c-2026-10-24.md');
 });
 
 test('renderMarkdown renders tables, lists and headings', () => {

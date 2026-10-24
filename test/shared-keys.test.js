@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { shareKeys } from '../src/lib/keys.js';
 import { mergeSettings } from '../src/lib/settings.js';
-import { createKeyStore } from '../src/sidepanel/key-store.js';
+import { createKeyStore, keyFieldState, maskKey } from '../src/sidepanel/key-store.js';
 
 test('settings saved before keys were shared give their keys to every slot of the same provider', () => {
   const settings = mergeSettings({
@@ -62,6 +62,14 @@ test('typing a key in one field fills every field showing the same provider', ()
   fastBackup.type('');
   assert.equal(main.value, '');
   assert.deepEqual(store.snapshot(), {});
+});
+
+test('a saved key is shown hidden with its last characters, and stays editable while it is being typed', () => {
+  assert.equal(maskKey('sk-ant-api03-wxyz'), '••••••••wxyz');
+  assert.equal(maskKey('abcd'), '••••••••', 'a key of four characters or fewer stays fully hidden');
+  assert.deepEqual(keyFieldState('sk-live-1234', false), { locked: true, mask: '••••••••1234' });
+  assert.deepEqual(keyFieldState('sk-live-1234', true), { locked: false, mask: '' }, 'typing keeps the field open');
+  assert.deepEqual(keyFieldState('  ', false), { locked: false, mask: '' });
 });
 
 test('switching to a custom endpoint shows that slot\'s own key, not a shared one', () => {

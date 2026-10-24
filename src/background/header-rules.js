@@ -10,7 +10,8 @@
  * - Anthropic wants the Claude Code identity in the User-Agent. Its token
  *   endpoint (platform.claude.com) answers a browser User-Agent with 429
  *   "Rate limited" even on a first try, which made the code exchange and every
- *   refresh fail (seen 2026-10-23).
+ *   refresh fail (seen 2026-10-23). The messages API also rejects the
+ *   extension's Origin for a subscription organization (HTTP 401).
  */
 export function headerRules({ extensionId, extensionVersion, claudeCliVersion }) {
   const own = { initiatorDomains: [extensionId], resourceTypes: ['xmlhttprequest', 'other'] };
@@ -24,7 +25,7 @@ export function headerRules({ extensionId, extensionVersion, claudeCliVersion })
     { id: 4, urlFilter: '||platform.claude.com/', requestHeaders: [noOrigin, claudeCli] },
     { id: 5, urlFilter: '||claude.ai/', requestHeaders: [noOrigin] },
     { id: 6, urlFilter: '||auth.x.ai/', requestHeaders: [noOrigin] },
-    { id: 7, urlFilter: '||api.anthropic.com/', requestHeaders: [claudeCli] },
+    { id: 7, urlFilter: '||api.anthropic.com/', requestHeaders: [claudeCli, noOrigin] },
   ].map(({ id, urlFilter, requestHeaders }) => ({
     id,
     priority: 1,

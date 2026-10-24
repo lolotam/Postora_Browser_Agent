@@ -31,7 +31,7 @@ const DEFINITIONS = [
   { name: 'wait', description: 'Wait for the page to update (e.g. after starting a slow operation).', parameters: obj({ seconds: { type: 'number', description: '1-15' } }, ['seconds']) },
   { name: 'list_tabs', description: 'List all open tabs with their ids. Tabs marked [yours] are in your session\'s tab group.', parameters: obj({}) },
   { name: 'switch_tab', description: 'Control another tab. A tab outside your group joins it; a tab another running session uses is refused.', parameters: obj({ tab_id: int('Tab id from list_tabs') }, ['tab_id']) },
-  { name: 'open_tab', description: 'Open a URL in a new background tab in your group and control it.', parameters: obj({ url: str('Absolute URL') }, ['url']) },
+  { name: 'open_tab', description: 'Open a URL in a new background tab in your group and control it. The tab is closed when you leave it, so save what you need with note first.', parameters: obj({ url: str('Absolute URL') }, ['url']) },
   { name: 'close_tab', description: 'Close one of your tabs by id.', parameters: obj({ tab_id: int('Tab id') }, ['tab_id']) },
   // @store-strip-start
   { name: 'run_javascript', description: 'Evaluate a JavaScript expression in the page and return its JSON-serialisable value. Use for precise data extraction.', parameters: obj({ expression: str('JavaScript expression; may be an async IIFE') }, ['expression']), javascript: true },
@@ -205,17 +205,17 @@ export function createToolExecutor(browser, { askUser, signal = null, notebook =
     },
     switch_tab: async ({ tab_id }) => {
       await browser.useTab(tab_id);
-      return observe(`Switched to tab ${tab_id}.`);
+      return observe(`Switched to tab ${tab_id}.${browser.takeClosedNote?.() ?? ''}`);
     },
     open_tab: async ({ url }) => {
       const tab = await browser.openTab(normalizeUrl(url));
       await browser.waitForLoad({ expectNavigation: true });
-      return observe(`Opened new tab ${tab.id}.`);
+      return observe(`Opened new tab ${tab.id}.${browser.takeClosedNote?.() ?? ''}`);
     },
     close_tab: async ({ tab_id }) => {
       const owner = browser.isTakenByOther(await chrome.tabs.get(tab_id));
       if (owner) throw new Error(`Tab ${tab_id} belongs to session "${owner}".`);
-      await chrome.tabs.remove(tab_id);
+      await browser.closeOwnedTab(tab_id);
       return `Closed tab ${tab_id}.`;
     },
     // @store-strip-start

@@ -51,11 +51,13 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     f('apiKey').value = s.compatible.apiKey;
     preset = s.compatible.preset;
     customKey = preset === 'custom' ? s.compatible.apiKey : '';
+    keyStore.refresh?.(f('apiKey'));
     if (f('claudeAuth')) f('claudeAuth').value = s.claude.auth;
     // The Anthropic key is one key for the whole app, so the shared one wins.
     if (f('claudeApiKey')) {
       keyStore.show(f('claudeApiKey'), ANTHROPIC_GROUP);
       if (!f('claudeApiKey').value) f('claudeApiKey').value = s.claude.apiKey ?? '';
+      keyStore.refresh?.(f('claudeApiKey'));
     }
     f('modelInput').value = slotOf(s).model;
     models = [];

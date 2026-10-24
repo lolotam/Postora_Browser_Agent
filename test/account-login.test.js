@@ -17,7 +17,7 @@ globalThis.chrome = {
   runtime: { getPlatformInfo: async () => ({}) },
 };
 
-const { accountLoginState, cancelAccountLogin, requestedProvider, startAccountLogin, submitAccountInput } = await import('../src/background/account-login.js');
+const { accountLoginState, cancelAccountLogin, requestedProvider, signInFailureDetail, startAccountLogin, submitAccountInput } = await import('../src/background/account-login.js');
 
 let calls;
 function stubFetch(handler) {
@@ -107,6 +107,25 @@ test('the Claude sign-in picks the copy code method and takes the pasted code', 
   assert.equal(store['accountAuth.claude'].credential.access, 'at');
 });
 
+test('a Claude code copied across wrapped lines still exchanges', async () => {
+  stubFetch((url) => {
+    if (url.endsWith('/v1/oauth/token')) return Response.json({ access_token: 'at', refresh_token: 'rt', expires_in: 3600 });
+    throw new Error(`unexpected ${url}`);
+  });
+
+  await startAccountLogin('claude', { post });
+  const state = accountLoginState('claude');
+  const verifier = new URL(openedTabs[0]).searchParams.get('state');
+  // The Claude page wraps the code. Selecting it, or pasting into the one-line
+  // field, puts breaks and spaces in the middle of code#state.
+  submitAccountInput('claude', state.id, `Paste this:\nthe-code\n#\n${verifier}\n`);
+
+  await settled('auth-success');
+  const body = JSON.parse(calls.find((call) => call.url.endsWith('/v1/oauth/token')).init.body);
+  assert.equal(body.code, 'the-code');
+  assert.equal(body.state, verifier);
+});
+
 test('a cancelled sign-in stops and says so', async () => {
   stubFetch(() => { throw new Error('the cancelled sign-in must not reach the network'); });
 
@@ -122,6 +141,7 @@ test('a cancelled sign-in stops and says so', async () => {
   assert.equal(state.phase, 'cancelled');
   assert.equal(state.needsCode, false);
   assert.equal(state.code, 'cancelled');
+  assert.equal(store.authLastFailure, undefined, 'a cancelled sign-in is not recorded');
 });
 test('a sign-in replaced before it showed anything still answers, and stays quiet', async () => {
   // A request that answers only by being aborted, as a real fetch does.
@@ -237,5 +257,163 @@ test('nothing the panel gets carries a token, a code or an authorization URL', a
     assert.ok(!text.includes(verifier), 'the PKCE verifier must not be posted');
     assert.ok(!text.includes('code_challenge'), 'an authorization URL must not be posted');
     assert.ok(!/[?&]state=/.test(text), 'an authorization URL must not be posted');
+  }
+});
+
+const SECRET = 'sekret-access-token-value';
+const LOUD_BODY = {
+  error: 'invalid_grant',
+  error_description: `OAuth state mismatch status=200 Failed to fetch ${SECRET}`,
+  access_token: SECRET,
+};
+
+/** The shape pi-ai gives the worker: the HTTP error wrapped, with the body inside. */
+function wrappedExchange({ status = '400', body = LOUD_BODY, trailer = '; stack=Error: stack' } = {}) {
+  const payload = typeof body === 'string' ? body : JSON.stringify(body);
+  return 'Token exchange request failed. url=https://platform.claude.com/v1/oauth/token; redirect_uri=https://platform.claude.com/oauth/code/callback; response_type=authorization_code; details=Error: HTTP request failed. status='
+    + `${status}; url=https://platform.claude.com/v1/oauth/token; body=${payload}${trailer}`;
+}
+
+function hidesSecrets(value) {
+  const text = JSON.stringify(value);
+  assert.equal(text.includes(SECRET), false);
+  assert.equal(text.includes('error_description'), false);
+}
+
+test('a wrapped token error keeps only the status and the OAuth name', () => {
+  const detail = signInFailureDetail(new Error(wrappedExchange()));
+  assert.deepEqual(detail, { kind: 'http', status: 400, oauthError: 'invalid_grant' });
+  hidesSecrets(detail);
+
+  const network = signInFailureDetail(new Error(
+    'Token exchange request failed. url=https://platform.claude.com/v1/oauth/token; redirect_uri=https://platform.claude.com/oauth/code/callback; response_type=authorization_code; details=TypeError: Failed to fetch; stack=TypeError: Failed to fetch',
+  ));
+  assert.deepEqual(network, { kind: 'network', status: null, oauthError: null });
+
+  const invalid = signInFailureDetail(new Error(
+    `Token exchange returned invalid JSON. url=https://platform.claude.com/v1/oauth/token; body=<html>OAuth state mismatch status=200 Failed to fetch ${SECRET}</html>`,
+  ));
+  assert.deepEqual(invalid, { kind: 'invalid-json', status: null, oauthError: null });
+  hidesSecrets(invalid);
+
+  assert.deepEqual(signInFailureDetail(new Error('OAuth state mismatch')), { kind: 'state-mismatch', status: null, oauthError: null });
+  assert.deepEqual(signInFailureDetail(new Error('Missing authorization code')), { kind: 'missing-code', status: null, oauthError: null });
+  assert.deepEqual(signInFailureDetail(new Error(wrappedExchange({ status: '99' }))), { kind: 'other', status: null, oauthError: null });
+  assert.deepEqual(signInFailureDetail(new Error(wrappedExchange({ status: '600' }))), { kind: 'other', status: null, oauthError: null });
+  assert.deepEqual(signInFailureDetail(new Error(wrappedExchange({ status: '4000' }))), { kind: 'other', status: null, oauthError: null });
+  assert.deepEqual(
+    signInFailureDetail(new Error(wrappedExchange({ body: { error: 'Invalid Grant', access_token: SECRET } }))),
+    { kind: 'http', status: 400, oauthError: null },
+  );
+  assert.deepEqual(
+    signInFailureDetail(new Error(wrappedExchange({ body: { error: 'the code was rejected outright', access_token: SECRET } }))),
+    { kind: 'http', status: 400, oauthError: null },
+  );
+});
+
+test('words inside the token body do not change the kind', () => {
+  const detail = signInFailureDetail(new Error(wrappedExchange({
+    body: {
+      error: 'invalid_grant',
+      error_description: `OAuth state mismatch status=200 Failed to fetch ${SECRET}`,
+      access_token: SECRET,
+    },
+  })));
+  assert.equal(detail.kind, 'http');
+  assert.equal(detail.status, 400);
+  assert.equal(detail.oauthError, 'invalid_grant');
+  hidesSecrets(detail);
+});
+
+test('a refused Claude code is recorded without the response body', async () => {
+  const lines = [];
+  const original = console.info;
+  console.info = (...args) => { lines.push(args); };
+  stubFetch((url) => {
+    if (url.endsWith('/v1/oauth/token')) {
+      return new Response(JSON.stringify(LOUD_BODY), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`unexpected ${url}`);
+  });
+  try {
+    await startAccountLogin('claude', { post });
+    const state = accountLoginState('claude');
+    const verifier = new URL(openedTabs[0]).searchParams.get('state');
+    submitAccountInput('claude', state.id, `the-code#${verifier}`);
+    const failure = await settled('auth-error');
+    assert.equal(failure.code, 'failed');
+    assert.equal(failure.message, 'The sign-in failed. Please try again.');
+    hidesSecrets(events);
+    const record = store.authLastFailure;
+    assert.equal(record.provider, 'claude');
+    assert.equal(record.kind, 'http');
+    assert.equal(record.status, 400);
+    assert.equal(record.oauthError, 'invalid_grant');
+    assert.equal(typeof record.at, 'number');
+    hidesSecrets(record);
+    hidesSecrets(lines);
+  } finally {
+    console.info = original;
+  }
+});
+
+test('a Claude exchange that never connects is recorded as a network failure', async () => {
+  stubFetch(() => { throw new TypeError('Failed to fetch'); });
+  await startAccountLogin('claude', { post });
+  const state = accountLoginState('claude');
+  const verifier = new URL(openedTabs[0]).searchParams.get('state');
+  submitAccountInput('claude', state.id, `the-code#${verifier}`);
+  const failure = await settled('auth-error');
+  assert.equal(failure.code, 'failed');
+  assert.equal(failure.message, 'The sign-in failed. Please try again.');
+  assert.deepEqual(
+    { kind: store.authLastFailure.kind, status: store.authLastFailure.status, oauthError: store.authLastFailure.oauthError },
+    { kind: 'network', status: null, oauthError: null },
+  );
+});
+
+test('a code from another Claude sign-in is named, and a paste with no code is named', async () => {
+  stubFetch(() => { throw new Error('the exchange must not run'); });
+  await startAccountLogin('claude', { post });
+  const state = accountLoginState('claude');
+  submitAccountInput('claude', state.id, 'the-code#otherstate');
+  const mismatch = await settled('auth-error');
+  assert.equal(mismatch.code, 'state-mismatch');
+  assert.equal(mismatch.message, 'That code is from a different sign-in. Start again, then paste the new code.');
+  assert.equal(store.authLastFailure.kind, 'state-mismatch');
+
+  events.length = 0;
+  await startAccountLogin('claude', { post });
+  // The state is checked first. An empty code with this sign-in's own state
+  // is the missing-code case; a different state is the mismatch above.
+  const verifier = new URL(openedTabs[openedTabs.length - 1]).searchParams.get('state');
+  submitAccountInput('claude', accountLoginState('claude').id, `#${verifier}`);
+  const missing = await settled('auth-error');
+  assert.equal(missing.code, 'missing-code');
+  assert.equal(missing.message, 'No authorization code was found. Paste the whole code shown on the sign-in page.');
+  assert.equal(store.authLastFailure.kind, 'missing-code');
+});
+
+test('a storage failure still tells the panel', async () => {
+  const rejections = [];
+  const onRejection = (reason) => { rejections.push(reason); };
+  process.on('unhandledRejection', onRejection);
+  const original = chrome.storage.local.set;
+  chrome.storage.local.set = async (obj) => {
+    if (Object.prototype.hasOwnProperty.call(obj, 'authLastFailure')) throw new Error('disk full');
+    return original(obj);
+  };
+  stubFetch(() => { throw new Error('the exchange must not run'); });
+  try {
+    await startAccountLogin('claude', { post });
+    submitAccountInput('claude', accountLoginState('claude').id, 'the-code#otherstate');
+    const failure = await settled('auth-error');
+    assert.equal(failure.code, 'state-mismatch');
+    assert.equal(store.authLastFailure, undefined);
+    await tick();
+    assert.equal(rejections.length, 0);
+  } finally {
+    chrome.storage.local.set = original;
+    process.off('unhandledRejection', onRejection);
   }
 });
