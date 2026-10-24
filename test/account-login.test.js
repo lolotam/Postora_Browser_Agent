@@ -17,7 +17,7 @@ globalThis.chrome = {
   runtime: { getPlatformInfo: async () => ({}) },
 };
 
-const { accountLoginState, cancelAccountLogin, startAccountLogin, submitAccountInput } = await import('../src/background/account-login.js');
+const { accountLoginState, cancelAccountLogin, requestedProvider, startAccountLogin, submitAccountInput } = await import('../src/background/account-login.js');
 
 let calls;
 function stubFetch(handler) {
@@ -182,6 +182,13 @@ test('a failed sign-in posts a fixed message, never what the provider answered',
   assert.equal(posted.message, 'The sign-in failed. Please try again.');
   assert.equal(posted.code, 'failed');
   assert.equal(accountLoginState('chatgpt').code, 'failed', 'the login state carries the code too');
+});
+
+test('a panel request names its provider; one that names none is refused, not taken as ChatGPT', () => {
+  assert.equal(requestedProvider({ type: 'auth-start', provider: 'claude' }), 'claude');
+  for (const provider of [undefined, '', 'openai']) {
+    assert.throws(() => requestedProvider({ type: 'auth-start', provider }), /account provider/i);
+  }
 });
 
 test('the state of a provider without a sign-in is empty', () => {

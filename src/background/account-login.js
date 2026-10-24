@@ -35,6 +35,16 @@ const RUNNING_PHASES = new Set(['starting', 'awaiting-code', 'authorizing']);
 
 const attempts = new Map(); // provider → its last attempt
 
+/**
+ * The account provider a panel request is about. The panel always names one,
+ * so a request that names none is refused: taking it as ChatGPT would run
+ * ChatGPT's sign-in from another provider's button.
+ */
+export function requestedProvider(msg) {
+  if (!ACCOUNT_PROVIDERS.includes(msg.provider)) throw new Error(`Unknown account provider ${msg.provider}.`);
+  return msg.provider;
+}
+
 /** Keeps the service worker alive while `task` runs: a pending fetch is not activity. */
 export async function withKeepAlive(task) {
   const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
