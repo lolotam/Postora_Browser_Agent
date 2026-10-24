@@ -18,6 +18,10 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
+// The sign-in scenario mocks OpenAI for the service worker's own requests,
+// which Playwright routes only with this switch on.
+process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = '1';
+
 // E2E_EXTENSION_DIR runs the same scenarios on another copy, such as the unpacked store build.
 const EXTENSION_DIR = process.env.E2E_EXTENSION_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -459,6 +463,49 @@ async function runParallelScenario(context, extensionId) {
   }
 }
 
+/**
+ * A ChatGPT sign-in started after the worker stopped while the panel stayed
+ * open, as it does after a sign-out and a pause. OpenAI is mocked: the device
+ * code is handed out, then the poll fails. The panel must say so instead of
+ * showing the code forever, as it did for a ChatGPT re-sign-in reported on
+ * 2026-10-24.
+ */
+async function runSignInAfterRestartScenario(context, extensionId) {
+  let polls = 0;
+  const routes = {
+    'https://auth.openai.com/api/accounts/deviceauth/usercode': (route) => route.fulfill({ json: { device_auth_id: 'dev-1', user_code: 'ABCD-1234', interval: '1' } }),
+    // Pending once, then a failure the flow cannot recover from.
+    'https://auth.openai.com/api/accounts/deviceauth/token': (route) => { polls += 1; return route.fulfill(polls < 2 ? { status: 403, body: '' } : { status: 500, body: 'boom' }); },
+    'https://auth.openai.com/codex/device': (route) => route.fulfill({ body: 'device page' }),
+  };
+  for (const [url, handler] of Object.entries(routes)) await context.route(url, handler);
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  try {
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await panel.waitForFunction(() => document.querySelectorAll('#preset option').length > 0);
+    if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+    const cdp = await context.newCDPSession(panel);
+    await cdp.send('ServiceWorker.enable');
+    await cdp.send('ServiceWorker.stopAllWorkers');
+    await panel.selectOption('#provider', 'chatgpt');
+    await panel.click('#chatgptSection [data-auth="login"]');
+    const message = await panel.waitForSelector('#chatgptSection [data-auth="message"]:not([hidden])', { timeout: 15000 })
+      .then((node) => node.innerText(), () => null);
+    const codeStillShown = await panel.isVisible('#chatgptSection [data-auth="device"]');
+    console.log(`\n== scenario: sign-in-after-restart ==\npolls ${polls}, message ${JSON.stringify(message)}, code still shown ${codeStillShown}`);
+    const failures = [];
+    if (!message) failures.push('a sign-in that failed after a worker restart never told the panel');
+    if (codeStillShown) failures.push('the device code stayed on screen after the sign-in failed');
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    return failures;
+  } finally {
+    for (const url of Object.keys(routes)) await context.unroute(url);
+    await panel.close();
+  }
+}
+
 async function main() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-e2e-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -474,6 +521,7 @@ async function main() {
     const extensionId = new URL(worker.url()).host;
 
     const failures = [
+      ...(await runSignInAfterRestartScenario(context, extensionId)),
       ...(await runParallelScenario(context, extensionId)),
       ...(await runScenario(context, extensionId, {
         name: 'llm',

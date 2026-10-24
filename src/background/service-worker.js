@@ -3,7 +3,7 @@
 
 import { SessionRunner } from './session-runner.js';
 import { testProviderSlot } from '../agent/model-session.js';
-import { accountLoginState, cancelAccountLogin, startAccountLogin, submitAccountInput, withKeepAlive } from './account-login.js';
+import { accountLoginState, cancelAccountLogin, requestedProvider, startAccountLogin, submitAccountInput, withKeepAlive } from './account-login.js';
 import { fastClientFor } from '../fast/clients.js';
 import { accountsIn, exportBackup, importBackup } from '../lib/backup.js';
 import { errorResponse } from '../lib/errors.js';
@@ -22,7 +22,6 @@ import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
 
 const GROUP_COLORS = ['cyan', 'blue', 'green', 'yellow', 'purple', 'pink', 'orange', 'red'];
-const DEFAULT_PROVIDER = 'chatgpt';
 const runners = new Map(); // sessionId → SessionRunner
 const loading = new Map(); // sessionId → Promise<SessionRunner>
 const panels = new Set(); // every open panel port, for list updates and sign-in errors
@@ -140,7 +139,7 @@ async function handleRequest(msg, sender) {
     case 'save-settings':
       return saveSettings(msg.settings);
     case 'auth-status':
-      return authStatusFor(providerOf(msg));
+      return authStatusFor(requestedProvider(msg));
     case 'backup-export':
       return exportBackup();
     case 'backup-import': {
@@ -150,19 +149,19 @@ async function handleRequest(msg, sender) {
       return importBackup(msg.data);
     }
     case 'auth-start':
-      return startAccountLogin(providerOf(msg), { post: postToPanels });
+      return startAccountLogin(requestedProvider(msg), { post: postToPanels });
     case 'auth-cancel':
-      await cancelAccountLogin(providerOf(msg));
+      await cancelAccountLogin(requestedProvider(msg));
       return null;
     case 'auth-input':
-      return submitAccountInput(providerOf(msg), msg.attemptId, msg.value);
+      return submitAccountInput(requestedProvider(msg), msg.attemptId, msg.value);
     case 'auth-import':
       // A sign-in still running would poll, keep its tab and keep the worker awake.
       await cancelAccountLogin('chatgpt');
       await importCodexAuthJson(msg.text);
       return authStatusFor('chatgpt');
     case 'auth-logout': {
-      const provider = providerOf(msg);
+      const provider = requestedProvider(msg);
       await cancelAccountLogin(provider);
       await signOut(provider);
       return authStatusFor(provider);
@@ -288,11 +287,6 @@ async function deleteSession(id) {
   await tabSessions.unbindSession(id);
   broadcastSessions();
   return null;
-}
-
-/** The provider a message is about; the panel only names one for the newer providers. */
-function providerOf(msg) {
-  return msg.provider || DEFAULT_PROVIDER;
 }
 
 /** The account status of a provider, with the state of any sign-in running for it. */

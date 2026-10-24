@@ -1519,9 +1519,19 @@ async function refreshAuthStates() {
   ACCOUNT_PROVIDERS.forEach((provider, i) => { if (statuses[i]) showAuth(provider, statuses[i]); });
 }
 
+/**
+ * Opens the port a sign-in's events come on. The port closed with a worker
+ * that stopped while the panel stayed open, and the worker the request wakes
+ * would post a failure, the code prompt and the device code to no panel.
+ */
+function listenForSignIn() {
+  if (!port && sessionId) connect();
+}
+
 async function startLogin(provider) {
   $('settingsError').hidden = true;
   setAuthMessage(provider, '');
+  listenForSignIn();
   try {
     const { userCode, verificationUrl } = await request('auth-start', { provider });
     if (userCode) showDeviceCode(provider, userCode, verificationUrl);
