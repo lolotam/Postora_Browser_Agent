@@ -489,6 +489,8 @@ async function runSignInAfterRestartScenario(context, extensionId) {
     const cdp = await context.newCDPSession(panel);
     await cdp.send('ServiceWorker.enable');
     await cdp.send('ServiceWorker.stopAllWorkers');
+    // The panel learns of the closed port a moment later, as runScenario's restart does.
+    await panel.waitForTimeout(500);
     await panel.selectOption('#provider', 'chatgpt');
     await panel.click('#chatgptSection [data-auth="login"]');
     const message = await panel.waitForSelector('#chatgptSection [data-auth="message"]:not([hidden])', { timeout: 15000 })
@@ -496,6 +498,8 @@ async function runSignInAfterRestartScenario(context, extensionId) {
     const codeStillShown = await panel.isVisible('#chatgptSection [data-auth="device"]');
     console.log(`\n== scenario: sign-in-after-restart ==\npolls ${polls}, message ${JSON.stringify(message)}, code still shown ${codeStillShown}`);
     const failures = [];
+    // Two polls: the device code was handed out and polled, so the failure is the poll's, not an earlier one.
+    if (polls < 2) failures.push(`expected the sign-in to poll OpenAI twice, it polled ${polls} times`);
     if (!message) failures.push('a sign-in that failed after a worker restart never told the panel');
     if (codeStillShown) failures.push('the device code stayed on screen after the sign-in failed');
     if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
