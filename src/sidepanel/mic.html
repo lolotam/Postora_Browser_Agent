@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Postora</title>
+  <link rel="icon" href="../../icons/icon-32.png" />
+  <link rel="stylesheet" href="panel.css" />
+  <style>
+    body { align-items: center; justify-content: center; padding: 24px; }
+    main { width: min(360px, 100%); display: flex; flex-direction: column; gap: 12px; }
+    h1 { font-size: 16px; margin: 0; }
+    #lead { margin: 0; color: var(--text-2); }
+    #live { margin: 0; min-height: 2.6em; }
+    button.primary { align-self: flex-start; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 data-i18n="mic.title"></h1>
+    <p id="lead" data-i18n="mic.lead"></p>
+    <p id="live"></p>
+    <button type="button" class="primary" id="allow" data-i18n="mic.allow"></button>
+  </main>
+  <script type="module" src="mic.js"></script>
+</body>
+</html>

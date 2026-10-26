@@ -22,6 +22,18 @@ function scriptedSession(turns) {
 
 const call = (id, name, args = {}) => ({ id, name, args });
 
+test('an attached picture is sent with the task', async () => {
+  const seen = [];
+  const session = {
+    addUserMessage: (text, images) => seen.push({ text, images }),
+    addToolResult() {},
+    next: async () => ({ text: '', toolCalls: [call('1', 'done', { report: 'ok', success: true })] }),
+  };
+  await runAgent({ session, task: 'look', images: ['data:image/jpeg;base64,aa'], maxSteps: 2, emit: () => {}, execute: async () => ({ output: 'ok' }) });
+  assert.equal(seen[0].text, 'look');
+  assert.deepEqual(seen[0].images, ['data:image/jpeg;base64,aa']);
+});
+
 test('runAgent executes tools and finishes on done', async () => {
   const session = scriptedSession([
     { text: '', toolCalls: [call('1', 'navigate', { url: 'x.com' })] },

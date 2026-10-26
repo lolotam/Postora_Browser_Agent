@@ -25,7 +25,8 @@ export class SessionRunner {
     this.transcript = body.transcript ?? [];
     this.storedLog = body.log;
     this.notebook = Notebook.from(body.notebook); // kept for follow-up tasks and reopening
-    // Messages sent while a task runs: { id, text, mode, now }. See steering().
+    // Messages sent while a task runs: { id, text, model, images, mode, now }.
+    // `text` is the short line in the chat; `model` is the full file text.
     this.inbox = Array.isArray(body.pending) ? body.pending : [];
     this.turnAbort = null;
     this.onSessionsChanged = onSessionsChanged;
@@ -64,12 +65,12 @@ export class SessionRunner {
   }
 
   receive(msg) {
-    if (msg.type === 'run') this.start(msg.text);
-    else if (msg.type === 'steer') this.steer(msg.text, msg.mode);
+    if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images });
+    else if (msg.type === 'steer') this.steer(msg.text, msg.mode, { display: msg.display, images: msg.images });
     else if (msg.type === 'steer-now') this.sendNow(msg.id);
     else if (msg.type === 'steer-cancel') this.dropMessage(msg.id);
     else if (msg.type === 'stop') this.stop();
-    else if (msg.type === 'answer') this.answer(msg.text);
+    else if (msg.type === 'answer') this.answer(msg.text, msg.display);
     else if (msg.type === 'dismiss-notice') this.emit({ type: 'notice-dismissed', id: msg.id });
   }
 
@@ -102,16 +103,18 @@ export class SessionRunner {
    * next turn; "interrupt": its current turn is cut short to read it now; "queue":
    * it waits for the task to finish and then starts the follow-up task.
    */
-  steer(text, mode = 'next-step') {
+  steer(text, mode = 'next-step', { display, images } = {}) {
     const clean = String(text ?? '').trim();
     if (!clean) return;
+    const shown = display || clean;
+    const attached = Array.isArray(images) ? images : [];
     if (!this.running) {
-      this.start(clean);
+      this.start(clean, { display: shown, images: attached });
       return;
     }
-    const item = { id: crypto.randomUUID(), text: clean, mode: ['interrupt', 'queue'].includes(mode) ? mode : 'next-step', now: mode === 'interrupt' };
+    const item = { id: crypto.randomUUID(), text: shown, model: clean, images: attached, mode: ['interrupt', 'queue'].includes(mode) ? mode : 'next-step', now: mode === 'interrupt' };
     this.inbox.push(item);
-    this.emit({ type: 'pending-added', item });
+    this.emit({ type: 'pending-added', item: { id: item.id, text: item.text, mode: item.mode, now: item.now } });
     this.scheduleSave();
     if (item.now) this.turnAbort?.abort();
   }
@@ -122,7 +125,7 @@ export class SessionRunner {
     if (!item) return;
     if (!this.running) {
       this.dropMessage(id);
-      this.start(item.text);
+      this.start(item.model || item.text, { display: item.text, images: item.images });
       return;
     }
     item.now = true;
@@ -149,7 +152,11 @@ export class SessionRunner {
           this.emit({ type: 'user', text: m.text, steer: true });
         }
         // The reply language is restated with each message, as with each task.
-        return ready.map((m) => m.text + replyLanguageReminder(this.settings?.replyLanguage));
+        // `model` is the full file text; `text` is the short line shown in the chat.
+        return ready.map((m) => ({
+          text: (m.model || m.text) + replyLanguageReminder(this.settings?.replyLanguage),
+          images: m.images ?? [],
+        }));
       },
       turnSignal: (signal) => {
         this.turnAbort = new AbortController();
@@ -158,22 +165,24 @@ export class SessionRunner {
     };
   }
 
-  async start(text) {
+  async start(text, { display, images } = {}) {
     if (this.running) {
       this.emit({ type: 'error', message: 'A task is already running in this session. Stop it first.' });
       return;
     }
+    const shown = display || text;
+    const attached = Array.isArray(images) ? images : [];
     const abort = new AbortController();
     this.abort = abort;
     // Extension API calls reset the service worker idle timer while the model thinks.
     const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
     this.notified.clear();
     this.retryNoticeShown = false;
-    this.emit({ type: 'user', text });
+    this.emit({ type: 'user', text: shown });
     this.emit({ type: 'status', running: true });
     let finished = false;
     try {
-      if (!this.titled) await this.nameAfter(text);
+      if (!this.titled) await this.nameAfter(shown);
       this.onSessionsChanged(); // after naming, so other panels list it with its title
       const settings = await loadSettings();
       this.settings = settings;
@@ -190,6 +199,7 @@ export class SessionRunner {
         session: this.session,
         execute,
         task: text + describeTabContext(tab) + replyLanguageReminder(settings.replyLanguage),
+        images: attached,
         maxSteps: Math.max(1, Number(settings.maxSteps) || 40),
         signal: abort.signal,
         emit: (event) => this.emit(event),
@@ -215,9 +225,11 @@ export class SessionRunner {
     // Messages still waiting become the follow-up task, sent together. After a Stop or
     // an error they stay, so the user decides.
     if (finished && this.inbox.length && !this.disposed) {
-      const next = this.inbox.map((m) => m.text).join('\n\n');
+      const next = this.inbox.map((m) => m.model || m.text).join('\n\n');
+      const nextImages = this.inbox.flatMap((m) => m.images ?? []);
+      const nextShown = this.inbox.map((m) => m.text).join('\n\n');
       for (const m of [...this.inbox]) this.dropMessage(m.id);
-      this.start(next);
+      this.start(next, { display: nextShown, images: nextImages });
     }
   }
 
@@ -270,12 +282,12 @@ export class SessionRunner {
     });
   }
 
-  answer(text) {
+  answer(text, display) {
     const pending = this.pendingQuestion;
     if (!pending) return;
     this.pendingQuestion = null;
     this.clearAskNotices();
-    this.emit({ type: 'user', text, answer: true });
+    this.emit({ type: 'user', text: display || text, answer: true });
     pending.resolve(text);
   }
 

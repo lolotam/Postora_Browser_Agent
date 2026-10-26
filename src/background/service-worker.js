@@ -20,6 +20,7 @@ import * as tabSessions from '../sessions/tab-sessions.js';
 import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive-backup.js';
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
+import { isMicRelay } from '../sidepanel/voice.js';
 
 const GROUP_COLORS = ['cyan', 'blue', 'green', 'yellow', 'purple', 'pink', 'orange', 'red'];
 const runners = new Map(); // sessionId → SessionRunner
@@ -126,6 +127,12 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // The microphone window talks to the side panel. It is not a worker request,
+  // and an unknown type here would be reported as a failed call.
+  if (isMicRelay(msg)) {
+    sendResponse({ ok: true });
+    return false;
+  }
   handleRequest(msg, sender).then(
     (result) => sendResponse({ ok: true, result }),
     (err) => sendResponse(errorResponse(err)),

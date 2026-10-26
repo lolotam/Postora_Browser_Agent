@@ -1,4 +1,5 @@
 import { renderMarkdown, reportFileName } from './markdown.js';
+import { heardText, MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
 import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
 import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
 import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
@@ -10,6 +11,8 @@ import { FEEDBACK_FORM_ID, afterDismissal, afterRating, sendFeedback, shouldAskF
 import { googleAccount, signInWithGoogle, signOutOfGoogle } from '../lib/google-account.js';
 import { ACCOUNT_PROVIDERS, PROVIDER_LABELS, RECOMMENDED_SETUP, recommendedSlots, settingsProblem, slotSettings } from '../lib/settings.js';
 import { STORE_BUILD } from '../lib/build.js';
+import { packFiles } from '../lib/read-file.js';
+import { FILE_LIMITS, readLocalFile } from './attach.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -558,22 +561,307 @@ function scrollDown() {
   box.scrollTop = box.scrollHeight;
 }
 
-$('composer').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const text = $('input').value.trim();
-  if (!text) return;
+let attachments = [];
+
+function fileWarning(file) {
+  if (file.warning === 'too-big') return t('composer.fileBig', { name: file.name });
+  if (file.warning === 'unreadable-image') return t('composer.fileBad', { name: file.name });
+  return file.warning || '';
+}
+
+function renderFiles() {
+  const list = $('fileChips');
+  list.hidden = attachments.length === 0;
+  list.replaceChildren(...attachments.map((file) => {
+    const li = document.createElement('li');
+    const name = document.createElement('span');
+    name.className = 'text';
+    name.textContent = file.pending ? `${file.name}…` : file.name;
+    const warning = fileWarning(file);
+    if (warning) name.title = warning;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.title = t('composer.removeFile');
+    remove.setAttribute('aria-label', t('composer.removeFile'));
+    remove.addEventListener('click', () => {
+      attachments = attachments.filter((item) => item.id !== file.id);
+      renderFiles();
+    });
+    li.append(name, remove);
+    return li;
+  }));
+}
+
+async function addFiles(files) {
+  const room = FILE_LIMITS.maxFiles - attachments.length;
+  if (files.length > room) $('hint').textContent = t('composer.fileMany', { n: FILE_LIMITS.maxFiles });
+  for (const file of files.slice(0, Math.max(0, room))) {
+    const id = crypto.randomUUID();
+    attachments.push({ id, name: file.name, pending: true, text: '', warning: '', images: [] });
+    renderFiles();
+    try {
+      const read = await readLocalFile(file);
+      const slot = attachments.find((item) => item.id === id);
+      if (slot) Object.assign(slot, read, { pending: false, id });
+    } catch {
+      const slot = attachments.find((item) => item.id === id);
+      if (slot) Object.assign(slot, { pending: false, warning: 'unreadable-image' });
+    }
+    renderFiles();
+  }
+}
+
+function submitComposer(text) {
+  const value = text.trim();
+  if (!value && !attachments.length) return;
+  if (attachments.some((file) => file.pending)) {
+    $('hint').textContent = t('composer.reading');
+    return;
+  }
+  const packed = packFiles(value, attachments, t('composer.filesTask'));
+  if (!packed) {
+    $('hint').textContent = t('composer.fileNone');
+    return;
+  }
+  attachments = [];
+  renderFiles();
+  $('input').value = '';
+  $('voiceLive').textContent = '';
+  const message = { text: packed.task, display: packed.display, images: packed.images };
   if (ui.question) {
-    send({ type: 'answer', text });
+    send({ type: 'answer', ...message });
     ui.question = null;
     $('hint').textContent = t('status.running');
     $('sendBtn').hidden = true;
   } else if (ui.running) {
-    send({ type: 'steer', text, mode: settings?.steerMode ?? 'next-step' });
+    send({ type: 'steer', ...message, mode: settings?.steerMode ?? 'next-step' });
   } else {
-    send({ type: 'run', text });
+    send({ type: 'run', ...message });
   }
-  $('input').value = '';
+}
+
+$('composer').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitComposer($('input').value);
 });
+$('attachBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', () => {
+  addFiles([...$('fileInput').files]);
+  $('fileInput').value = '';
+});
+$('composerBox').addEventListener('dragover', (event) => {
+  event.preventDefault();
+  $('composerBox').classList.add('dropping');
+});
+$('composerBox').addEventListener('dragleave', () => $('composerBox').classList.remove('dropping'));
+$('composerBox').addEventListener('drop', (event) => {
+  event.preventDefault();
+  $('composerBox').classList.remove('dropping');
+  addFiles([...event.dataTransfer.files]);
+});
+
+// The composer is text until this is pressed, then the box becomes a microphone.
+// `external` means the real microphone window is the one listening.
+let voice = { recognition: null, text: '', sendOnEnd: false, external: false };
+// 'prompt' until Chrome reports the extension's own microphone permission.
+let micPermission = 'prompt';
+// Set when the side panel is allowed the microphone and recognition still refuses.
+let panelMicBroken = false;
+let micWindowId = null;
+let micEpoch = 0;
+
+function watchMicrophone() {
+  const query = navigator.permissions?.query;
+  if (!query) {
+    micPermission = 'unknown';
+    return;
+  }
+  query.call(navigator.permissions, { name: 'microphone' }).then((status) => {
+    micPermission = status.state;
+    status.onchange = () => { micPermission = status.state; };
+  }).catch(() => { micPermission = 'unknown'; });
+}
+
+function relayMic(kind) {
+  chrome.runtime.sendMessage({ source: MIC_PANEL, kind }).catch(() => {});
+}
+
+async function openMicWindow() {
+  $('hint').textContent = t(micPermission === 'denied' ? 'composer.micDenied' : 'composer.micAsk');
+  if (micWindowId != null) {
+    try {
+      await chrome.windows.update(micWindowId, { focused: true });
+      return;
+    } catch { micWindowId = null; }
+  }
+  micEpoch += 1;
+  const url = chrome.runtime.getURL(`src/sidepanel/mic.html?lang=${encodeURIComponent(currentLanguage())}&epoch=${micEpoch}`);
+  try {
+    const created = await chrome.windows.create({ url, type: 'popup', width: 420, height: 360, focused: true });
+    micWindowId = created?.id ?? null;
+  } catch {
+    $('hint').textContent = t('composer.micFailed');
+  }
+}
+
+function showHeard(text) {
+  // Don't focus the panel: the microphone window is listening, and taking focus
+  // back can make Chrome stop the recognizer.
+  if (!$('composerBox').classList.contains('voice')) setVoiceMode(true, false);
+  voice.external = true;
+  $('voiceLive').textContent = text;
+  $('hint').textContent = t('composer.listening');
+  setListening(true);
+}
+
+function onMicMessage(message) {
+  if (message?.source !== MIC_WINDOW || Number(message.epoch) !== micEpoch) return;
+  if (message.kind === 'partial') {
+    showHeard(message.text || '');
+    return;
+  }
+  if (message.kind === 'moved') {
+    $('hint').textContent = t('composer.micAsk');
+    return;
+  }
+  if (message.kind === 'end') {
+    voice.external = false;
+    setListening(false);
+    const text = String(message.text || '').trim();
+    if (text) submitComposer(text);
+    else if ($('composerBox').classList.contains('voice')) $('hint').textContent = t('composer.micEmpty');
+    return;
+  }
+  if (message.kind === 'error') {
+    voice.external = false;
+    setListening(false);
+    const key = message.code === 'not-allowed' || message.code === 'service-not-allowed' ? 'composer.micDenied' : voiceErrorKey(message.code);
+    if (key) $('hint').textContent = t(key);
+  }
+}
+
+function labelButton(button, key) {
+  button.dataset.i18nTitle = key;
+  button.title = t(key);
+  button.setAttribute('aria-label', button.title);
+}
+
+function setListening(on) {
+  $('micBtn').classList.toggle('listening', on);
+  labelButton($('micBtn'), on ? 'composer.stopListen' : 'composer.listen');
+}
+
+function setVoiceMode(on, focus = true) {
+  $('composerBox').classList.toggle('voice', on);
+  $('voiceStage').hidden = !on;
+  $('input').hidden = on;
+  $('voiceToggle').querySelector('.icon-mic').hidden = on;
+  $('voiceToggle').querySelector('.icon-keys').hidden = !on;
+  $('voiceToggle').setAttribute('aria-pressed', String(on));
+  labelButton($('voiceToggle'), on ? 'composer.type' : 'composer.voice');
+  if (!on) {
+    stopListening(false);
+    if (voice.external) {
+      voice.external = false;
+      relayMic('cancel');
+    }
+    $('voiceLive').textContent = '';
+    if (!ui.question) $('hint').textContent = ui.running ? t('status.running') : '';
+    if (focus) $('input').focus();
+    return;
+  }
+  $('hint').textContent = t('composer.voiceHint');
+  if (focus) $('micBtn').focus();
+}
+
+function startListening() {
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Ctor) {
+    $('hint').textContent = t('composer.micMissing');
+    return;
+  }
+  if (voice.external) relayMic('cancel');
+  voice.external = false;
+  if (panelMicBroken || micListenTarget(micPermission) !== 'panel') {
+    openMicWindow();
+    return;
+  }
+  const recognition = new Ctor();
+  voice = { recognition, text: '', sendOnEnd: true, external: false };
+  recognition.lang = speechLang(currentLanguage());
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  recognition.onresult = (event) => {
+    voice.text = heardText(event.results);
+    $('voiceLive').textContent = voice.text;
+  };
+  recognition.onerror = (event) => {
+    const key = voiceErrorKey(event.error);
+    // Allowed in Chrome's settings, but the side panel still cannot capture.
+    // A real window can, so the next press goes there too.
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      voice.sendOnEnd = false;
+      panelMicBroken = true;
+      const rec = voice.recognition;
+      voice.recognition = null;
+      setListening(false);
+      try { rec?.abort(); } catch { /* it had already stopped */ }
+      openMicWindow();
+      return;
+    }
+    if (key) {
+      voice.sendOnEnd = false;
+      $('hint').textContent = t(key);
+    }
+  };
+  recognition.onend = () => {
+    const text = voice.text.trim();
+    const sendIt = voice.sendOnEnd;
+    const mine = voice.recognition === recognition;
+    if (mine) {
+      voice.recognition = null;
+      setListening(false);
+    }
+    if (sendIt && text) submitComposer(text);
+    else if (sendIt && mine) $('hint').textContent = t('composer.micEmpty');
+  };
+  setListening(true);
+  $('hint').textContent = t('composer.listening');
+  try {
+    recognition.start();
+  } catch {
+    voice.sendOnEnd = false;
+    voice.recognition = null;
+    setListening(false);
+    $('hint').textContent = t('composer.micFailed');
+  }
+}
+
+function stopListening(send) {
+  if (!voice.recognition) return;
+  voice.sendOnEnd = send;
+  try { voice.recognition.stop(); } catch { /* it had already stopped */ }
+}
+
+$('voiceToggle').addEventListener('click', () => {
+  setVoiceMode(!$('composerBox').classList.contains('voice'));
+});
+$('micBtn').addEventListener('click', () => {
+  if (voice.recognition) stopListening(true);
+  else if (voice.external) relayMic('stop');
+  else startListening();
+});
+chrome.runtime.onMessage.addListener(onMicMessage);
+chrome.windows.onRemoved.addListener((id) => {
+  if (id !== micWindowId) return;
+  micWindowId = null;
+  if (voice.external) {
+    voice.external = false;
+    setListening(false);
+  }
+});
+watchMicrophone();
 $('input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
@@ -998,6 +1286,7 @@ $('langBtn').addEventListener('click', async () => {
 /** Static text is retranslated by setLanguage; text this file renders is redrawn here. */
 function applyLanguage(language) {
   setLanguage(language);
+  renderFiles();
   if (!settings) return;
   for (const provider of ACCOUNT_PROVIDERS) if (authState[provider]) showAuth(provider, authState[provider]);
   syncAuthFrames();

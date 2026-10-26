@@ -21,15 +21,19 @@ const SUMMARY_PROMPT = 'You have reached the step limit. Stop using tools and wr
  * `turnSignal(signal)` is the model request's signal, aborted to deliver a message
  * at once (the interrupted turn does not count as a step).
  */
-export async function runAgent({ session, execute, task, maxSteps, signal, emit, fastLayer = null, steering = null }) {
-  session.addUserMessage(task);
+export async function runAgent({ session, execute, task, images = [], maxSteps, signal, emit, fastLayer = null, steering = null }) {
+  session.addUserMessage(task, images);
   let fast = fastLayer;
   let fastActions = [];
   let llmHasSeenPage = false;
 
   for (let step = 1; step <= maxSteps; step += 1) {
     throwIfAborted(signal);
-    for (const text of steering?.take() ?? []) session.addUserMessage(`${STEER_PREFIX}\n${text}`);
+    for (const item of steering?.take() ?? []) {
+      const text = typeof item === 'string' ? item : item.text;
+      const attached = typeof item === 'string' ? [] : (item.images ?? []);
+      session.addUserMessage(`${STEER_PREFIX}\n${text}`, attached);
+    }
 
     // A message waiting for the model goes to it now; the fast layer can wait a step.
     if (fast && !steering?.waiting()) {
