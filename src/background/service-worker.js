@@ -240,6 +240,8 @@ async function handleRequest(msg, sender) {
       return sessionForTab(await chrome.tabs.get(msg.tabId));
     case 'bind-tab':
       return tabSessions.bindTab(msg.tabId, msg.sessionId);
+    case 'tab-owner':
+      return tabOwner(await chrome.tabs.get(msg.tabId), msg.sessionId);
     default:
       throw new Error(`Unknown request ${msg.type}`);
   }
@@ -251,6 +253,16 @@ function sessionForTab(tab) {
     exists: async (id) => (await store.listSessions()).some((s) => s.id === id),
     createBlank: blankSession,
   });
+}
+
+/**
+ * The session that is working in this tab, when it is not the one asking. The
+ * voice path asks before it acts on a tab, so two sessions never work on the
+ * same page.
+ */
+function tabOwner(tab, sessionId) {
+  const owner = isTakenByOther(sessionId, tab);
+  return { taken: Boolean(owner), owner: owner ?? null };
 }
 
 /** The session whose tab group holds the tab; saved sessions count too, since the worker may have restarted. */

@@ -77,7 +77,8 @@ test('messages sent while a task runs: next step, queued, sent now, removed', as
   assert.equal(steering.waiting(), true);
   const first = steering.take();
   assert.equal(first.length, 1); // the queued one waits for the task to end
-  assert.match(first[0], /^use the blue one\n\n\[Reply in the language/); // with the reply-language note
+  assert.match(first[0].text, /^use the blue one\n\n\[Reply in the language/); // with the reply-language note
+  assert.deepEqual(first[0].images, []); // no file came with the message
   assert.equal(steering.waiting(), false);
   assert.deepEqual(events.filter((e) => e.type === 'user' && e.steer).map((e) => e.text), ['use the blue one']);
 
@@ -86,7 +87,9 @@ test('messages sent while a task runs: next step, queued, sent now, removed', as
   runner.sendNow(queued.id);
   assert.equal(signal.aborted, true);
   assert.equal(steering.waiting(), true);
-  assert.match(steering.take()[0], /^then email me/);
+  const second = steering.take();
+  assert.match(second[0].text, /^then email me/);
+  assert.deepEqual(second[0].images, []);
 
   runner.steer('never mind', 'queue');
   runner.dropMessage(runner.inbox[0].id);

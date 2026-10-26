@@ -1,5 +1,5 @@
 import { renderMarkdown, reportFileName } from './markdown.js';
-import { heardText, MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
+import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
 import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
 import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
 import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
@@ -13,6 +13,12 @@ import { ACCOUNT_PROVIDERS, PROVIDER_LABELS, RECOMMENDED_SETUP, recommendedSlots
 import { STORE_BUILD } from '../lib/build.js';
 import { packFiles } from '../lib/read-file.js';
 import { FILE_LIMITS, readLocalFile } from './attach.js';
+import { createFastAsk } from '../fast/clients.js';
+import { approvalText as approvalMessage } from '../voice/voice-approval.js';
+import { createVoiceController } from '../voice/voice-controller.js';
+import { runFastCommand } from '../voice/voice-runner.js';
+import { SECRET_TOKENS } from '../voice/voice-safety.js';
+import { createChromeBrowser } from '../voice/voice-browser.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -47,7 +53,12 @@ let reconnected = false;
 function connect() {
   port = chrome.runtime.connect({ name: `panel:${sessionId}` });
   port.onMessage.addListener(onEvent);
-  port.onDisconnect.addListener(() => { port = null; reconnected = true; });
+  // The worker is gone: the task it was running is gone with it.
+  port.onDisconnect.addListener(() => {
+    port = null;
+    reconnected = true;
+    cancelVoiceTask(t('voice.cancelled'));
+  });
   // The worker may have restarted and lost the sign-in it was in the middle of.
   if (reconnected) {
     reconnected = false;
@@ -68,9 +79,13 @@ function pick(choose) {
   return run;
 }
 
-async function send(message) {
+async function send(message, { signal, expectedSessionId } = {}) {
   while (picking) await picking.catch(() => {});
   if (!sessionId) await showTabSession(); // the lookup on open failed; the message still needs a session
+  signal?.throwIfAborted();
+  if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+    throw new DOMException('Session changed', 'AbortError');
+  }
   if (!port) connect();
   port.postMessage(message);
 }
@@ -78,11 +93,15 @@ async function send(message) {
 function onEvent(event) {
   switch (event.type) {
     case 'replay':
-      // A restarted worker replays an empty transcript; keep what is on screen.
-      if (!ui.replayed) {
+      // A restarted worker replays the transcript. It is history: it is drawn
+      // again, but it does not act on what is on screen now.
+      if (!ui.replayed || event.events?.length) {
         clearMessages();
+        replaying = true;
+        ui.replayed = false; // the finals of the history are not live ones
         event.events.forEach(onEvent);
         ui.replayed = true;
+        replaying = false;
       }
       setRunning(event.running);
       if (event.question) setQuestion(event.question);
@@ -91,6 +110,14 @@ function onEvent(event) {
       break;
     case 'status':
       setRunning(event.running);
+      if (!event.running) {
+        // The task ended without a report: it did not succeed.
+        const entry = voiceEntryFor(event);
+        if (entry) {
+          entry.setErr(t('voice.failed'));
+          finishVoiceTask();
+        }
+      }
       break;
     case 'user': {
       const node = add(event.steer ? 'msg user steer' : 'msg user', event.text);
@@ -156,6 +183,7 @@ function onEvent(event) {
         ui.thread.title.textContent = threadTitle(ui.thread);
       }
       addStep(event);
+      voiceEntryFor(event)?.setStatus(`${t('status.running')} · ${event.name}`, 'thinking');
       break;
     case 'fast-handoff':
       closeThread();
@@ -171,10 +199,24 @@ function onEvent(event) {
         row.title = event.summary;
         if (Number.isFinite(event.ms)) row.append(span('time', formatDuration(event.ms)));
       }
+      const voiceEntry = voiceEntryFor(event);
+      if (voiceEntry) {
+        const mark = event.ok ? '✓' : '✗';
+        voiceEntry.setStatus(`${mark} ${event.summary || event.name}`, event.ok ? 'ok' : 'err');
+      }
       break;
     }
     case 'ask':
       closeThread();
+      if (replaying) {
+        // A question from the history: it is shown, but it is not a question
+        // that is waiting for an answer, and it changes nothing on screen.
+        add('msg ask', event.question);
+        break;
+      }
+      // The question has to be answered: the chat is shown, so it is never
+      // hidden behind the voice screen.
+      showChat();
       setQuestion(event.question);
       break;
     case 'final': {
@@ -189,13 +231,29 @@ function onEvent(event) {
       if (totals) node.append(totals);
       node.append(reportActions(event.report));
       if (ui.replayed) askForRating(); // live finals only, not the history replayed on open
+      const voiceEntry = voiceEntryFor(event);
+      if (voiceEntry) {
+        // A report that says the task failed is never shown as a success.
+        if (event.success) {
+          voiceEntry.setOk(t('voice.success'));
+          voiceController?.speak(t('voice.doneSpoken'));
+        } else {
+          voiceEntry.setErr(t('voice.partial'));
+          voiceController?.speak(t('voice.partialSpoken'));
+        }
+        finishVoiceTask();
+      }
       break;
     }
     case 'error':
       add('msg error', event.message);
+      voiceEntryFor(event)?.setErr(event.message);
+      if (!replaying) finishVoiceTask();
       break;
     case 'stopped':
       add('msg error', t('msg.stopped'));
+      voiceEntryFor(event)?.setErr(t('voice.cancelled'));
+      if (!replaying) finishVoiceTask();
       break;
     case 'notice':
       ui.notices.push(event);
@@ -612,38 +670,42 @@ async function addFiles(files) {
   }
 }
 
-function submitComposer(text) {
+function submitComposer(text, { tabId, signal, expectedSessionId } = {}) {
+  signal?.throwIfAborted();
   const value = text.trim();
-  if (!value && !attachments.length) return;
+  if (!value && !attachments.length) return Promise.resolve(false);
   if (attachments.some((file) => file.pending)) {
     $('hint').textContent = t('composer.reading');
-    return;
+    return Promise.resolve(false);
   }
   const packed = packFiles(value, attachments, t('composer.filesTask'));
   if (!packed) {
     $('hint').textContent = t('composer.fileNone');
-    return;
+    return Promise.resolve(false);
   }
   attachments = [];
   renderFiles();
   $('input').value = '';
-  $('voiceLive').textContent = '';
   const message = { text: packed.task, display: packed.display, images: packed.images };
+  const options = { signal, expectedSessionId };
+  let sent;
   if (ui.question) {
-    send({ type: 'answer', ...message });
+    sent = send({ type: 'answer', ...message }, options);
     ui.question = null;
     $('hint').textContent = t('status.running');
     $('sendBtn').hidden = true;
   } else if (ui.running) {
-    send({ type: 'steer', ...message, mode: settings?.steerMode ?? 'next-step' });
+    sent = send({ type: 'steer', ...message, mode: settings?.steerMode ?? 'next-step' }, options);
   } else {
-    send({ type: 'run', ...message });
+    // The tab the task works on: the one the voice command was meant for.
+    sent = send({ type: 'run', ...message, ...(tabId ? { tabId } : {}) }, options);
   }
+  return sent.then(() => true);
 }
 
 $('composer').addEventListener('submit', (e) => {
   e.preventDefault();
-  submitComposer($('input').value);
+  submitComposer($('input').value).catch(() => {});
 });
 $('attachBtn').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', () => {
@@ -661,15 +723,31 @@ $('composerBox').addEventListener('drop', (event) => {
   addFiles([...event.dataTransfer.files]);
 });
 
-// The composer is text until this is pressed, then the box becomes a microphone.
-// `external` means the real microphone window is the one listening.
-let voice = { recognition: null, text: '', sendOnEnd: false, external: false };
+// ---------- voice control ----------
+
 // 'prompt' until Chrome reports the extension's own microphone permission.
 let micPermission = 'prompt';
 // Set when the side panel is allowed the microphone and recognition still refuses.
 let panelMicBroken = false;
 let micWindowId = null;
-let micEpoch = 0;
+// Every microphone window carries the epoch it was opened with. A window from
+// an earlier command cannot answer the current one, and a panel only stops the
+// window it opened.
+// Each panel gets a distinct counter range; two panels must not share epoch 1.
+let micEpoch = crypto.getRandomValues(new Uint32Array(1))[0] * 1048576;
+let micCaptureOpen = false;
+let voiceViewToken = 0;
+// The tab the voice commands act on. The microphone window takes the focus, so
+// the tab is remembered before that window opens.
+let voiceOrigin = null;
+// The command the worker is running for this panel, and the log entry it owns.
+let voiceTask = null;
+let voiceController = null;
+let voiceState = 'idle';
+// The approval that is waiting for the user, so it can be withdrawn.
+let voiceApproval = null;
+// The history the worker replayed is not a live event.
+let replaying = false;
 
 function watchMicrophone() {
   const query = navigator.permissions?.query;
@@ -684,182 +762,524 @@ function watchMicrophone() {
 }
 
 function relayMic(kind) {
-  chrome.runtime.sendMessage({ source: MIC_PANEL, kind }).catch(() => {});
+  chrome.runtime.sendMessage({ source: MIC_PANEL, kind, epoch: micEpoch }).catch(() => {});
 }
 
-async function openMicWindow() {
-  $('hint').textContent = t(micPermission === 'denied' ? 'composer.micDenied' : 'composer.micAsk');
+/** The tab the user is looking at, when the extension may work on it. */
+async function userTab() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab) return null;
+  if (/^(chrome|chrome-extension|edge|about|devtools|view-source):/.test(tab.url ?? '')) return null;
+  return { id: tab.id, windowId: tab.windowId, url: tab.url || '', title: tab.title || '' };
+}
+
+/**
+ * The tab the voice commands act on. While the microphone window is open it
+ * has the focus, so the tab the user was on is the one that is remembered.
+ */
+async function voiceTarget() {
+  if (micCaptureOpen) return voiceOrigin;
+  const tab = await userTab();
+  voiceOrigin = tab;
+  return voiceOrigin;
+}
+
+/** The microphone window: a real window, so Chrome can ask for the microphone. */
+async function openMicWindow({ continuous = false } = {}) {
+  $('voiceLive').textContent = t(micPermission === 'denied' ? 'composer.micDenied' : 'composer.micAsk');
   if (micWindowId != null) {
     try {
       await chrome.windows.update(micWindowId, { focused: true });
       return;
     } catch { micWindowId = null; }
   }
-  micEpoch += 1;
-  const url = chrome.runtime.getURL(`src/sidepanel/mic.html?lang=${encodeURIComponent(currentLanguage())}&epoch=${micEpoch}`);
+  // The window takes the focus: the tab the command belongs to is remembered
+  // before it opens.
+  const epoch = ++micEpoch;
+  await voiceTarget();
+  if (micEpoch !== epoch) return;
+  micCaptureOpen = true;
+  const url = chrome.runtime.getURL(`src/sidepanel/mic.html?lang=${encodeURIComponent(currentLanguage())}&epoch=${epoch}&continuous=${continuous ? '1' : '0'}`);
+  let created;
   try {
-    const created = await chrome.windows.create({ url, type: 'popup', width: 420, height: 360, focused: true });
-    micWindowId = created?.id ?? null;
+    created = await chrome.windows.create({ url, type: 'popup', width: 420, height: 360, focused: true });
   } catch {
-    $('hint').textContent = t('composer.micFailed');
+    if (micEpoch === epoch) {
+      micCaptureOpen = false;
+      voiceController?.handleCaptureEnded();
+    }
+    $('voiceLive').textContent = t('composer.micFailed');
+    return;
   }
+  // The capture may have been stopped while the window was being created: the
+  // window that arrived late is closed again, so it does not keep recording.
+  if (micEpoch !== epoch) {
+    chrome.windows.remove(created.id).catch(() => {});
+    return;
+  }
+  micWindowId = created?.id ?? null;
 }
 
-function showHeard(text) {
-  // Don't focus the panel: the microphone window is listening, and taking focus
-  // back can make Chrome stop the recognizer.
-  if (!$('composerBox').classList.contains('voice')) setVoiceMode(true, false);
-  voice.external = true;
-  $('voiceLive').textContent = text;
-  $('hint').textContent = t('composer.listening');
-  setListening(true);
+function closeMicWindow() {
+  const epoch = micEpoch;
+  micWindowId = null;
+  micCaptureOpen = false;
+  micEpoch += 1; // what the old window says from now on is stale
+  chrome.runtime.sendMessage({ source: MIC_PANEL, kind: 'cancel', epoch }).catch(() => {});
 }
 
+/** What the microphone window heard. Only the window of this epoch counts. */
 function onMicMessage(message) {
   if (message?.source !== MIC_WINDOW || Number(message.epoch) !== micEpoch) return;
   if (message.kind === 'partial') {
-    showHeard(message.text || '');
+    voiceController?.handlePartial(message.text || '');
     return;
   }
   if (message.kind === 'moved') {
-    $('hint').textContent = t('composer.micAsk');
+    // The window moved to a tab, where Chrome can ask for the microphone.
+    $('voiceLive').textContent = t('composer.micAsk');
+    // The permission tab owns the relay now; closing the old popup is not an end.
+    micWindowId = null;
     return;
   }
-  if (message.kind === 'end') {
-    voice.external = false;
-    setListening(false);
+  if (message.kind === 'final' || message.kind === 'end') {
     const text = String(message.text || '').trim();
-    if (text) submitComposer(text);
-    else if ($('composerBox').classList.contains('voice')) $('hint').textContent = t('composer.micEmpty');
+    if (!text) {
+      $('voiceLive').textContent = t('composer.micEmpty');
+      return;
+    }
+    voiceController?.handleFinal(text);
+    return;
+  }
+  if (message.kind === 'ended') {
+    // The window stopped listening: the capture is over.
+    voiceController?.handleCaptureEnded();
     return;
   }
   if (message.kind === 'error') {
-    voice.external = false;
-    setListening(false);
-    const key = message.code === 'not-allowed' || message.code === 'service-not-allowed' ? 'composer.micDenied' : voiceErrorKey(message.code);
-    if (key) $('hint').textContent = t(key);
+    voiceController?.handleError(message.code);
   }
 }
 
-function labelButton(button, key) {
-  button.dataset.i18nTitle = key;
-  button.title = t(key);
-  button.setAttribute('aria-label', button.title);
+// ---------- the voice screen ----------
+
+/** One line of the activity log: the command, and what came of it. */
+function voiceLogEntry(command) {
+  const log = $('voiceLog');
+  const li = document.createElement('li');
+  li.className = 'voice-entry';
+  const cmd = document.createElement('div');
+  cmd.className = 'voice-entry-cmd';
+  cmd.dir = 'auto';
+  cmd.textContent = command;
+  const detail = document.createElement('div');
+  detail.className = 'voice-entry-detail';
+  const status = document.createElement('span');
+  status.className = 'voice-entry-status';
+  status.textContent = t('voice.executing');
+  detail.append(status);
+  li.append(cmd, detail);
+  log.prepend(li);
+  return {
+    node: li,
+    setStatus(text, state) {
+      status.textContent = text;
+      li.className = `voice-entry${state ? ` ${state}` : ''}`;
+    },
+    addDecision(action, confidence, ms) {
+      const badge = document.createElement('span');
+      badge.className = 'voice-entry-badge';
+      const pct = Math.round((confidence ?? 0) * 100);
+      badge.textContent = `${action} · ${t('voice.confidence', { pct })}${Number.isFinite(ms) ? ` · ${ms}ms` : ''}`;
+      detail.append(badge);
+    },
+    addNote(text) {
+      const note = document.createElement('span');
+      note.className = 'voice-entry-note';
+      note.textContent = text;
+      detail.append(note);
+    },
+    setOk(text, ms) {
+      status.textContent = `✓ ${text}`;
+      li.className = 'voice-entry ok';
+      if (Number.isFinite(ms)) {
+        const time = document.createElement('span');
+        time.className = 'muted';
+        time.textContent = `${ms}ms`;
+        detail.append(time);
+      }
+    },
+    setErr(text) {
+      status.textContent = `✗ ${text}`;
+      li.className = 'voice-entry err';
+    },
+  };
 }
 
-function setListening(on) {
-  $('micBtn').classList.toggle('listening', on);
-  labelButton($('micBtn'), on ? 'composer.stopListen' : 'composer.listen');
+function setVoiceState(state) {
+  voiceState = state;
+  const stateEl = $('voiceState');
+  if (!stateEl) return;
+  stateEl.textContent = t(`voice.state${state.charAt(0).toUpperCase()}${state.slice(1)}`);
+  stateEl.className = `pill voice-pill${state === 'idle' ? '' : ` ${state}`}`;
+  $('voiceMicBtn')?.classList.toggle('on', state === 'listening');
 }
 
-function setVoiceMode(on, focus = true) {
-  $('composerBox').classList.toggle('voice', on);
-  $('voiceStage').hidden = !on;
-  $('input').hidden = on;
-  $('voiceToggle').querySelector('.icon-mic').hidden = on;
-  $('voiceToggle').querySelector('.icon-keys').hidden = !on;
-  $('voiceToggle').setAttribute('aria-pressed', String(on));
-  labelButton($('voiceToggle'), on ? 'composer.type' : 'composer.voice');
-  if (!on) {
-    stopListening(false);
-    if (voice.external) {
-      voice.external = false;
-      relayMic('cancel');
-    }
-    $('voiceLive').textContent = '';
-    if (!ui.question) $('hint').textContent = ui.running ? t('status.running') : '';
-    if (focus) $('input').focus();
+/** What the microphone could not do, said in the panel's language. */
+function voiceFailure(code) {
+  const key = code === 'not-supported' ? 'composer.micMissing'
+    : code === 'restart-limit' ? 'voice.micRestarts'
+      : voiceErrorKey(code);
+  if (!key) return;
+  $('voiceLive').textContent = t(key);
+}
+
+/** The voice output, spoken by the browser. It is never a command of its own. */
+function speakNow(text, { onEnd } = {}) {
+  const synth = window.speechSynthesis;
+  if (!synth) {
+    onEnd?.();
     return;
   }
-  $('hint').textContent = t('composer.voiceHint');
-  if (focus) $('micBtn').focus();
-}
-
-function startListening() {
-  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Ctor) {
-    $('hint').textContent = t('composer.micMissing');
-    return;
-  }
-  if (voice.external) relayMic('cancel');
-  voice.external = false;
-  if (panelMicBroken || micListenTarget(micPermission) !== 'panel') {
-    openMicWindow();
-    return;
-  }
-  const recognition = new Ctor();
-  voice = { recognition, text: '', sendOnEnd: true, external: false };
-  recognition.lang = speechLang(currentLanguage());
-  recognition.interimResults = true;
-  recognition.continuous = false;
-  recognition.onresult = (event) => {
-    voice.text = heardText(event.results);
-    $('voiceLive').textContent = voice.text;
-  };
-  recognition.onerror = (event) => {
-    const key = voiceErrorKey(event.error);
-    // Allowed in Chrome's settings, but the side panel still cannot capture.
-    // A real window can, so the next press goes there too.
-    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-      voice.sendOnEnd = false;
-      panelMicBroken = true;
-      const rec = voice.recognition;
-      voice.recognition = null;
-      setListening(false);
-      try { rec?.abort(); } catch { /* it had already stopped */ }
-      openMicWindow();
-      return;
-    }
-    if (key) {
-      voice.sendOnEnd = false;
-      $('hint').textContent = t(key);
-    }
-  };
-  recognition.onend = () => {
-    const text = voice.text.trim();
-    const sendIt = voice.sendOnEnd;
-    const mine = voice.recognition === recognition;
-    if (mine) {
-      voice.recognition = null;
-      setListening(false);
-    }
-    if (sendIt && text) submitComposer(text);
-    else if (sendIt && mine) $('hint').textContent = t('composer.micEmpty');
-  };
-  setListening(true);
-  $('hint').textContent = t('composer.listening');
   try {
-    recognition.start();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.05;
+    utterance.lang = currentLanguage() === 'ar' ? 'ar-EG' : 'en-US';
+    utterance.onend = () => onEnd?.();
+    utterance.onerror = () => onEnd?.();
+    synth.speak(utterance);
   } catch {
-    voice.sendOnEnd = false;
-    voice.recognition = null;
-    setListening(false);
-    $('hint').textContent = t('composer.micFailed');
+    onEnd?.();
   }
 }
 
-function stopListening(send) {
-  if (!voice.recognition) return;
-  voice.sendOnEnd = send;
-  try { voice.recognition.stop(); } catch { /* it had already stopped */ }
+const VOICE_PREF_KEYS = ['voiceHandsfree', 'voiceSpeak'];
+
+async function loadVoicePrefs() {
+  const saved = await chrome.storage.local.get(VOICE_PREF_KEYS).catch(() => ({}));
+  return { handsFree: saved.voiceHandsfree !== false, speakReplies: saved.voiceSpeak === true };
 }
 
-$('voiceToggle').addEventListener('click', () => {
-  setVoiceMode(!$('composerBox').classList.contains('voice'));
+async function saveVoicePrefs(prefs) {
+  await chrome.storage.local.set({
+    voiceHandsfree: Boolean(prefs.handsFree),
+    voiceSpeak: Boolean(prefs.speakReplies),
+  }).catch(() => {});
+}
+
+function createVoice() {
+  return createVoiceController({
+    createRecognition: () => {
+      const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!Ctor) return null;
+      const rec = new Ctor();
+      rec.lang = speechLang(currentLanguage());
+      return rec;
+    },
+    // The side panel cannot ask Chrome for the microphone; a real window can.
+    canListenInPanel: () => !panelMicBroken && micListenTarget(micPermission) === 'panel',
+    openMicWindow,
+    closeMicWindow,
+    // The voice output holds the microphone window as well.
+    pauseCapture: () => { if (micCaptureOpen) relayMic('pause'); },
+    resumeCapture: () => { if (micCaptureOpen) relayMic('resume'); },
+    say: speakNow,
+    stopSpeech: () => { try { window.speechSynthesis?.cancel(); } catch { /* no speech */ } },
+    speaking: () => Boolean(window.speechSynthesis?.speaking),
+    onState: setVoiceState,
+    onTranscript: (text, { final }) => {
+      const live = $('voiceLive');
+      live.textContent = text;
+      live.classList.toggle('final', Boolean(final));
+    },
+    onCommand: (text, { signal, entry }) => runVoiceCommand(text, { signal, entry }),
+    onLog: voiceLogEntry,
+    loadPrefs: loadVoicePrefs,
+    savePrefs: saveVoicePrefs,
+    onFailure: voiceFailure,
+    onMicBlocked: () => { panelMicBroken = true; },
+  });
+}
+
+function syncVoiceToggles() {
+  const prefs = voiceController?.prefs;
+  if (!prefs) return;
+  $('voiceHandsfree').checked = prefs.handsFree;
+  $('voiceSpeak').checked = prefs.speakReplies;
+}
+
+/** The texts of the voice screen that are drawn, not translated in place. */
+function updateVoiceLabels() {
+  $('voiceLog')?.setAttribute('data-empty', t('voice.emptyLog'));
+  setVoiceState(voiceState);
+  syncVoiceToggles();
+}
+
+/** The voice screen is shown: the microphone may start listening. */
+async function openVoice() {
+  const token = ++voiceViewToken;
+  $('voiceView').hidden = false;
+  $('chatView').hidden = true;
+  $('settingsView').hidden = true;
+  voiceController ??= createVoice();
+  await voiceTarget();
+  if (token !== voiceViewToken || $('voiceView').hidden) return;
+  await voiceController.open();
+  updateVoiceLabels();
+  if (voiceController.listening) $('voiceLive').textContent = t('voice.listeningNow');
+}
+
+/** The voice screen is left: the microphone stops and the voice output stops. */
+function closeVoice({ cancel = false } = {}) {
+  voiceViewToken += 1;
+  if ($('voiceView').hidden) return;
+  $('voiceView').hidden = true;
+  $('chatView').hidden = false;
+  voiceController?.close();
+  voiceApproval?.();
+  if (cancel) {
+    voiceController?.cancelCommand();
+    // Only a task the worker is running for this command is stopped: a fast
+    // command never asked the worker to do anything.
+    if (voiceTask) {
+      cancelVoiceTask(t('voice.cancelled'));
+      send({ type: 'stop' }).catch(() => {});
+    }
+  }
+}
+
+/** The chat is shown, so a question can be answered in it. */
+function showChat() {
+  closeVoice();
+}
+
+// ---------- the commands ----------
+
+/** The log entry of the command the worker is running, when this event is its. */
+function voiceEntryFor(event) {
+  if (replaying) return null;
+  const task = voiceTask;
+  if (!task) return null;
+  if (task.sessionId !== sessionId) return null;
+  // The history that was replayed on open is older than the command.
+  if (Number.isFinite(event?.at) && event.at < task.startedAt) return null;
+  return task.entry;
+}
+
+function finishVoiceTask() {
+  const task = voiceTask;
+  if (!task) return;
+  voiceTask = null;
+  task.resolve?.();
+}
+
+function cancelVoiceTask(message) {
+  const task = voiceTask;
+  if (!task) return;
+  voiceTask = null;
+  task.entry?.setErr?.(message || t('voice.cancelled'));
+  task.resolve?.();
+}
+
+/** Runs one spoken command on the engine the user chose. */
+async function runVoiceCommand(text, { signal, entry }) {
+  if (signal.aborted) return;
+  // Fast-only and the worker must not act concurrently in this same session.
+  if (ui.running) {
+    entry.setErr(t('voice.busy'));
+    return;
+  }
+  if ((settings?.voiceEngine ?? 'postora') === 'fast_only') {
+    return runFastVoiceCommand(text, { signal, entry });
+  }
+  // Postora: the worker runs the task and its events fill the log entry. A
+  // session that is already working on something is not steered by a voice
+  // command: the result would belong to a task the user did not ask for.
+  return new Promise((resolve) => {
+    const task = { entry, text, startedAt: Date.now(), sessionId, resolve };
+    voiceTask = task;
+    voiceTarget().then((target) => {
+      if (signal.aborted || voiceTask !== task || sessionId !== task.sessionId) {
+        resolve();
+        return;
+      }
+      return submitComposer(text, { tabId: target?.id, signal, expectedSessionId: task.sessionId }).then((sent) => {
+        if (!sent) {
+          entry.setErr(t('voice.failed'));
+          if (voiceTask === task) finishVoiceTask();
+        }
+      }, (err) => {
+        // The task never left the panel: the command must not stay open.
+        entry.setErr(String(err?.message ?? err));
+        if (voiceTask === task) finishVoiceTask();
+      });
+    }).catch(() => {
+      entry.setErr(t('voice.failed'));
+      if (voiceTask === task) finishVoiceTask();
+    });
+  });
+}
+
+/** The fast layer runs the command itself, without the main model. */
+async function runFastVoiceCommand(text, { signal, entry }) {
+  const fast = settings?.fast ?? {};
+  if (!fast.apiKey) {
+    entry.setErr(t('err.fastKey'));
+    return;
+  }
+  if (!fast.baseUrl) {
+    entry.setErr(t('err.fastUrl'));
+    return;
+  }
+  // The same provider-aware client the fast layer uses: the configured
+  // provider, model, endpoint and key, with the configured backup.
+  const ask = createFastAsk(fast, (notice) => entry.addNote(`${notice.from} → ${notice.to}`));
+  const browser = createChromeBrowser({ sessionId, target: voiceTarget });
+  try {
+    const result = await runFastCommand({
+      ask,
+      browser,
+      command: text,
+      emit: (event) => {
+        if (event.kind === 'decision') entry.addDecision(voiceActionName(event.action), event.confidence, event.ms);
+      },
+      approve: askVoiceApproval,
+      signal,
+      secretTokens: SECRET_TOKENS,
+      t,
+    });
+    if (result.ok) {
+      entry.setOk(result.say || t('voice.success'), result.ms);
+      voiceController?.speak(result.say);
+    } else {
+      entry.setErr(result.say || t('voice.failed'));
+      voiceController?.speak(result.say);
+    }
+    if (result.stopListening) voiceController?.stopListening();
+  } catch (err) {
+    entry.setErr(String(err?.message ?? err));
+  }
+}
+
+/** The name of a step, in the panel's language. */
+const VOICE_ACTIONS = {
+  navigate: 'voice.actionNavigate',
+  new_tab: 'voice.actionNewTab',
+  web_search: 'voice.actionSearch',
+  click: 'voice.actionClick',
+  type_text: 'voice.actionType',
+  press_enter: 'voice.actionEnter',
+  scroll_down: 'voice.actionScrollDown',
+  scroll_up: 'voice.actionScrollUp',
+  scroll_top: 'voice.actionTop',
+  scroll_bottom: 'voice.actionBottom',
+  go_back: 'voice.actionBack',
+  go_forward: 'voice.actionForward',
+  reload: 'voice.actionReload',
+  close_tab: 'voice.actionCloseTab',
+  switch_tab: 'voice.actionSwitchTab',
+  next_tab: 'voice.actionNextTab',
+  previous_tab: 'voice.actionPreviousTab',
+  zoom_in: 'voice.actionZoomIn',
+  zoom_out: 'voice.actionZoomOut',
+  zoom_reset: 'voice.actionZoomReset',
+  media_play_pause: 'voice.actionMedia',
+  media_mute: 'voice.actionMute',
+  find_on_page: 'voice.actionFind',
+  stop_listening: 'voice.actionStop',
+  unknown: 'voice.actionUnknown',
+};
+
+function voiceActionName(action) {
+  const key = VOICE_ACTIONS[action];
+  return key ? t(key) : String(action ?? '');
+}
+
+/**
+ * The question the user answers before a step that can send, buy, delete or
+ * submit. It is shown in the voice screen, with a yes and a no; it is never a
+ * browser dialog.
+ */
+function askVoiceApproval(what) {
+  return new Promise((resolve) => {
+    const box = $('voiceApproval');
+    box.hidden = false;
+    box.replaceChildren();
+    const title = document.createElement('strong');
+    title.textContent = t('voice.approveTitle');
+    const detail = document.createElement('div');
+    detail.className = 'voice-approve-detail';
+    detail.dir = 'auto';
+    detail.textContent = approvalText(what);
+    const actions = document.createElement('div');
+    actions.className = 'voice-approve-actions';
+    const yes = Object.assign(document.createElement('button'), { type: 'button', className: 'primary', textContent: t('voice.approve') });
+    const no = Object.assign(document.createElement('button'), { type: 'button', className: 'ghost', textContent: t('voice.cancel') });
+    const done = (answer) => {
+      box.hidden = true;
+      box.replaceChildren();
+      voiceApproval = null;
+      resolve(answer);
+    };
+    voiceApproval = () => done(false);
+    yes.addEventListener('click', () => done(true));
+    no.addEventListener('click', () => done(false));
+    actions.append(yes, no);
+    box.append(title, detail, actions);
+    if ($('voiceView').hidden) openVoice();
+    yes.focus();
+  });
+}
+
+/** What the user is asked to approve, in words that say what will happen. */
+function approvalText(what) {
+  return approvalMessage(what, t);
+}
+
+$('voiceToggle').addEventListener('click', (e) => {
+  e.preventDefault();
+  openVoice();
 });
-$('micBtn').addEventListener('click', () => {
-  if (voice.recognition) stopListening(true);
-  else if (voice.external) relayMic('stop');
-  else startListening();
+$('voiceBackBtn').addEventListener('click', () => closeVoice({ cancel: true }));
+$('voiceMicBtn').addEventListener('click', () => voiceController?.toggleListening());
+$('voiceClearLog').addEventListener('click', () => {
+  $('voiceLog').replaceChildren();
+});
+$('voiceTypedForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = $('voiceTypedInput');
+  const val = input.value.trim();
+  if (val) {
+    input.value = '';
+    voiceController?.submit(val);
+  }
+});
+$('voiceHandsfree').addEventListener('change', (e) => {
+  (voiceController ??= createVoice()).setHandsFree(e.target.checked);
+});
+$('voiceSpeak').addEventListener('change', (e) => {
+  (voiceController ??= createVoice()).setSpeakReplies(e.target.checked);
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.altKey && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
+    e.preventDefault();
+    if ($('voiceView').hidden) {
+      openVoice();
+    } else {
+      voiceController?.toggleListening();
+    }
+  }
+});
+window.addEventListener('pagehide', () => {
+  voiceController?.close();
+  voiceApproval?.();
 });
 chrome.runtime.onMessage.addListener(onMicMessage);
 chrome.windows.onRemoved.addListener((id) => {
   if (id !== micWindowId) return;
   micWindowId = null;
-  if (voice.external) {
-    voice.external = false;
-    setListening(false);
-  }
+  voiceController?.handleCaptureEnded();
 });
 watchMicrophone();
 $('input').addEventListener('keydown', (e) => {
@@ -929,6 +1349,13 @@ async function openSession(id) {
   sessionId = id;
   ui.replayed = false;
   ui.running = false;
+  // The command that was running belongs to the session that is left: it is
+  // stopped with the microphone, and the approval with it, so nothing acts on
+  // the tab of the session that is gone.
+  cancelVoiceTask(t('voice.cancelled'));
+  voiceApproval?.();
+  closeVoice();
+  voiceController?.close();
   clearMessages();
   $('emptyState').hidden = false;
   connect();
@@ -1298,6 +1725,7 @@ function applyLanguage(language) {
   syncFastProvider();
   syncFastFallback();
   renderDriveState();
+  updateVoiceLabels();
 }
 
 // ---------- settings ----------
@@ -1373,6 +1801,8 @@ function toggleSettings(open) {
     syncNotifySwitch();
   }
   if (open && settings) syncNotifySwitch(); // the permission may have been revoked in Chrome since
+  // The voice screen is left for the settings: the microphone stops there.
+  if (open) closeVoice();
   $('settingsView').hidden = !open;
   $('chatView').hidden = open;
   $('settingsError').hidden = true;
@@ -1441,6 +1871,7 @@ function fillForm() {
   $('replyLang').value = settings.replyLanguage.language;
   syncReplyLanguage();
   fillFastForm(settings.fast);
+  if ($('voiceEngine')) $('voiceEngine').value = settings.voiceEngine ?? 'postora';
   syncRecommended();
 }
 
@@ -1487,6 +1918,7 @@ function readForm() {
   next.steerMode = $('steerMode').value;
   next.notify = $('notify').checked;
   next.replyLanguage = { enabled: $('replyLangEnabled').checked, language: $('replyLang').value };
+  next.voiceEngine = $('voiceEngine')?.value || 'postora';
   next.keys = keyStore.snapshot();
   return next;
 }

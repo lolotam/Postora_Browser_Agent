@@ -46,3 +46,30 @@ Read delivery diff against this plan, review production code and tests, run `npm
 - Clean-main tests after `npm ci`: 352 passed, 1 failed (stale session-runner assertion); baseline log retained outside repository.
 - Gemini edits copied only from `src/lib/settings.js`, `src/sidepanel/{index.html,messages.js,panel.css,panel.js}`, `src/voice/` and `test/voice-brain.test.js`.
 - Original source tree and nested `JevVoiceControl/` remain untouched.
+
+## Independent delivery review — round 1
+
+The orchestrator independently reran the delivered code: 395 unit tests passed, Chromium E2E passed, and eight English/Arabic light/dark renders at 320px/400px passed layout checks. Screenshots were inspected. These green checks were insufficient to approve the delivery: a separate reproducer exercising the real modules demonstrated the first three defects below.
+
+| Finding | Severity | Verdict | Required repair |
+| --- | --- | --- | --- |
+| Retired recognizer still executes a late final after Stop | P1 | Accept | Generation-bound callbacks and relay lifecycle; regression with captured old callback. |
+| Named close-tab target bypasses another session's ownership | P1 | Accept | Recheck actual mutation target ownership and cancellation; fail closed on lookup failure. |
+| Chained search uses context from before navigation | P2 | Accept | Refresh context from the pinned current target before every step. |
+| Session changes do not abort fast command/approval/queue | P1 | Accept | Cancel voice lifecycle without stopping unrelated worker tasks; runtime panel coverage. |
+| Fallback capture state and opening/closing popup races | P1 | Accept | Epoch-scoped bidirectional relay, late-window teardown, ended-capture signal, origin window/tab targeting. |
+| External microphone keeps recording during speech output | P1 | Accept | Pause/retire external capture generation too; overlapping speech callbacks cannot resume retired capture. |
+| Type-and-submit approval hides submission and proposed text | P1 | Accept | Explicit presentation of proposed text and submission; refuse secret focus rather than redirect. |
+| Localization, malformed decisions, oversized mic with tiny icon | P2 | Accept | Translated results, strict typed validation, Postora accent and scoped icon sizing. |
+
+MiniMax receives a targeted follow-up brief for these findings, retaining all previous changes. The next delivery requires independent review and full gates again. No production code is committed or merged on the strength of a delegate's self-report.
+
+## Final review and merge threshold
+
+Round 2 fixed the three independently reproduced defects and added coverage for permission-window targeting, session-change cancellation, approvals, replay, provider selection, and strict decision handling. The orchestrator subsequently repaired small delivery gaps directly: propagated send failures and cancellation across pending session selection, per-panel microphone epoch ranges, popup-to-tab migration, retired microphone-page callbacks, overlapping external-microphone speech, and context refresh after a navigating click. Additional behavioral tests exercise the actual microphone script and actual panel send functions using mocked browser boundaries.
+
+Final checks include the full unit suite, Chromium E2E, store packaging, the independent three-bug regression script, and eight rendered English/Arabic light/dark voice layouts at 320px/400px. Screenshots are retained outside the repository. Recognition is mocked in automated tests; real microphone hardware and live provider credentials are not claimed as verified.
+
+The PR must have **all CI checks green on its exact HEAD**, no unresolved correctness/security/lifecycle findings at P1 or P2, and no unexpected files or secrets. No PR review bot is configured in this repository; the orchestrator's code, test and documentation review is the review gate. No deployment workflow was found, so the terminal state is merge, not a claimed store release.
+
+Tradeoffs retained: fast-only conservatively asks before every click/type/Enter/tab-close; Postora approval questions return to chat; speech synthesis defaults off; commands stay pinned while permission UI owns focus. No sub-second performance guarantee is made. The supplied original source tree and reference repository remain untouched. Worktree cleanup requires a separate explicit approval.

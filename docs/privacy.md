@@ -1,6 +1,6 @@
 # Privacy Policy — Postora Browser Agent
 
-Last updated: 9 October 2026
+Last updated: 27 October 2026
 
 Postora Browser Agent ("the extension") is an AI agent in Chrome's side panel. You give it a task, and it reads and operates the web pages needed to carry it out, then writes you a report. This policy explains what data the extension handles, where it goes, and how to delete it.
 
@@ -14,6 +14,7 @@ The extension has no server of its own. The developer does not receive your task
 | Content of the pages the agent works on: address, title, visible text, the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
 | API keys and account sign-in tokens (ChatGPT, Claude, Grok) you enter | When you save settings | Stored on your computer; each key/token is sent only to its own provider |
 | Settings | When you save them | Stored on your computer |
+| Speech and its transcript | Only after voice listening is enabled | Chrome's Web Speech recognition service processes speech; the resulting command is sent to your selected execution provider |
 | Google account name, email address and profile picture | Only if you sign in with Google (optional) | Stored on your computer; the picture is shown in the header |
 | A backup of your settings, keys and account sign-in tokens | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
 | Feedback message, star rating, and an email address (one you type, or your Google email if signed in) | Only when you press Send in the feedback box, or give a task five stars | Sent to the developer by email through Formspree |
@@ -37,6 +38,12 @@ The backup is stored without extra encryption and is protected by your Google ac
 ## Notifications (optional)
 
 If you turn on "Notify me" in Settings, Chrome asks you to allow notifications. The extension then shows a desktop notification when a task finishes, needs your answer or stops with an error, only while you are on another tab. The notification says only that ("A task finished"); it contains no task, page or report text, and nothing is sent anywhere. Turning the switch off gives the permission back.
+
+## Voice control (optional)
+
+Voice control uses Chrome's Web Speech API, which may process audio through a remote speech service and requires an internet connection. The extension does not store audio recordings. "Keep listening" captures subsequent commands until you stop the microphone or leave the voice screen. Optional spoken replies use the browser's speech-synthesis service. Voice preferences are stored locally.
+
+The Postora execution mode sends the transcript through the normal agent. Fast-only mode sends it and the necessary tab/element descriptions to the configured fast provider (and its backup if enabled), without consulting the main model. The voice activity list stays in the open panel; normal Postora tasks also enter the saved session. Fast-only asks for confirmation before clicking, typing, submitting or closing a tab and excludes password, payment and one-time-code fields from its element descriptions and typing actions.
 
 ## Feedback
 

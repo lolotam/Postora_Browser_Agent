@@ -70,9 +70,16 @@ export class BrowserController {
     return this.startOn();
   }
 
-  /** A task begins on the tab the user is looking at, which joins the session's group. */
-  async startOn() {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  /**
+   * A task begins on the tab the user is looking at, which joins the session's
+   * group. `tabId` names the tab to work on when the caller knows it: a voice
+   * command pins the tab it was meant for, and the microphone window that asks
+   * for the permission must not become the target.
+   */
+  async startOn(tabId = null) {
+    const tab = tabId == null
+      ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
+      : await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error('No active tab found.');
     const claimed = await this.useTab(tab.id);
     this.homeTabId = claimed.id;

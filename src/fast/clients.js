@@ -43,3 +43,16 @@ export function askWithBackup({ primary, backup, notify, clientFor = fastClientF
     }
   };
 }
+
+/**
+ * The fast layer's ask, whichever client is behind it. The backup wrapper
+ * closes over the settings it was built with while the plain clients take them
+ * as arguments, so the settings travel with every call either way: the
+ * provider, the model, the endpoint and the key are never lost.
+ */
+export function createFastAsk(fast, notify) {
+  const ask = fast?.fallback?.enabled && fast?.fallback?.apiKey
+    ? askWithBackup({ primary: fast, backup: fast.fallback, notify })
+    : fastClientFor(fast);
+  return (request) => ask({ ...fast, ...request });
+}
