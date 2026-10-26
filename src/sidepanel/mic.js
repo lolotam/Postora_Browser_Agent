@@ -12,6 +12,8 @@ const epoch = Number(params.get('epoch')) || 0;
 // the window stays open until the panel closes it.
 const continuous = params.get('continuous') === '1';
 const RESTART_LIMIT = 5;
+/** The window those restarts have to happen in. */
+const RESTART_WINDOW_MS = 15000;
 setLanguage(language);
 
 const button = document.getElementById('allow');
@@ -24,6 +26,7 @@ let finished = false;
 let postedUpTo = 0;
 let lastFinal = '';
 let restarts = 0;
+let restartWindow = 0;
 // The panel is speaking: the microphone stops until it says resume.
 let paused = false;
 let moving = false;
@@ -116,6 +119,9 @@ function start() {
       const said = (result[0]?.transcript ?? '').trim();
       if (!said) continue;
       lastFinal = said;
+      // The microphone works: a healthy result is not a broken capture, so the
+      // count of restarts starts again.
+      restarts = 0;
       if (continuous) post('final', { text: said });
     }
     const shown = continuous ? `${lastFinal} ${interim}`.trim() : text;
@@ -138,10 +144,21 @@ function start() {
     if (continuous) {
       // Chrome ends the recognizer after a pause: start it again, but not for
       // ever, so a broken microphone cannot loop.
+      const at = Date.now();
+      if (at - restartWindow > RESTART_WINDOW_MS) {
+        restartWindow = at;
+        restarts = 0;
+      }
       if (started && restarts < RESTART_LIMIT) {
         restarts += 1;
         start();
         return;
+      }
+      if (started) {
+        // The microphone kept ending without hearing anything: the panel is
+        // told why the listening stopped.
+        live.textContent = t('voice.micRestarts');
+        post('error', { code: 'restart-limit' });
       }
       finish(text, false);
       return;

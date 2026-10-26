@@ -51,13 +51,18 @@ let sessionList = [];
 let reconnected = false;
 
 function connect() {
-  port = chrome.runtime.connect({ name: `panel:${sessionId}` });
+  // The port name carries the panel: the worker gives the tabs this panel
+  // holds back when the port closes.
+  port = chrome.runtime.connect({ name: `panel:${sessionId}:${voicePanelId}` });
   port.onMessage.addListener(onEvent);
   // The worker is gone: the task it was running is gone with it.
   port.onDisconnect.addListener(() => {
     port = null;
     reconnected = true;
     cancelVoiceTask(t('voice.cancelled'));
+    // The claims of this panel are given back: the worker may be gone, and a
+    // tab that nobody holds is free again.
+    releaseVoiceClaims();
   });
   // The worker may have restarted and lost the sign-in it was in the middle of.
   if (reconnected) {
@@ -595,9 +600,26 @@ function renderPending() {
 function setQuestion(question) {
   ui.question = question;
   add('msg ask', question);
+  showPendingQuestion(question);
   $('hint').textContent = t('status.waiting');
   $('sendBtn').hidden = false;
   $('input').focus();
+}
+
+/**
+ * A question that is waiting for an answer stays visible in the voice screen:
+ * it is never hidden behind it, and the user can go back to the chat to
+ * answer it there.
+ */
+function showPendingQuestion(question) {
+  const box = $('voicePending');
+  if (!box) return;
+  if (!question) {
+    box.hidden = true;
+    return;
+  }
+  $('voicePendingText').textContent = question;
+  box.hidden = false;
 }
 
 function setRunning(running) {
@@ -608,6 +630,7 @@ function setRunning(running) {
   $('sendBtn').hidden = false; // while running, a message steers the task (see steerMode)
   if (!running) {
     ui.question = null;
+    showPendingQuestion(null);
     $('hint').textContent = '';
   } else if (!ui.question) {
     $('hint').textContent = t('status.running');
@@ -703,6 +726,33 @@ function submitComposer(text, { tabId, signal, expectedSessionId } = {}) {
   return sent.then(() => true);
 }
 
+/**
+ * A voice command is a message of its own: it never takes the files the user
+ * attached, it never clears what they wrote, and it never waits for a file
+ * that is still being read. It answers the question that is waiting, or it
+ * starts a task.
+ */
+function sendVoiceMessage(text, { tabId, signal, expectedSessionId } = {}) {
+  signal?.throwIfAborted();
+  const value = String(text ?? '').trim();
+  if (!value) return Promise.resolve(false);
+  const message = { text: value, display: value, images: [] };
+  const options = { signal, expectedSessionId };
+  let sent;
+  if (ui.question) {
+    sent = send({ type: 'answer', ...message }, options);
+    ui.question = null;
+    $('hint').textContent = t('status.running');
+    $('sendBtn').hidden = true;
+  } else if (ui.running) {
+    sent = send({ type: 'steer', ...message, mode: settings?.steerMode ?? 'next-step' }, options);
+  } else {
+    // The tab the task works on: the one the voice command was meant for.
+    sent = send({ type: 'run', ...message, ...(tabId ? { tabId } : {}) }, options);
+  }
+  return sent.then(() => true);
+}
+
 $('composer').addEventListener('submit', (e) => {
   e.preventDefault();
   submitComposer($('input').value).catch(() => {});
@@ -725,6 +775,9 @@ $('composerBox').addEventListener('drop', (event) => {
 
 // ---------- voice control ----------
 
+// The pages the extension may not work on: its own pages and Chrome's.
+const RESTRICTED_URL = /^(chrome|chrome-extension|edge|about|devtools|view-source):/;
+
 // 'prompt' until Chrome reports the extension's own microphone permission.
 let micPermission = 'prompt';
 // Set when the side panel is allowed the microphone and recognition still refuses.
@@ -740,6 +793,9 @@ let voiceViewToken = 0;
 // The tab the voice commands act on. The microphone window takes the focus, so
 // the tab is remembered before that window opens.
 let voiceOrigin = null;
+// Every panel has its own id: the claim it takes on a tab belongs to it, and
+// no other panel may take it away.
+const voicePanelId = crypto.randomUUID();
 // The command the worker is running for this panel, and the log entry it owns.
 let voiceTask = null;
 let voiceController = null;
@@ -767,21 +823,39 @@ function relayMic(kind) {
 
 /** The tab the user is looking at, when the extension may work on it. */
 async function userTab() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab) return null;
-  if (/^(chrome|chrome-extension|edge|about|devtools|view-source):/.test(tab.url ?? '')) return null;
-  return { id: tab.id, windowId: tab.windowId, url: tab.url || '', title: tab.title || '' };
+  const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (focused && !RESTRICTED_URL.test(focused.url ?? '')) {
+    return { id: focused.id, windowId: focused.windowId, url: focused.url || '', title: focused.title || '' };
+  }
+  // The window that has the focus may be one the extension cannot work on
+  // (the microphone's own window, on its way out): the tab of the window the
+  // panel is in is the one the user is looking at.
+  const [own] = windowId == null ? [] : await chrome.tabs.query({ active: true, windowId });
+  if (!own || RESTRICTED_URL.test(own.url ?? '')) return null;
+  return { id: own.id, windowId: own.windowId, url: own.url || '', title: own.title || '' };
 }
 
 /**
  * The tab the voice commands act on. While the microphone window is open it
  * has the focus, so the tab the user was on is the one that is remembered.
+ * The window that has the focus may be one the extension cannot work on (the
+ * microphone's own window, on its way out): the tab of the window the panel
+ * is in is the one the user is looking at.
  */
 async function voiceTarget() {
   if (micCaptureOpen) return voiceOrigin;
   const tab = await userTab();
   voiceOrigin = tab;
   return voiceOrigin;
+}
+
+/** Gives every tab this panel holds back, so another command may use it. */
+async function releaseVoiceClaims() {
+  try {
+    await request('voice-release-all', { panelId: voicePanelId });
+  } catch {
+    /* the worker is gone: the claims are gone with it */
+  }
 }
 
 /** The microphone window: a real window, so Chrome can ask for the microphone. */
@@ -998,6 +1072,8 @@ function createVoice() {
     savePrefs: saveVoicePrefs,
     onFailure: voiceFailure,
     onMicBlocked: () => { panelMicBroken = true; },
+    // A command that is dropped before it runs says so in the panel's language.
+    cancelledText: () => t('voice.cancelled'),
   });
 }
 
@@ -1022,6 +1098,9 @@ async function openVoice() {
   $('chatView').hidden = true;
   $('settingsView').hidden = true;
   voiceController ??= createVoice();
+  // A question that is waiting for an answer is shown in the voice screen too:
+  // it must never be hidden behind it.
+  showPendingQuestion(ui.question);
   await voiceTarget();
   if (token !== voiceViewToken || $('voiceView').hidden) return;
   await voiceController.open();
@@ -1103,7 +1182,7 @@ async function runVoiceCommand(text, { signal, entry }) {
         resolve();
         return;
       }
-      return submitComposer(text, { tabId: target?.id, signal, expectedSessionId: task.sessionId }).then((sent) => {
+      return sendVoiceMessage(text, { tabId: target?.id, signal, expectedSessionId: task.sessionId }).then((sent) => {
         if (!sent) {
           entry.setErr(t('voice.failed'));
           if (voiceTask === task) finishVoiceTask();
@@ -1134,9 +1213,10 @@ async function runFastVoiceCommand(text, { signal, entry }) {
   // The same provider-aware client the fast layer uses: the configured
   // provider, model, endpoint and key, with the configured backup.
   const ask = createFastAsk(fast, (notice) => entry.addNote(`${notice.from} → ${notice.to}`));
-  const browser = createChromeBrowser({ sessionId, target: voiceTarget });
+  const browser = createChromeBrowser({ sessionId, target: voiceTarget, panelId: voicePanelId });
+  let result;
   try {
-    const result = await runFastCommand({
+    result = await runFastCommand({
       ask,
       browser,
       command: text,
@@ -1148,17 +1228,25 @@ async function runFastVoiceCommand(text, { signal, entry }) {
       secretTokens: SECRET_TOKENS,
       t,
     });
-    if (result.ok) {
-      entry.setOk(result.say || t('voice.success'), result.ms);
-      voiceController?.speak(result.say);
-    } else {
-      entry.setErr(result.say || t('voice.failed'));
-      voiceController?.speak(result.say);
-    }
-    if (result.stopListening) voiceController?.stopListening();
   } catch (err) {
     entry.setErr(String(err?.message ?? err));
+    return;
   }
+  // A command that was cancelled while it was running reports nothing: the
+  // screen is not changed and nothing is spoken behind the user's back.
+  if (signal.aborted) return;
+  // The tab the command ended on is the one the next command acts on: the
+  // microphone window takes the focus, so the tab has to be remembered.
+  if (result.closedTarget) voiceOrigin = null;
+  else if (result.target) voiceOrigin = result.target;
+  if (result.ok) {
+    entry.setOk(result.say || t('voice.success'), result.ms);
+    voiceController?.speak(result.say);
+  } else {
+    entry.setErr(result.say || t('voice.failed'));
+    voiceController?.speak(result.say);
+  }
+  if (result.stopListening) voiceController?.stopListening();
 }
 
 /** The name of a step, in the panel's language. */
@@ -1241,6 +1329,7 @@ $('voiceToggle').addEventListener('click', (e) => {
   openVoice();
 });
 $('voiceBackBtn').addEventListener('click', () => closeVoice({ cancel: true }));
+$('voicePendingBtn').addEventListener('click', () => showChat());
 $('voiceMicBtn').addEventListener('click', () => voiceController?.toggleListening());
 $('voiceClearLog').addEventListener('click', () => {
   $('voiceLog').replaceChildren();

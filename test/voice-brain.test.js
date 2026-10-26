@@ -4,6 +4,7 @@ import {
   tokenize,
   candidateSpans,
   spokenToUrl,
+  redactUrl,
   siteForUrl,
   describeElements,
   choiceConfidence,
@@ -11,6 +12,12 @@ import {
   usableChoice,
   usableNoul,
 } from '../src/voice/voice-brain.js';
+
+test('relative and protocol-relative candidate URLs cannot leak query credentials', () => {
+  assert.equal(redactUrl('/reset?token=PRIVATE#session=SECRET'), '/reset?token=*');
+  assert.equal(redactUrl('//alice:password@example.test/share?signature=PRIVATE#SECRET'), '//example.test/share?signature=*');
+  assert.equal(redactUrl('mailto:person@example.test?body=PRIVATE'), 'mailto:');
+});
 
 test('explicit confidence never overrides a malformed probability distribution', () => {
   const allowed = new Set(['click', 'scroll_down']);
@@ -41,6 +48,55 @@ test('spokenToUrl: converts spoken domain names to URLs', () => {
   assert.equal(spokenToUrl('bbc dot com'), 'https://bbc.com');
   assert.equal(spokenToUrl('github dot com slash myrepo'), 'https://github.com/myrepo');
   assert.ok(spokenToUrl('some random phrase').includes('duckduckgo.com/?q='));
+});
+
+test('spokenToUrl: only the scheme and the host are written down', () => {
+  // A path, a query and a token in it keep their case: the address may be
+  // case-sensitive.
+  assert.equal(spokenToUrl('example dot com slash MyRepo'), 'https://example.com/MyRepo');
+  assert.equal(spokenToUrl('example dot com slash a slash B?Token=AbC'), 'https://example.com/a/B?Token=AbC');
+  assert.equal(spokenToUrl('https://example.com/MyRepo'), 'https://example.com/MyRepo');
+  assert.equal(spokenToUrl('Example dot COM slash Path'), 'https://example.com/Path');
+});
+
+test('redactUrl: the secrets of an address are taken out of it', () => {
+  assert.equal(redactUrl('https://user:pass@example.test/path?token=abc#frag'), 'https://example.test/path?token=*');
+  assert.equal(redactUrl('https://example.test/path'), 'https://example.test/path');
+  assert.equal(redactUrl(''), '');
+});
+
+test('the state the model sees never carries a token, a name or a fragment', async () => {
+  let seen = null;
+  const ask = async (req) => {
+    seen = req.state;
+    return {
+      answers: {
+        action: { type: 'choice', choice: 'scroll_down', confidence: 0.9 },
+        argument: { type: 'choice', choice: 'none', confidence: 0.9 },
+        site: { type: 'choice', choice: 'none', confidence: 0.9 },
+      },
+    };
+  };
+
+  await planStep(ask, 'scroll down', {
+    url: 'https://user:secret@example.test/path?token=abc#fragment',
+    title: 'Example',
+    tabs: [{ id: 1, title: 'Example', url: 'https://example.test/path?token=abc#fragment', active: true }],
+  });
+
+  const state = JSON.stringify(seen);
+  assert.doesNotMatch(state, /secret/, 'the name in the address stays out');
+  assert.doesNotMatch(state, /abc/, 'the token in the address stays out');
+  assert.doesNotMatch(state, /fragment/, 'the fragment stays out');
+  assert.match(state, /example\.test/, 'the site is still named');
+});
+
+test('the link the model sees has no token in its address', () => {
+  const descriptions = describeElements([
+    { id: '1', kind: 'link', label: 'Report', href: 'https://example.test/report?token=abc', inView: true },
+  ], 'https://example.test/');
+  assert.doesNotMatch(descriptions[0], /abc/, 'the token stays out of the criteria');
+  assert.match(descriptions[0], /example\.test/, 'the link is still named');
 });
 
 test('siteForUrl: matches open URLs to known site keys', () => {

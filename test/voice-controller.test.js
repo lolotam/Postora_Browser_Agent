@@ -45,7 +45,7 @@ class FakeRecognition {
   }
 }
 
-function setup({ handsFree = true, speakReplies = false, panel = true, prefs } = {}) {
+function setup({ handsFree = true, speakReplies = false, panel = true, prefs, failMic = false } = {}) {
   const created = [];
   const commands = [];
   const states = [];
@@ -54,6 +54,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs } =
   const windows = [];
   const pauses = [];
   const resumes = [];
+  const logs = [];
   const saved = { handsFree, speakReplies };
   let clock = 1000;
   let spoken = null;
@@ -67,7 +68,10 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs } =
       return rec;
     },
     canListenInPanel: () => panel,
-    openMicWindow: async (options) => { windows.push(options); },
+    openMicWindow: async (options) => {
+      if (failMic) throw new Error('the window did not open');
+      windows.push(options);
+    },
     closeMicWindow: () => { windows.push('closed'); },
     pauseCapture: () => { pauses.push(true); },
     resumeCapture: () => { resumes.push(true); },
@@ -80,11 +84,21 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs } =
       commands.push({ text, signal });
       await new Promise((resolve) => { release = resolve; });
     },
-    onLog: (command) => ({ command, setStatus() {}, setOk() {}, setErr() {} }),
+    onLog: (command) => {
+      const record = { command, status: null };
+      logs.push(record);
+      return {
+        command,
+        setStatus(text, state) { record.status = { text, state }; },
+        setOk(text) { record.status = { text, state: 'ok' }; },
+        setErr(text) { record.status = { text, state: 'err' }; },
+      };
+    },
     loadPrefs: async () => (prefs ?? { ...saved }),
     savePrefs: async (next) => { Object.assign(saved, next); },
     onFailure: (code) => failures.push(code),
     onMicBlocked: () => { blocked = true; },
+    cancelledText: () => 'Cancelled',
     now: () => clock,
   });
 
@@ -98,6 +112,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs } =
     windows,
     pauses,
     resumes,
+    logs,
     saved,
     blocked: () => blocked,
     speak: () => spoken,
@@ -426,4 +441,42 @@ test('the typed command runs like a spoken one', async () => {
   app.controller.submit('  scroll down  ');
   assert.deepEqual(app.commands.map((c) => c.text), ['scroll down']);
   assert.deepEqual(app.transcripts.at(-1), { text: 'scroll down', final: true });
+});
+
+test('the commands that were waiting are cancelled, not left working for ever', async () => {
+  const app = setup({ handsFree: true });
+  await app.controller.open();
+  app.created[0].hear('first');
+  app.created[0].hear('second');
+  assert.equal(app.logs.length, 2, 'both commands are in the log');
+
+  app.controller.close();
+
+  assert.equal(app.logs[0].status, null, 'the command that ran keeps its own state');
+  assert.equal(app.logs[1].status?.text, 'Cancelled', 'the command that never ran says it was cancelled');
+  assert.equal(app.logs[1].status?.state, 'err');
+});
+
+test('a cancelled command stops the one that is running', async () => {
+  const app = setup({ handsFree: true });
+  await app.controller.open();
+  app.created[0].hear('first');
+  app.controller.cancelCommand();
+  assert.equal(app.commands[0].signal.aborted, true);
+});
+
+test('nothing is spoken after the screen was closed', async () => {
+  const app = setup({ handsFree: true, speakReplies: true });
+  await app.controller.open();
+  app.controller.close();
+  app.controller.speak('the task is finished');
+  assert.equal(app.speak(), null, 'the reply never starts');
+});
+
+test('a microphone window that does not open does not leave the panel claiming it listens', async () => {
+  const app = setup({ handsFree: true, panel: false, failMic: true });
+  await app.controller.open();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(app.controller.listening, false, 'the panel is not listening');
+  assert.deepEqual(app.failures, ['mic-failed']);
 });

@@ -149,6 +149,12 @@
 
     <div id="voiceApproval" class="voice-approval" role="group" aria-live="assertive" hidden></div>
 
+    <div id="voicePending" class="voice-pending" role="note" hidden>
+      <strong data-i18n="voice.pendingQuestion"></strong>
+      <div id="voicePendingText" class="voice-pending-text" dir="auto"></div>
+      <button type="button" id="voicePendingBtn" class="ghost" data-i18n="voice.answerInChat"></button>
+    </div>
+
     <form id="voiceTypedForm" class="voice-typed-form" autocomplete="off">
       <input id="voiceTypedInput" type="text" dir="auto" data-i18n-placeholder="voice.placeholder" />
       <button type="submit" class="round primary" data-i18n-title="composer.send">

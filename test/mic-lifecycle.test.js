@@ -99,3 +99,26 @@ test('a different microphone epoch cannot pause, cancel or restart this window',
   assert.equal(mic.messages.some((m) => m.kind === 'final' && m.text === 'still listening'), true);
   mic.relay('cancel');
 });
+
+test('a microphone that keeps hearing something is not given up on', () => {
+  const mic = microphone();
+  mic.start();
+  // Chrome ends the recognizer after every phrase: the window starts it again
+  // and again, and it is not a broken microphone.
+  for (let i = 0; i < 8; i += 1) {
+    const rec = mic.created[mic.created.length - 1];
+    rec.final('a command');
+    rec.onend();
+  }
+  assert.ok(mic.created.length > 6, `the microphone kept going (${mic.created.length} recognizers)`);
+  assert.equal(mic.messages.some((m) => m.kind === 'error' && m.code === 'restart-limit'), false);
+});
+
+test('a microphone that keeps failing is stopped, and the panel is told why', () => {
+  const mic = microphone();
+  mic.start();
+  for (let i = 0; i < 8; i += 1) mic.created[mic.created.length - 1].onend();
+  const errors = mic.messages.filter((m) => m.kind === 'error');
+  assert.equal(errors.some((m) => m.code === 'restart-limit'), true, 'the panel is told why the listening stopped');
+  assert.ok(mic.created.length <= 7, 'the broken microphone was not started for ever');
+});

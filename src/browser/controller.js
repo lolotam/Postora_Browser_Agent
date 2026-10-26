@@ -45,6 +45,9 @@ export class BrowserController {
     this.isTakenByOther = isTakenByOther;
     this.groupId = null;
     this.tabId = null;
+    // True while the controller works on a tab it borrowed: it never falls
+    // back to another tab when that one is gone.
+    this.borrowed = false;
     // The tab the task started on stays open. Tabs this session opened are closed
     // once it leaves them, so a long task does not keep every page in memory.
     this.homeTabId = null;
@@ -67,7 +70,22 @@ export class BrowserController {
         this.tabId = null;
       }
     }
+    // A borrowed tab is never replaced by another one: the command that
+    // borrowed it acts on no tab at all when that tab is gone.
+    if (this.borrowed) throw new Error('The tab this command acts on is gone.');
     return this.startOn();
+  }
+
+  /**
+   * Works on a tab without taking it into the session's group: the voice path
+   * borrows the tab it was pointed at, so no session owns it and no other
+   * session is pushed out of it.
+   */
+  async borrowTab(tabId) {
+    const tab = await chrome.tabs.get(tabId);
+    this.tabId = tabId;
+    this.borrowed = true;
+    return tab;
   }
 
   /**
@@ -90,6 +108,7 @@ export class BrowserController {
     const tab = await this.claimTab(tabId);
     const previous = this.tabId;
     this.tabId = tabId;
+    this.borrowed = false;
     if (previous !== null && previous !== tabId) {
       await this.overlay.leave(previous);
       await this.closeIfLeft(previous);
@@ -148,9 +167,11 @@ export class BrowserController {
 
   async claimTab(tabId) {
     const tab = await chrome.tabs.get(tabId);
-    if (this.ownsTab(tab)) return tab;
+    // A tab that another session holds is refused, even when it is already in
+    // this session's group: the voice path's claim is a claim too.
     const owner = this.isTakenByOther(tab);
     if (owner) throw new Error(`Tab ${tabId} is used by session "${owner}". Use a tab of your own or open a new one.`);
+    if (this.ownsTab(tab)) return tab;
     if (this.groupId !== null) {
       try {
         await chrome.tabs.group({ tabIds: [tabId], groupId: this.groupId });
@@ -193,6 +214,17 @@ export class BrowserController {
       }
     }
     this.attached.clear();
+  }
+
+  /** Detaches one tab, leaving the others alone. */
+  async detachTab(tabId) {
+    if (!this.attached.has(tabId)) return;
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch {
+      // Already detached, or the tab is gone.
+    }
+    this.attached.delete(tabId);
   }
 
   async inject(func, args = []) {
@@ -242,14 +274,14 @@ export class BrowserController {
     await this.waitForLoad({ expectNavigation: true });
   }
 
-  async clickAt(x, y, { button = 'left', clickCount = 1 } = {}) {
+  async clickAt(x, y, { button = 'left', clickCount = 1, wait = true } = {}) {
     await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
     await this.overlay.click(x, y);
     for (let i = 1; i <= clickCount; i += 1) {
       await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i });
       await this.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: i });
     }
-    await this.waitForLoad();
+    if (wait) await this.waitForLoad();
   }
 
   async hoverAt(x, y) {
@@ -262,7 +294,7 @@ export class BrowserController {
   }
 
   /** Presses a key or chord such as "Enter", "Control+A" or "Shift+Tab". */
-  async pressKey(combo) {
+  async pressKey(combo, { wait = true } = {}) {
     const parts = combo.split('+').map((p) => p.trim()).filter(Boolean);
     const keyName = parts.pop();
     const modifiers = parts.reduce((mask, m) => mask | (MODIFIERS[m] ?? 0), 0);
@@ -280,7 +312,7 @@ export class BrowserController {
     };
     await this.cdp('Input.dispatchKeyEvent', { ...base, type: spec.text ? 'keyDown' : 'rawKeyDown', text: spec.text });
     await this.cdp('Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
-    await this.waitForLoad();
+    if (wait) await this.waitForLoad();
   }
 
   /** Scrolls by a number of screens (negative = up) at a point, default viewport centre. */

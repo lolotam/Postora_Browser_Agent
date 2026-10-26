@@ -51,3 +51,13 @@ test('the voice strings are translated in both languages', () => {
     for (const key of voice) assert.ok(key in MESSAGES[language], `${language} is missing ${key}`);
   }
 });
+
+test('the voice screen shows a question that is waiting for an answer', () => {
+  for (const id of ['voicePending', 'voicePendingText', 'voicePendingBtn']) {
+    assert.ok(ids.includes(id), `${id} is missing from the voice screen`);
+  }
+  // The question is shown with its own words, never hidden behind the screen.
+  assert.ok(panel.includes('showPendingQuestion(ui.question)'), 'the voice screen shows the question that waits');
+  assert.ok(panel.includes('function showPendingQuestion('), 'the question is shown by the panel');
+  assert.ok(panel.includes("$('voicePendingBtn').addEventListener('click', () => showChat())"), 'the user can answer it in the chat');
+});

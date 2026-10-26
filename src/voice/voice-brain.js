@@ -118,16 +118,54 @@ export function candidateSpans(text, { maxLen = 14, max = 160 } = {}) {
   return spans.slice(0, max);
 }
 
+/**
+ * A URL without the parts that carry a secret: the user information, the
+ * values of the query and the fragment. The model never sees them; the
+ * browser still navigates to the full address.
+ */
+export function redactUrl(url) {
+  const value = String(url ?? '').trim();
+  if (!value) return '';
+  let parsed;
+  let relative = false;
+  try {
+    parsed = new URL(value);
+  } catch {
+    // Candidate hrefs are often relative; they can carry credentials too.
+    try {
+      parsed = new URL(value, 'https://redacted.invalid/');
+      relative = true;
+    } catch {
+      return '';
+    }
+  }
+  if (!/^https?:$/.test(parsed.protocol)) return parsed.protocol;
+  parsed.username = '';
+  parsed.password = '';
+  for (const key of [...parsed.searchParams.keys()]) parsed.searchParams.set(key, '*');
+  parsed.hash = '';
+  if (relative) {
+    const path = `${parsed.pathname}${parsed.search}`;
+    return value.startsWith('//') ? `//${parsed.host}${path}` : path;
+  }
+  return parsed.toString();
+}
+
 export function spokenToUrl(span) {
   if (!span) return null;
-  let s = span.toLowerCase().trim()
-    .replace(/\s+dot\s+/g, '.')
-    .replace(/\s+slash\s+/g, '/')
-    .replace(/^(https?:\/\/)?(www\.)?/, '');
-  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/.test(s.replace(/\s+/g, ''))) {
-    return 'https://' + s.replace(/\s+/g, '');
+  const spoken = String(span).trim()
+    .replace(/\s+dot\s+/gi, '.')
+    .replace(/\s+slash\s+/gi, '/');
+  // Only the scheme and the host are written down: a path, a query or a token
+  // in it keeps its case, because the address may be case-sensitive.
+  const match = spoken.match(/^(?:(https?):\/\/)?([^/?#\s]+)([/?#].*)?$/);
+  if (match) {
+    const scheme = (match[1] || 'https').toLowerCase();
+    const host = match[2].toLowerCase();
+    const rest = match[3] || '';
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$/i.test(host)) return `${scheme}://${host}${rest}`;
   }
-  return `https://duckduckgo.com/?q=${encodeURIComponent('\\' + span.trim())}`;
+  return `https://duckduckgo.com/?q=${encodeURIComponent('\\' + String(span).trim())}`;
 }
 
 function trimForState(s, n = 200) {
@@ -251,17 +289,19 @@ export async function planStep(ask, command, ctx, { signal } = {}) {
 
   const siteCriteria = {
     none: 'No website is named, and the command does not need one.',
-    current_site: `The site that is open right now (${trimForState(ctx.url, 80) || 'unknown'}), because the user did not name a different one.`,
+    current_site: `The site that is open right now (${trimForState(redactUrl(ctx.url), 80) || 'unknown'}), because the user did not name a different one.`,
     other: 'A website that is NOT in this list (e.g. a named site like "bbc dot com" or "the verge").',
   };
   for (const [key, site] of Object.entries(SITES)) siteCriteria[key] = site.name;
 
   const state = {
     spoken_command: command,
-    current_tab: { title: trimForState(ctx.title, 120), url: trimForState(ctx.url, 200) },
+    // The address of the tab is read without its secrets: the model may see
+    // which site is open, never the token in its address.
+    current_tab: { title: trimForState(ctx.title, 120), url: trimForState(redactUrl(ctx.url), 200) },
     // The other tabs are named by their title only: their addresses can carry
     // searches and private pages that the model has no business reading.
-    open_tabs: (ctx.tabs || []).map((tab, i) => `${i + 1}. ${trimForState(tab.title, 60)}${tab.url ? ` (${trimForState(tab.url, 60)})` : ''}${tab.active ? ' [current]' : ''}`),
+    open_tabs: (ctx.tabs || []).map((tab, i) => `${i + 1}. ${trimForState(tab.title, 60)}${tab.url ? ` (${trimForState(redactUrl(tab.url), 60)})` : ''}${tab.active ? ' [current]' : ''}`),
   };
 
   const questions = {
@@ -394,7 +434,12 @@ export function describeElements(elements, pageUrl) {
     const { ad, group, n } = info[i];
     let d = ad ? `sponsored ad ${el.kind}` : group ? `${ordinal(n)} ${group} of ${groups[group]}` : el.kind;
     d += `: "${trimForState(el.label, 90)}"`;
-    if (el.href && !group && !ad) d += ` → ${trimForState(el.href, 60)}`;
+    // The field that has the focus is marked, so the model can tell it from
+    // the others without the command having to name it.
+    if (el.focused) d += ' (the field that has the focus)';
+    // The address of a link is read without its secrets: the path says which
+    // link it is, the token in it is none of the model's business.
+    if (el.href && !group && !ad) d += ` → ${trimForState(redactUrl(el.href), 60)}`;
     if (el.inView) d += ' (on screen)';
     return d;
   });
@@ -405,7 +450,10 @@ export async function chooseElement(ask, command, ctx, elements, purpose, argume
   if (!elements.length) return null;
   const criteria = {};
   describeElements(elements, ctx.url).forEach((d, i) => (criteria[`e${i}`] = d));
+  // The model may say that none of them is the one the user meant: a command
+  // that names a field that is not on the page must not land in another one.
   if (purpose === 'click') criteria.none = 'None of these elements matches what the user asked to click.';
+  else criteria.none = 'None of these fields is the one the user named.';
 
   const question =
     purpose === 'click'
@@ -415,10 +463,11 @@ export async function chooseElement(ask, command, ctx, elements, purpose, argume
         'numbered content items (e.g. "1st video of 5", "2nd search result of 8"), never to menus or sponsored ads. ' +
         'Avoid sponsored ads unless the user explicitly asks for an ad. Prefer elements that are on screen.'
       : `The user said "${command}" to their browser. Which text field should the text "${argumentText}" be typed into? ` +
+        'If the user named a field, pick that one; if it is not on the page, answer "none" rather than pick another field. ' +
         'If no field is named, pick the most prominent / main input (e.g. the search box or message box).';
 
   const reply = await ask({
-    state: { spoken_command: command, page: { title: trimForState(ctx.title, 120), url: trimForState(ctx.url, 200) } },
+    state: { spoken_command: command, page: { title: trimForState(ctx.title, 120), url: trimForState(redactUrl(ctx.url), 200) } },
     questions: { element: { type: 'choice', instructions: question, criteria } },
     signal,
   });

@@ -45,6 +45,7 @@ export function createVoiceController({
   savePrefs,
   onFailure = () => {},
   onMicBlocked = () => {},
+  cancelledText = () => 'Cancelled',
   now = () => Date.now(),
 }) {
   let prefs = { handsFree: true, speakReplies: false };
@@ -178,7 +179,13 @@ export function createVoiceController({
       if (screenOpen) {
         capture = 'window';
         captureActive = true;
-        Promise.resolve(openMicWindow({ continuous: prefs.handsFree })).catch(() => onFailure('mic-failed'));
+        Promise.resolve(openMicWindow({ continuous: prefs.handsFree })).catch(() => {
+          // The window did not open: the panel is not listening any more.
+          capture = null;
+          generation += 1;
+          setState();
+          onFailure('mic-failed');
+        });
       }
       setState();
       onFailure(code);
@@ -267,7 +274,7 @@ export function createVoiceController({
     screenToken += 1;
     screenOpen = false;
     stopListening();
-    queue.length = 0;
+    dropQueued();
     running?.abort();
     clearTimeout(speechTimer);
     speechTimer = null;
@@ -276,6 +283,11 @@ export function createVoiceController({
     stopSpeech();
     suppressUntil = 0;
     setState();
+  }
+
+  /** The commands that were waiting never ran: the log says they were cancelled. */
+  function dropQueued() {
+    for (const item of queue.splice(0)) item.entry?.setErr?.(cancelledText());
   }
 
   function startListening() {
@@ -291,7 +303,14 @@ export function createVoiceController({
       }
     } else {
       capture = 'window';
-      Promise.resolve(openMicWindow({ continuous: prefs.handsFree })).catch(() => onFailure('mic-failed'));
+      Promise.resolve(openMicWindow({ continuous: prefs.handsFree })).catch(() => {
+        // The window did not open: the panel is not listening, and it must not
+        // claim that it is.
+        capture = null;
+        generation += 1;
+        setState();
+        onFailure('mic-failed');
+      });
     }
     setState();
   }
@@ -332,6 +351,9 @@ export function createVoiceController({
 
   function speak(text) {
     if (!prefs.speakReplies || !text) return;
+    // Nothing is spoken after the screen is closed: the reply belongs to the
+    // screen that is showing it.
+    if (!screenOpen) return;
     // Retire the previous completion before cancel() can invoke it synchronously.
     const token = ++speechToken;
     clearTimeout(speechTimer);
@@ -409,7 +431,7 @@ export function createVoiceController({
     },
     speak,
     cancelCommand() {
-      queue.length = 0;
+      dropQueued();
       running?.abort();
     },
   };

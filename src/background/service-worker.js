@@ -15,8 +15,10 @@ import { CLAUDE_CODE_IDENTITY, anthropicEfforts, listAnthropicModels } from '../
 import { headerRules } from './header-rules.js';
 import { listCompatibleModels } from '../providers/openai-compatible.js';
 import { listGrokModels } from '../providers/responses.js';
+import { BrowserController } from '../browser/controller.js';
 import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
+import * as voiceClaims from '../sessions/voice-claims.js';
 import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive-backup.js';
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
@@ -32,6 +34,17 @@ const reserved = new Set();
 const RESERVATION_MS = 10000;
 const DRIVE_BACKUP_DELAY_MS = 3000; // one upload for a burst of changes (a save writes several keys)
 let driveBackupTimer = null;
+
+// The browser the voice path borrows tabs with. One controller: the input of
+// two voice commands never runs at the same time, so they cannot fight over
+// the tab they work on.
+const voiceBrowser = new BrowserController({ title: 'Postora voice' });
+let voiceInputQueue = Promise.resolve();
+function withVoiceBrowser(task) {
+  const run = voiceInputQueue.then(task);
+  voiceInputQueue = run.catch(() => {});
+  return run;
+}
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 chrome.runtime.onInstalled.addListener(installHeaderRules);
@@ -101,16 +114,34 @@ function isTakenByOther(selfId, tab) {
   return null;
 }
 
+/**
+ * The task of the session itself that is working in this tab. The voice path
+ * belongs to a session too: it does not work on the page of a task that is
+ * still running.
+ */
+function sessionWorkingIn(sessionId, tab) {
+  const runner = runners.get(sessionId);
+  if (!runner?.running) return null;
+  if (runner.browser.tabId === tab.id || runner.browser.ownsTab(tab)) return runner.title || 'this session';
+  return null;
+}
+
 function broadcastSessions() {
   for (const port of panels) port.postMessage({ type: 'sessions-changed' });
 }
 
 chrome.runtime.onConnect.addListener((port) => {
-  const [kind, sessionId] = port.name.split(':');
+  // The port name carries the panel: 'panel:<session>' or, when the panel
+  // takes part in the voice path, 'panel:<session>:<panel>'.
+  const [kind, sessionId, panelId] = port.name.split(':');
   if (kind !== 'panel' || !sessionId) return;
   panels.add(port);
   reserved.delete(sessionId);
-  port.onDisconnect.addListener(() => panels.delete(port));
+  port.onDisconnect.addListener(() => {
+    panels.delete(port);
+    // The panel is gone: the tabs it held are free again.
+    if (panelId) voiceClaims.releasePanel(panelId);
+  });
   // A panel whose port closed when the worker stopped reconnects as it sends, so
   // its task arrives while the session is still loading; it waits for the runner
   // instead of being dropped.
@@ -241,10 +272,82 @@ async function handleRequest(msg, sender) {
     case 'bind-tab':
       return tabSessions.bindTab(msg.tabId, msg.sessionId);
     case 'tab-owner':
-      return tabOwner(await chrome.tabs.get(msg.tabId), msg.sessionId);
+      return tabOwner(await chrome.tabs.get(msg.tabId), msg.sessionId, msg.panelId);
+    case 'voice-claim':
+      return voiceClaim(msg);
+    case 'voice-release':
+      await releaseVoiceClaim(msg.tabId, msg.panelId);
+      return null;
+    case 'voice-release-all':
+      await releaseVoiceClaims(msg.panelId);
+      return null;
+    case 'voice-input':
+      return voiceInput(msg);
     default:
       throw new Error(`Unknown request ${msg.type}`);
   }
+}
+
+/**
+ * The claim the voice path takes on a tab: nobody else may hold it, and the
+ * tab must not be in the group of a session that is working in it. A claim
+ * that cannot be taken names the one that holds it.
+ */
+async function voiceClaim({ tabId, panelId, sessionId }) {
+  const tab = await chrome.tabs.get(tabId);
+  // Another session's task, or the task of this session itself: the voice
+  // path does not work on the page of a task that is still running.
+  const owner = isTakenByOther(sessionId, tab) || sessionWorkingIn(sessionId, tab);
+  if (owner) return { ok: false, owner };
+  return voiceClaims.claimTab(tabId, { panelId, sessionId });
+}
+
+/** Gives one claim back and lets the tab go: the debugger is detached from it. */
+async function releaseVoiceClaim(tabId, panelId) {
+  const released = voiceClaims.releaseTab(tabId, panelId);
+  if (!released) return;
+  // The detachment waits its turn, so an input that is running on another tab
+  // is not disturbed.
+  await withVoiceBrowser(() => voiceBrowser.detachTab(tabId));
+}
+
+/** Gives every claim of a panel back and lets those tabs go. */
+async function releaseVoiceClaims(panelId) {
+  const tabs = voiceClaims.releasePanel(panelId);
+  for (const tabId of tabs) await withVoiceBrowser(() => voiceBrowser.detachTab(tabId));
+}
+
+/**
+ * Real input on a tab the voice path holds the claim on: a click, a key, a
+ * text. The page sees what a user's hand would do. A worker that cannot
+ * answer, or a tab the panel does not hold, does nothing.
+ */
+async function voiceInput({ tabId, panelId, steps }) {
+  const held = voiceClaims.claimOf(tabId);
+  if (!held || held.panelId !== panelId) return { ok: false, errorKey: 'voice.sayOwnerUnknown' };
+  const list = Array.isArray(steps) ? steps : [];
+  try {
+    await withVoiceBrowser(async () => {
+      await voiceBrowser.borrowTab(tabId);
+      for (const step of list) {
+        // The claim is checked again before every step: a claim that was given
+        // back while this request was waiting must not click or type.
+        const now = voiceClaims.claimOf(tabId);
+        if (!now || now.panelId !== panelId) throw new Error('voice.claimLost');
+        if (step?.op === 'click') await voiceBrowser.clickAt(Number(step.x), Number(step.y), { wait: false });
+        else if (step?.op === 'key') await voiceBrowser.pressKey(String(step.key), { wait: false });
+        else if (step?.op === 'text') await voiceBrowser.insertText(String(step.text ?? ''));
+        else throw new Error('voice.inputUnknown');
+      }
+    });
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    if (/voice\.claimLost/.test(message)) return { ok: false, errorKey: 'voice.sayOwnerUnknown' };
+    if (/voice\.inputUnknown/.test(message)) return { ok: false, errorKey: 'voice.sayCannotDo' };
+    if (/Cannot access|chrome:\/\/|does not allow/i.test(message)) return { ok: false, errorKey: 'voice.sayPageRestricted' };
+    return { ok: false, errorKey: 'voice.sayClickFailed' };
+  }
+  return { ok: true };
 }
 
 function sessionForTab(tab) {
@@ -258,10 +361,13 @@ function sessionForTab(tab) {
 /**
  * The session that is working in this tab, when it is not the one asking. The
  * voice path asks before it acts on a tab, so two sessions never work on the
- * same page.
+ * same page. The claim of the voice path counts too: a tab it holds is not
+ * free.
  */
-function tabOwner(tab, sessionId) {
-  const owner = isTakenByOther(sessionId, tab);
+function tabOwner(tab, sessionId, panelId) {
+  const owner = isTakenByOther(sessionId, tab)
+    || sessionWorkingIn(sessionId, tab)
+    || voiceClaims.holderOf(tab.id, { exceptPanelId: panelId });
   return { taken: Boolean(owner), owner: owner ?? null };
 }
 

@@ -12,6 +12,7 @@ import { createFastLayer } from '../fast/fast-layer.js';
 import { effectiveSettings, loadSettings } from '../lib/settings.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
+import * as voiceClaims from '../sessions/voice-claims.js';
 
 const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
@@ -41,7 +42,9 @@ export class SessionRunner {
     this.asks = 0;
     this.askNotices = []; // "needs your answer" notifications still shown
     this.settings = null;
-    this.browser = new BrowserController({ title: meta.title || 'Postora', color, isTakenByOther: (tab) => isTakenByOther(this.id, tab) });
+    // A tab the voice path holds the claim on is not free either: the task
+    // waits for the voice command instead of working on the same page.
+    this.browser = new BrowserController({ title: meta.title || 'Postora', color, isTakenByOther: (tab) => voiceClaims.tabHolder(isTakenByOther, tab, { sessionId: this.id }) });
     this.browser.groupId = body.groupId ?? null;
   }
 
