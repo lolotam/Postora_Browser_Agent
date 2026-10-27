@@ -951,6 +951,9 @@ export function createVoiceAccess({
     if (!port || !ownSidePanel(port.sender)) return false;
     const commandId = typeof msg.commandId === 'string' ? msg.commandId : null;
     const command = commandId ? commands.get(commandId) : null;
+    // A late cancellation of an old command is not a cancellation of the
+    // panel's next command or its new leases.
+    if (commandId && !command) return false;
     if (command) {
       // The command has to belong to this panel of this session.
       if (command.sessionId !== sessionId || command.panelId !== panelId) return false;

@@ -51,6 +51,21 @@ function elevate(authority, revision = authority.revision) {
   return authority.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision: revision });
 }
 
+test('worker withdrawal settles only the named request without granting authority', async () => {
+  const { authority, asked } = authorityFor();
+  const first = authority.authorize({ action: 'click', args: { index: 1 } });
+  const second = authority.authorize({ action: 'click', args: { index: 2 } });
+  await tick();
+  assert.equal(authority.withdraw(asked[0].id, 'no-panel'), true);
+  const answer = await first;
+  assert.equal(answer.reason, 'no-panel');
+  assert.equal(answer.permit, null);
+  assert.equal(authority.pendingCount, 1);
+  assert.equal(authority.withdraw(asked[0].id, 'no-panel'), false);
+  authority.cancel();
+  assert.equal((await second).permit, null);
+});
+
 // --- the classification helpers that everything else relies on -----------
 
 test('a known observation stays an observation and a known field read stays sensitive', () => {

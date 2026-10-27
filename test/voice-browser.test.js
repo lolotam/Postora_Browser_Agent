@@ -82,6 +82,29 @@ test('a page that finished loading ends the wait', async () => {
   }
 });
 
+test('a delayed cancellation reply cannot erase a newer claimed command', async () => {
+  const chrome = chromeMock();
+  let finish;
+  try {
+    const browser = createChromeBrowser({ sessionId: 'session-a', panelId: 'panel-a' });
+    chrome.results['voice-claim'] = { ok: true, token: 'lease-1', command: { id: 'old-command' } };
+    await browser.claim(3);
+    chrome.results['voice-cancel'] = () => new Promise((resolve) => { finish = resolve; });
+    const pending = browser.cancel();
+    assert.equal(chrome.sent.at(-1).commandId, 'old-command');
+    chrome.results['voice-claim'] = { ok: true, token: 'lease-2', command: { id: 'new-command' } };
+    await browser.claim(3);
+    finish(true);
+    await pending;
+    chrome.results['voice-action'] = { ok: true };
+    await browser.input(3, [], { action: 'press_key' });
+    assert.equal(chrome.sent.at(-1).commandId, 'new-command');
+  } finally {
+    finish?.(true);
+    chrome.restore();
+  }
+});
+
 test('the claim is taken and given back through the worker', async () => {
   const chrome = chromeMock();
   try {

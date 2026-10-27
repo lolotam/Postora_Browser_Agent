@@ -320,7 +320,7 @@ export class SessionRunner {
    * itself lives in the authority: this is only what may be seen of it.
    *
    * Without a panel of this extension there is nobody who could answer, and
-   * a question nobody can answer must not hold the task: it is denied at
+   * a question nobody can answer must not hold the task: it is withdrawn at
    * once, and the work carries on without it.
    */
   onAccessRequest(request) {
@@ -328,12 +328,7 @@ export class SessionRunner {
     this.publicRequests.set(shown.id, shown);
     this.broadcast({ type: 'access-request', request: shown });
     if (!this.trustedPorts.size) {
-      this.access.respondApproval({
-        id: request.id,
-        sessionId: request.sessionId,
-        revision: request.revision,
-        decision: DENY,
-      });
+      this.access.withdraw(request.id, 'no-panel');
     }
   }
 

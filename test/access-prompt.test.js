@@ -83,6 +83,9 @@ test('the prompt says the tools enforce the mode, and what ask_user is for', () 
   assert.match(full, /run straight away/, 'Full access needs no question of its own');
   assert.match(full, /no question of your own is needed/, 'the model does not duplicate the authorization');
   assert.match(full, /Use ask_user only for what no tool can resolve/);
+  assert.doesNotMatch(full, /the tools ask the user for exactly those actions/);
+  assert.match(full, /proceed without tool confirmation/);
+  assert.match(full, /never initiate an irreversible action the user did not request/);
 });
 
 test('no setting, message or transcript can make the prompt Full', () => {

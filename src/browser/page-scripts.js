@@ -1057,7 +1057,7 @@ export function permissionTarget(kind, arg, rule) {
     };
   }
 
-  return { ok: true, element: shape(el, wanted.kind, wanted.token, wanted.index, wanted.kind === 'point' ? { x: wanted.x, y: wanted.y } : null) };
+  return { ok: true };
 }
 
 /** Returns a slice of the page's visible text for reading long pages, and the page's dates. */

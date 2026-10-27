@@ -493,6 +493,11 @@ export class AccessAuthority {
     };
   }
 
+  /** Withdraws an unanswered question without pretending the user denied it. */
+  withdraw(id, reason = 'cancelled') {
+    return this.#withdraw(id, reason);
+  }
+
   /** The run is over: no question waits and no permit survives it. */
   finish(reason = 'finished') {
     return this.cancel(reason);

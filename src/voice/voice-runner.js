@@ -269,11 +269,13 @@ async function runStep({ ask, browser, ctx, target, command, emit, signal, rule,
           if (!held?.ok) return failed(claimRefused(held, t));
           const bound = await browser.bindSession(created.id);
           if (!bound.ok) return failed(t('voice.sayOwnerUnknown'));
+          // Finish requested navigation before capturing the activation target.
+          // Do not weaken document/URL checks to activate a still-loading page.
+          if (plan.url) await browser.waitForLoad(created.id, { signal });
           if (signal?.aborted) return cancelled;
           const res = await browser.activateTab(created.id);
           if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayOwnerUnknown'));
           shown = true;
-          if (plan.url) await browser.waitForLoad(created.id, { signal });
           const tab = await browser.getTab(created.id);
           return {
             ok: true,

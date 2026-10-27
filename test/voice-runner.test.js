@@ -818,6 +818,16 @@ test('a tab that was opened but never shown is closed again', async () => {
   assert.equal(closed[1], 3, 'only the tab that was opened is closed');
 });
 
+test('a new tab requested with a URL finishes navigation before activation is captured', async () => {
+  const browser = mockBrowser();
+  const ask = scriptedAsk({ action: choice('new_tab'), argument: firstSpan, site: choice('youtube') });
+  const result = await runFastCommand({ ask, browser, command: 'open youtube in a new tab', t });
+  assert.equal(result.ok, true);
+  const loaded = browser.order.indexOf('waitForLoad:3');
+  const shown = browser.order.indexOf('activateTab:3');
+  assert.ok(loaded >= 0 && loaded < shown, 'activation must not capture an intermediate loading document');
+});
+
 test('a tab that was opened is closed when the binding fails', async () => {
   const browser = mockBrowser({ bindSession: async () => ({ ok: false }) });
   const ask = scriptedAsk({ action: choice('new_tab'), argument: firstSpan, site: choice('none') });

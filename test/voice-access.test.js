@@ -262,6 +262,19 @@ test('a new command after Stop gets a fresh generation, never the old command co
   }
 });
 
+test('a late cancellation of a dead command cannot revoke its successor', async () => {
+  const world = await newWorld({ title: 'Late cancellation', mode: 'full-access' });
+  try {
+    const message = { sessionId: world.runner.id, panelId: world.panelId, commandId: world.claimed.command.id };
+    assert.equal(await world.access.cancelCommand(message, SENDER), true);
+    const next = await world.access.handleClaim({ sessionId: world.runner.id, panelId: world.panelId, tabId: world.tabId }, SENDER);
+    assert.equal(next.ok, true);
+    assert.equal(await world.access.cancelCommand(message, SENDER), false);
+    assert.equal(world.access.commandOf(world.panelId).id, next.command.id);
+    assert.equal((await world.act('scroll_down', { commandId: next.command.id, token: next.token, args: { direction: 'down' } })).ok, true);
+  } finally { world.runner.dispose(); }
+});
+
 test('native blank-tab management does not grant scripting of protected Chrome pages', async () => {
   const world = await newWorld({ title: 'Blank tab management', mode: 'full-access' });
   const get = chrome.tabs.get;

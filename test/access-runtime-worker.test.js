@@ -503,7 +503,7 @@ test('without a panel there is nobody to answer, so the question is refused at o
   try {
     const answer = await runner.access.authorize({ action: 'click', args: { index: 2 }, target: checkoutTarget() });
     assert.equal(answer.permit, null, 'a question nobody could see was allowed');
-    assert.equal(answer.reason, 'denied');
+    assert.equal(answer.reason, 'no-panel');
     assert.equal(runner.access.pendingCount, 0, 'the question kept waiting');
     assert.deepEqual(runner.currentPermissions(), []);
   } finally {

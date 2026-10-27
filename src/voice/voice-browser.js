@@ -357,12 +357,13 @@ export function createChromeBrowser({ sessionId = null, target = null, panelId =
      * nothing of it may run any more. The claims go with it.
      */
     async cancel() {
+      const cancelled = command;
       try {
-        await request('voice-cancel', { panelId, sessionId, commandId: command?.id ?? null });
+        await request('voice-cancel', { panelId, sessionId, commandId: cancelled?.id ?? null });
       } catch {
         /* the worker is gone: the command is gone with it */
       } finally {
-        command = null;
+        if (command === cancelled) command = null;
       }
     },
   };

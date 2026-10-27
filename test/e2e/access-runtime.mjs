@@ -18,11 +18,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright-core';
 
 const EXTENSION_DIR = process.env.E2E_EXTENSION_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-// The screenshots of a reviewer run go to the approved temp folder: on this
-// machine, and in the temp folder of the system everywhere else.
-const SHOT_DIR = process.env.E2E_SCREENSHOTS || (process.platform === 'win32'
-  ? path.join('E:/Dev/Temp/opencode', 'chat-permissions-access-runtime')
-  : path.join(os.tmpdir(), 'chat-permissions-access-runtime'));
+// Reviewers may choose an output directory; clean checkouts use system temp.
+const SHOT_DIR = process.env.E2E_SCREENSHOTS || path.join(os.tmpdir(), 'chat-permissions-access-runtime');
 // The page the agent acts on: synthetic values only, a local file.
 const FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/postora-permissions-fixture.html');
 
