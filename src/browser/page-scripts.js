@@ -115,7 +115,8 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     const aria = el.getAttribute('aria-label');
     if (aria) parts.push(aria);
     for (const id of (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
-      const node = typeof document !== 'undefined' && document.getElementById ? document.getElementById(id) : null;
+      const scope = el.getRootNode?.() ?? document;
+      const node = scope.getElementById?.(id) ?? document.getElementById?.(id);
       if (node) parts.push(textWithout(node, el));
     }
     for (const label of el.labels ?? []) {
@@ -447,7 +448,8 @@ export function elementAction(index, action, value, quiet, rule, target) {
     const aria = node.getAttribute('aria-label');
     if (aria) parts.push(aria);
     for (const id of (node.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
-      const found = typeof document !== 'undefined' && document.getElementById ? document.getElementById(id) : null;
+      const scope = node.getRootNode?.() ?? document;
+      const found = scope.getElementById?.(id) ?? document.getElementById?.(id);
       if (found) parts.push(textWithout(found, node));
     }
     for (const label of node.labels ?? []) {
@@ -816,7 +818,8 @@ export function permissionTarget(kind, arg, rule) {
     const aria = el.getAttribute('aria-label');
     if (aria) parts.push(aria);
     for (const id of (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
-      const found = typeof document !== 'undefined' && document.getElementById ? document.getElementById(id) : null;
+      const scope = el.getRootNode?.() ?? document;
+      const found = scope.getElementById?.(id) ?? document.getElementById?.(id);
       if (found) parts.push(textWithout(found, el));
     }
     for (const label of el.labels ?? []) {
@@ -858,6 +861,16 @@ export function permissionTarget(kind, arg, rule) {
   const deepActive = () => {
     let el = document.activeElement;
     while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    return el;
+  };
+
+  const deepAt = (x, y) => {
+    let el = document.elementFromPoint(x, y);
+    while (el?.shadowRoot?.elementFromPoint) {
+      const next = el.shadowRoot.elementFromPoint(x, y);
+      if (!next || next === el) break;
+      el = next;
+    }
     return el;
   };
 
@@ -938,7 +951,7 @@ export function permissionTarget(kind, arg, rule) {
       el = list[index];
     } else if (what === 'point') {
       point = { x: Number(arg?.x), y: Number(arg?.y) };
-      el = document.elementFromPoint(point.x, point.y);
+      el = deepAt(point.x, point.y);
     } else {
       el = deepActive();
     }
@@ -971,11 +984,16 @@ export function permissionTarget(kind, arg, rule) {
   }
   // The point must still lie on the element that was approved.
   if (wanted.kind === 'point') {
-    const at = document.elementFromPoint(wanted.x, wanted.y);
+    const at = deepAt(wanted.x, wanted.y);
     if (!holds(el, at)) return { ok: false, reason: 'hit-replaced' };
   }
 
   const active = deepActive();
+  if (kind === 'hit') {
+    if (!Number.isFinite(arg?.x) || !Number.isFinite(arg?.y)) return { ok: false, reason: 'invalid-point' };
+    if (!holds(el, deepAt(arg.x, arg.y))) return { ok: false, reason: 'hit-replaced' };
+    return { ok: true };
+  }
   if (kind === 'focus' || kind === 'typing') {
     // The focus is approved for one element: a field that has the focus now is
     // another element, and it does not inherit the approval, not even when it
@@ -1035,7 +1053,8 @@ export function pageText(start, length, rule) {
     const aria = el.getAttribute('aria-label');
     if (aria) parts.push(aria);
     for (const id of (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
-      const found = typeof document !== 'undefined' && document.getElementById ? document.getElementById(id) : null;
+      const scope = el.getRootNode?.() ?? document;
+      const found = scope.getElementById?.(id) ?? document.getElementById?.(id);
       if (found) parts.push(textWithout(found, el));
     }
     for (const label of el.labels ?? []) {

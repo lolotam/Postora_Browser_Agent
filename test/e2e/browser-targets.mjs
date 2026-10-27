@@ -197,6 +197,36 @@ async function main() {
     check(!/TEST_EDITOR_SECRET/.test(editor.page), 'the contents of a secret editor are not in the text of the page');
     check(/original message/.test(editor.lines), 'the ordinary field keeps its value');
 
+    // A still-connected original is not enough: a different control can cover
+    // its coordinates while permission or pointer preparation takes time.
+    const clickTarget = await panel.evaluate(async () => {
+      const { browser } = globalThis.__qa;
+      const snap = await browser.snapshot();
+      const line = snap.elements.find((entry) => /button "Send message"/.test(entry));
+      const index = Number(/^\[(\d+)\]/.exec(line)[1]);
+      const target = await browser.captureTarget({ kind: 'element', index });
+      const spot = await browser.element(index, 'locate', null, { target, guard: () => true });
+      return { target, x: spot.x, y: spot.y };
+    });
+    await page.evaluate(() => {
+      const cover = document.createElement('button');
+      cover.id = 'qa-cover';
+      Object.assign(cover.style, { position: 'fixed', inset: '0', zIndex: '2147483647' });
+      cover.addEventListener('click', () => { window.qa.deleted += 1; });
+      document.body.append(cover);
+    });
+    const covered = await panel.evaluate(async ({ target, x, y }) => {
+      try {
+        await globalThis.__qa.browser.clickAt(x, y, { target, guard: () => true, wait: false });
+        return false;
+      } catch (error) {
+        return /inputCancelled/.test(error.message);
+      }
+    }, clickTarget);
+    check(covered, 'a covering control cannot receive the click of the approved original');
+    check(await page.evaluate(() => window.qa.deleted === 0 && window.qa.sent === 0), 'neither original nor covering action ran');
+    await page.locator('#qa-cover').evaluate((node) => node.remove());
+
     // 7. The focus that was approved is not the focus that is there now: the
     // text does not follow the focus into another field.
     await page.goto(`${fixtureUrl}?redirectFocus`);

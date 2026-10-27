@@ -402,7 +402,7 @@ export class BrowserController {
    * is changed, so an index cannot be swapped while the action waits.
    */
   async element(index, action, value = null, { guard = null, target = null } = {}) {
-    const tab = await this.currentTab();
+    const tab = await this.pinnedTab(target?.tabId ?? null);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const result = await this.inject(
       elementAction,
@@ -415,7 +415,7 @@ export class BrowserController {
 
   /** Reads or acts on the suggestion list tied to an autocomplete field (see suggestionAction). */
   async suggestions(index, wanted, mode, { guard = null, target = null } = {}) {
-    const tab = await this.currentTab();
+    const tab = await this.pinnedTab(target?.tabId ?? null);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const result = await this.inject(suggestionAction, [index, wanted, mode, SECRET_RULE, target ?? null], { tabId: tab.id, guard });
     if (result?.error) throw new Error(result.error);
@@ -618,6 +618,13 @@ export class BrowserController {
     return true;
   }
 
+  /** The approved original must still receive input at this exact point. */
+  async assertHitTarget(target, x, y, { guard = null } = {}) {
+    const res = await this.inject(permissionTarget, ['hit', { target, x, y }, SECRET_RULE], { tabId: target.tabId, guard });
+    if (!res?.ok) throw new Error(INPUT_CANCELLED);
+    return true;
+  }
+
   async navigate(url, { guard = null, tabId = null } = {}) {
     const tab = await this.pinnedTab(tabId);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
@@ -634,17 +641,19 @@ export class BrowserController {
     await this.waitForLoad({ expectNavigation: true, tabId: tab.id });
   }
 
-  async clickAt(x, y, { button = 'left', clickCount = 1, wait = true, guard = null, tabId = null } = {}) {
+  async clickAt(x, y, { button = 'left', clickCount = 1, wait = true, guard = null, target = null, tabId = null } = {}) {
     // The tab is taken now and kept: a click must not land in a tab that was
     // opened while it waited.
-    const tab = await this.pinnedTab(tabId);
-    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, { guard, tabId: tab.id });
+    const tab = await this.pinnedTab(tabId ?? target?.tabId ?? null);
+    if (target && target.tabId !== tab.id) throw new Error(INPUT_CANCELLED);
+    const precheck = target ? () => this.assertHitTarget(target, x, y, { guard }) : null;
+    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, { guard, tabId: tab.id, precheck });
     await this.overlay.click(x, y);
     for (let i = 1; i <= clickCount; i += 1) {
       // The move and the overlay took time: the guard is asked again right
       // before the button goes down, so a click that was withdrawn never
       // reaches the page.
-      await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i }, { guard, tabId: tab.id });
+      await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i }, { guard, tabId: tab.id, precheck });
       // The button is always let go, or it stays down in the page. The guard
       // is not asked again: a withdrawal after the press must not leave the
       // mouse held down.
@@ -653,12 +662,14 @@ export class BrowserController {
     if (wait) await this.waitForLoad({ tabId: tab.id });
   }
 
-  async hoverAt(x, y, { guard = null, tabId = null } = {}) {
-    const tab = await this.pinnedTab(tabId);
+  async hoverAt(x, y, { guard = null, target = null, tabId = null } = {}) {
+    const tab = await this.pinnedTab(tabId ?? target?.tabId ?? null);
+    if (target && target.tabId !== tab.id) throw new Error(INPUT_CANCELLED);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     // The guard goes with the command: the debugger is attached first, and
     // that takes time.
-    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, { guard, tabId: tab.id });
+    const precheck = target ? () => this.assertHitTarget(target, x, y, { guard }) : null;
+    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, { guard, tabId: tab.id, precheck });
     await delay(300);
   }
 
@@ -672,6 +683,8 @@ export class BrowserController {
    * meantime does not inherit the approval.
    */
   async insertText(text, { guard = null, target = null, tabId = null } = {}) {
+    if (target && tabId != null && tabId !== target.tabId) throw new Error(INPUT_CANCELLED);
+    tabId ??= target?.tabId ?? null;
     const precheck = target ? () => this.assertTypingTarget(target, { guard }) : null;
     await this.cdp('Input.insertText', { text }, { guard, tabId, precheck });
   }
@@ -684,6 +697,8 @@ export class BrowserController {
    * to do, and the body is approved as the body it was.
    */
   async pressKey(combo, { wait = true, guard = null, target = null, tabId = null } = {}) {
+    if (target && tabId != null && tabId !== target.tabId) throw new Error(INPUT_CANCELLED);
+    tabId ??= target?.tabId ?? null;
     const parts = combo.split('+').map((p) => p.trim()).filter(Boolean);
     const keyName = parts.pop();
     const modifiers = parts.reduce((mask, m) => mask | (MODIFIERS[m] ?? 0), 0);
@@ -707,8 +722,9 @@ export class BrowserController {
   }
 
   /** Scrolls by a number of screens (negative = up) at a point, default viewport centre. */
-  async scroll(screens, at = null, { guard = null, tabId = null } = {}) {
-    const tab = await this.pinnedTab(tabId);
+  async scroll(screens, at = null, { guard = null, target = null, tabId = null } = {}) {
+    const tab = await this.pinnedTab(tabId ?? target?.tabId ?? null);
+    if (target && target.tabId !== tab.id) throw new Error(INPUT_CANCELLED);
     const metrics = await this.cdp('Page.getLayoutMetrics', {}, { tabId: tab.id });
     const vp = metrics.cssVisualViewport ?? metrics.layoutViewport;
     const x = at?.x ?? vp.clientWidth / 2;
@@ -719,7 +735,8 @@ export class BrowserController {
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     // The guard goes with the command: the tab is looked up again, and that
     // takes time.
-    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY }, { guard, tabId: tab.id });
+    const precheck = target?.element ? () => this.assertHitTarget(target, x, y, { guard }) : null;
+    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY }, { guard, tabId: tab.id, precheck });
     await delay(150); // smooth scrolling and lazy-loaded content start after the wheel event
     await this.settle({ tabId: tab.id });
   }
@@ -738,14 +755,14 @@ export class BrowserController {
   }
 
   // @store-strip-start
-  async evaluate(expression, { guard = null } = {}) {
+  async evaluate(expression, { guard = null, tabId = null } = {}) {
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const { result, exceptionDetails } = await this.cdp('Runtime.evaluate', {
       expression,
       awaitPromise: true,
       returnByValue: true,
       userGesture: true,
-    }, { guard });
+    }, { guard, tabId });
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
     return result.value;
   }

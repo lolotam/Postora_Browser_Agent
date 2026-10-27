@@ -201,6 +201,17 @@ test('capturing a button does not read a different secret editor even to test wh
   assert.equal(reads, 0);
 });
 
+test('an ARIA label resolves in the field own shadow tree', () => {
+  const page = makePage();
+  const label = page.make({ tag: 'SPAN', innerText: 'Access token' });
+  const field = page.make({ tag: 'INPUT', attrs: { id: 'ordinary-id', 'aria-labelledby': 'shadow-label' }, value: 'TEST_SHADOW_SECRET' });
+  field.getRootNode = () => ({ getElementById: (id) => id === 'shadow-label' ? label : null });
+  page.window.__agentElements = [field];
+  const captured = page.run(TARGET, 'capture', { kind: 'element', index: 0 }, rule);
+  assert.equal(captured.element.secret, true);
+  assert.doesNotMatch(JSON.stringify(page.run(SNAPSHOT, 250, 3500, rule)), /TEST_SHADOW_SECRET/);
+});
+
 test('the label that belongs to a field is part of its name', () => {
   const page = makePage();
   // A field whose id says nothing, but whose label says what it is.
@@ -600,6 +611,19 @@ test('the page and the module agree on what a field that holds a secret is', () 
 // was captured when it started.
 
 const { BrowserController } = await import('../src/browser/controller.js');
+
+test('a covering element cannot receive the click of the approved original', async () => {
+  const page = makePage();
+  const button = page.make({ tag: 'BUTTON', attrs: { 'aria-label': 'Send' } });
+  const cover = page.make({ tag: 'BUTTON', attrs: { 'aria-label': 'Other action' } });
+  page.window.__agentElements = [button];
+  page.document.elementFromPoint = () => button;
+  fakeChrome(page);
+  const browser = new BrowserController();
+  const target = await browser.captureTarget({ kind: 'element', index: 0 });
+  page.document.elementFromPoint = () => cover;
+  await assert.rejects(browser.clickAt(80, 22, { target, guard: () => true, wait: false }), /inputCancelled/);
+});
 
 /** Chrome with one tab and one page: the scripts run in that page. */
 function fakeChrome(page, { onGet = null, onDetach = null, onAttach = null } = {}) {
