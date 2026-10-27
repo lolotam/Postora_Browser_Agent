@@ -889,6 +889,20 @@ export function permissionTarget(kind, arg, rule) {
     return el;
   };
 
+  // Decorative descendants belong to the approved control; another control
+  // nested inside it does not. In particular, blank-body consent cannot cover
+  // every control a page might subsequently insert into the body.
+  const receivesHit = (owner, hit) => {
+    if (owner === hit) return true;
+    if (!hit || owner === document.body || owner === document.documentElement) return false;
+    const controls = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="option"],[role="textbox"],[contenteditable],[onclick],[tabindex]';
+    for (let node = hit; node; node = node.parentElement ?? node.getRootNode?.()?.host ?? null) {
+      if (node === owner) return true;
+      if (node.matches?.(controls)) return false;
+    }
+    return false;
+  };
+
   // The controls that hold a secret and carry text of their own.
   const secretTexts = (root) => {
     const found = [];
@@ -1000,13 +1014,13 @@ export function permissionTarget(kind, arg, rule) {
   // The point must still lie on the element that was approved.
   if (wanted.kind === 'point') {
     const at = deepAt(wanted.x, wanted.y);
-    if (!holds(el, at)) return { ok: false, reason: 'hit-replaced' };
+    if (!receivesHit(el, at)) return { ok: false, reason: 'hit-replaced' };
   }
 
   const active = deepActive();
   if (kind === 'hit') {
     if (!Number.isFinite(arg?.x) || !Number.isFinite(arg?.y)) return { ok: false, reason: 'invalid-point' };
-    if (!holds(el, deepAt(arg.x, arg.y))) return { ok: false, reason: 'hit-replaced' };
+    if (!receivesHit(el, deepAt(arg.x, arg.y))) return { ok: false, reason: 'hit-replaced' };
     return { ok: true };
   }
   if (kind === 'focus' || kind === 'typing') {

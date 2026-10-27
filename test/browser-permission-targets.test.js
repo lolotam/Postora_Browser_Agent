@@ -625,6 +625,16 @@ test('a covering element cannot receive the click of the approved original', asy
   await assert.rejects(browser.clickAt(80, 22, { target, guard: () => true, wait: false }), /inputCancelled/);
 });
 
+test('a point approved on the body cannot acquire a newly covering descendant control', () => {
+  const page = makePage();
+  page.document.elementFromPoint = () => page.document.body;
+  const target = asTarget(page.run(TARGET, 'capture', { kind: 'point', x: 20, y: 20 }, rule));
+  const cover = page.make({ tag: 'BUTTON', attrs: { 'aria-label': 'Delete' } });
+  page.document.elementFromPoint = () => cover;
+  assert.equal(page.run(TARGET, 'validate', { target }, rule).ok, false);
+  assert.equal(page.run(TARGET, 'hit', { target, x: 20, y: 20 }, rule).ok, false);
+});
+
 /** Chrome with one tab and one page: the scripts run in that page. */
 function fakeChrome(page, { onGet = null, onDetach = null, onAttach = null } = {}) {
   const tabs = { 7: { id: 7, url: 'https://example.test/page', active: true, groupId: -1, windowId: 1, title: 'Page', status: 'complete' } };
