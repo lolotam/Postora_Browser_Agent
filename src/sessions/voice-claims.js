@@ -46,13 +46,18 @@ export function claimOf(tabId) {
  * The lease is used only by the panel that holds it, and only under the token
  * that names it. A request without a token or without a panel is refused: the
  * lease is never used by whoever asks.
+ *
+ * The command may be named as well: a lease belongs to the command that took
+ * it, so an action of another command may not act under it. A request without
+ * a command is refused too when the lease belongs to one.
  */
-export function isAuthorized(tabId, { panelId = null, token = null } = {}) {
+export function isAuthorized(tabId, { panelId = null, token = null, commandId = null } = {}) {
   const held = leases.get(tabId);
   if (!held) return false;
   if (held.state !== 'active') return false;
   if (!panelId || held.panelId !== panelId) return false;
   if (!token || held.token !== token) return false;
+  if (held.commandId && held.commandId !== commandId) return false;
   return true;
 }
 
@@ -60,13 +65,33 @@ export function isAuthorized(tabId, { panelId = null, token = null } = {}) {
  * Takes the voice lease on a tab. The panel that holds it may take it again
  * and keeps the same lease; any other panel is refused, and the one that holds
  * it is named.
+ *
+ * A lease belongs to the command that took it. The same command may take it
+ * again and keeps its token, but another command of the same panel is
+ * refused: the tab stays busy until the old lease is given back and its
+ * cleanup is over. A lease that was retagged would let the late cleanup of
+ * the old command free the lease of the new one, because both would carry
+ * the same token.
  */
-export function claimTab(tabId, { panelId, sessionId, owner = 'voice control' } = {}) {
+export function claimTab(tabId, { panelId, sessionId, commandId = null, owner = 'voice control' } = {}) {
   if (typeof panelId !== 'string' || !panelId.trim()) return { ok: false, owner: null };
   const held = leases.get(tabId);
   if (held) {
     if (held.kind === 'voice' && held.panelId === panelId && held.state === 'active') {
+      // Another session's lease is not this panel's to take.
+      if (sessionId != null && held.sessionId != null && held.sessionId !== sessionId) {
+        return { ok: false, owner: held.owner };
+      }
+      // Another command of this panel holds the tab: it has to give it back
+      // first, so that the late cleanup of the old command cannot free the
+      // lease of the new one.
+      if (held.commandId && commandId && held.commandId !== commandId) {
+        return { ok: false, owner: held.owner };
+      }
       if (sessionId != null) held.sessionId = sessionId;
+      // A lease that was taken without a command belongs to the first command
+      // that claims it. A lease that has one is never retagged.
+      if (commandId && !held.commandId) held.commandId = commandId;
       return { ok: true, token: held.token };
     }
     // A lease whose authorization was withdrawn still holds the tab: the
@@ -79,6 +104,7 @@ export function claimTab(tabId, { panelId, sessionId, owner = 'voice control' } 
     tabId,
     panelId,
     sessionId: sessionId ?? null,
+    commandId: commandId ?? null,
     owner,
     state: 'active',
   };

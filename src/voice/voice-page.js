@@ -5,13 +5,15 @@
 // the same check drift apart. The rule itself comes in as an argument (see
 // voice-safety.js), so the page and the module always agree.
 //
-// The page is only read here. A click, a keystroke and Enter are real input
-// through the debugger, never a fake event a site could tell from a user's.
+// The names of the elements are the names the page gives them, and nothing
+// else: the text of a field is the user's, not a name, and the value of a
+// field never leaves the page on its own.
 //
-// A field that holds a secret (a password box, a card number, a one-time
-// code) is never described, never read and never written to: it does not
-// reach the model, and nothing is typed into it. Its own value is never used
-// as a label either, so a typed password cannot travel out with the page.
+// A field that holds a secret is named like any other field — the page names
+// it too, and the user has to be able to say which field they mean — but it
+// is never incidentally read or described by what is in it, and its value leaves the
+// page only for the one read the user allowed (the 'read' kind, which only the
+// worker may call, and only after the approval of that exact read).
 //
 // The identity of an element is the element itself, not a mark on it. The
 // elements that were collected are kept in the extension's own world of the
@@ -26,21 +28,33 @@
  * The one page script that knows about secrets.
  *
  * `kind` says what to look at:
- *   - 'collect' with `{ purpose: 'click' | 'type' }` lists the elements of the
- *     page, with the label the model may read;
- *   - 'focused' says what has the focus, and names it (the body is named
- *     too, and never described: its text is the text of the page);
- *   - 'locate' with `{ id }` (or without one, for the focused element) says
- *     where an element is and whether it still holds a secret;
+ *   - 'collect' with `{ purpose: 'click' | 'type' | 'read' }` lists the elements
+ *     of the page, with the label the model may read;
+ *   - 'focused' says what has the focus, deep inside a shadow root if that is
+ *     where it is (a terminal puts the focus in its own hidden textarea), and
+ *     names it (the body is named too, and never described: its text is the
+ *     text of the page);
+ *   - 'locate' with `{ id }` says where an element is and whether it still
+ *     holds a secret;
  *   - 'resolve' with `{ id, expected }` says whether the element the user
  *     approved is still the same element, and where it is now;
  *   - 'focus' with `{ id }` says whether the element the user approved still
- *     has the focus, and whether it still holds a secret.
+ *     has the focus;
+ *   - 'read' with `{ id, expected }` reads the value of the element the user
+ *     approved: the only way a value leaves the page;
+ *   - 'document' says which document the page is, so a page that was replaced
+ *     is not the page that was approved.
  */
 export function pageProbe(kind, arg, rule) {
-  const tokens = rule?.tokens ?? [];
-  const words = rule?.words ?? [];
-  const fragments = rule?.fragments ?? [];
+  if (arg?.documentId && String(performance.timeOrigin) !== arg.documentId) {
+    return { ok: false, errorKey: 'voice.pageGone' };
+  }
+  const R = rule && Array.isArray(rule.tokens) && Array.isArray(rule.words) && Array.isArray(rule.fragments)
+    ? rule
+    : { tokens: [], words: [], fragments: [] };
+  const tokens = R.tokens;
+  const words = R.words;
+  const fragments = R.fragments;
 
   const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -64,13 +78,34 @@ export function pageProbe(kind, arg, rule) {
     return nameWords(text).some((word) => words.includes(word));
   };
 
-  const autocompleteTokens = (el) => String(el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const autocompleteTokens = (el) => String(el.getAttribute?.('autocomplete') || '').toLowerCase().split(/\s+/).filter(Boolean);
+
+  // Whether an element holds a value the user can write into. A role is a
+  // claim, not a capability: only a real field can be written to.
+  const canWrite = (el) => el?.isContentEditable === true || el?.tagName === 'TEXTAREA' ||
+    (el?.tagName === 'INPUT' && !['checkbox', 'radio', 'submit', 'button', 'image', 'file', 'range', 'color', 'hidden', 'reset']
+      .includes(String(el.type ?? '').toLowerCase()));
+
+  // A field that can really be written to: not the body, not read-only, not
+  // disabled. A role on its own is not enough.
+  const writable = (el) => canWrite(el) && el !== document.body && el !== document.documentElement &&
+    !el.readOnly && !el.disabled && el.getAttribute?.('aria-disabled') !== 'true';
+
+  // An element that only looks like a field still holds the user's text: that
+  // text is not a name either.
+  const looksEditable = (el) => canWrite(el) ||
+    ['textbox', 'searchbox', 'combobox'].includes(String(el.getAttribute?.('role') ?? '').toLowerCase());
 
   const isSecret = (el, label) => {
+    if (!el) return false;
     if (el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'password') return true;
     if (autocompleteTokens(el).some((token) => token.startsWith('cc-') || tokens.includes(token))) return true;
-    return secretName(el.getAttribute('id'), el.getAttribute('name'), el.getAttribute('aria-label'), label);
+    return secretName(el.getAttribute?.('id'), el.getAttribute?.('name'), el.getAttribute?.('aria-label'), label);
   };
+
+  // Whether an element holds another one, shadow roots included.
+  const holds = (el, other) => Boolean(el) && (el === other || Boolean(el.contains && el.contains(other)) ||
+    Boolean(el.shadowRoot && el.shadowRoot.contains && el.shadowRoot.contains(other)));
 
   // The elements this extension collected, kept in the extension's own world
   // of the frame. The page cannot read them and cannot move them.
@@ -99,48 +134,102 @@ export function pageProbe(kind, arg, rule) {
     return token;
   };
 
-  // A field the user writes into: its content is the user's own text.
-  const isEditable = (el) => el.isContentEditable || el.tagName === 'TEXTAREA' ||
-    ['textbox', 'searchbox', 'combobox'].includes(String(el.getAttribute('role') || '').toLowerCase());
-
   // The text of a node without the text of the field it labels: a draft never
-  // becomes a label, and never becomes a word of a name either.
+  // becomes a label, and neither does the draft of another field. An editor is
+  // never a name: what is written in it belongs to the user.
   const textWithout = (node, field) => {
-    if (!node) return '';
+    if (!node || node === field) return '';
+    if (node.isContentEditable === true) return '';
+    const tag = String(node.tagName ?? '');
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return '';
+    const role = String(node.getAttribute?.('role') ?? '').toLowerCase();
+    if (['textbox', 'searchbox', 'combobox'].includes(role)) return '';
+    if (node.nodeType === 3) return String(node.nodeValue ?? node.textContent ?? '');
+    const children = node.childNodes ?? [];
+    if (!children.length) return String(node.innerText ?? node.textContent ?? '');
     let out = '';
-    for (const child of node.childNodes ?? []) {
-      if (child === field) continue;
-      if (child.nodeType === 1 && typeof child.contains === 'function' && child.contains(field)) continue;
-      out += child.textContent ?? '';
-    }
+    for (const child of children) out += textWithout(child, field);
     return out;
   };
 
-  // The label the model may read. An editable field never falls back to its
-  // own text: what is in it is the user's, not a name.
-  const labelOf = (el) => {
-    const editable = isEditable(el);
-    const own = (node) => clean(textWithout(node, el));
-    let t = clean(el.getAttribute('aria-label'));
-    if (!t && el.getAttribute('aria-labelledby')) {
-      t = clean(el.getAttribute('aria-labelledby').split(/\s+/).map((id) => own(document.getElementById(id))).join(' '));
+  // The names the page gives an element: what it says about itself, the
+  // elements that name it, and the label that belongs to it. A label inside a
+  // shadow root counts: a terminal names its own field from its own tree.
+  const labelledBy = (el) => {
+    const parts = [];
+    const aria = el.getAttribute?.('aria-label');
+    if (aria) parts.push(aria);
+    for (const id of String(el.getAttribute?.('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
+      const scope = el.getRootNode?.() ?? document;
+      const found = scope.getElementById?.(id) ?? document.getElementById?.(id);
+      if (found) parts.push(textWithout(found, el));
     }
-    if (!t && el.labels && el.labels.length) {
-      for (const label of el.labels) {
-        t = own(label);
-        if (t) break;
+    for (const label of el.labels ?? []) {
+      const text = textWithout(label, el);
+      if (text) { parts.push(text); break; }
+    }
+    return parts.map((part) => String(part).replace(/\s+/g, ' ').trim()).filter(Boolean).join(' ');
+  };
+
+  const nameOf = (el) => labelledBy(el) || el.getAttribute?.('title') ||
+    el.getAttribute?.('placeholder') || el.getAttribute?.('name') || el.id || '';
+
+  // The controls that hold a secret and carry text of their own.
+  const secretTexts = (root) => {
+    const found = [];
+    const walk = (scope) => {
+      for (const el of scope.querySelectorAll?.('*') ?? []) {
+        if (isSecret(el, nameOf(el))) found.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
       }
-    }
-    if (!t && !editable) t = clean(el.innerText);
-    if (!t) t = clean(el.getAttribute('title'));
-    if (!t) t = clean(el.getAttribute('placeholder'));
-    if (!t) { const img = el.querySelector('img[alt]'); if (img) t = clean(img.alt); }
-    if (!t) t = clean(el.getAttribute('name') || el.id);
-    return t.slice(0, 120);
+    };
+    walk(root);
+    return found;
+  };
+
+  // The text of a node, without the contents of the controls that hold a
+  // secret: the name of an element is never the text of a secret field.
+  const safeText = (root, hidden) => {
+    const inside = hidden.filter((control) => holds(root, control));
+    if (!inside.length) return root.innerText || '';
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) { parts.push(node.nodeValue ?? node.textContent ?? ''); return; }
+      if (node.nodeType !== undefined && node.nodeType !== 1) return;
+      if (inside.includes(node)) return; // a control that holds a secret
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null;
+      if (style && (style.display === 'none' || style.visibility === 'hidden')) return;
+      const children = node.childNodes ?? [];
+      if (!children.length) {
+        if (node.innerText) parts.push(node.innerText);
+        return;
+      }
+      for (const child of children) walk(child);
+      if (node.shadowRoot) walk(node.shadowRoot);
+    };
+    walk(root);
+    return parts.join('');
+  };
+
+  // The controls that hold a secret, once for this run of the script: the
+  // page is walked once, not once per element.
+  let hiddenCache = null;
+  const hiddenControls = () => (hiddenCache ??= secretTexts(document));
+
+  // The label the model may read. An editable field never falls back to its
+  // own text: what is in it is the user's, not a name. A field that holds a
+  // secret is named by what the page calls it, never by what is in it.
+  const labelOf = (el) => {
+    if (!el || el === document.body) return '';
+    const hidden = hiddenControls();
+    const own = looksEditable(el) || isSecret(el, nameOf(el)) ? '' : safeText(el, hidden);
+    return (el.getAttribute?.('aria-label') || labelledBy(el) || own || el.getAttribute?.('placeholder') ||
+      el.getAttribute?.('title') || el.getAttribute?.('name') || el.id || '')
+      .replace(/\s+/g, ' ').trim().slice(0, 120);
   };
 
   const kindOf = (el) => {
-    const role = el.getAttribute('role');
+    const role = el.getAttribute?.('role');
     if (el.isContentEditable) return 'text editor';
     if (el.tagName === 'A') return 'link';
     if (el.tagName === 'TEXTAREA') return 'text area';
@@ -158,61 +247,74 @@ export function pageProbe(kind, arg, rule) {
     return reg.get(id) ?? null;
   };
 
+  // The element that has the focus, deep inside a shadow root if that is where
+  // it is: a terminal puts the focus in its own hidden textarea.
+  const deepActive = () => {
+    let el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    return el;
+  };
+
+  // The document the page is, so a page that was replaced is not the page that
+  // was approved.
+  const documentId = () => {
+    const time = typeof performance !== 'undefined' ? performance.timeOrigin : null;
+    return time === null || time === undefined ? '' : String(time);
+  };
+
+  // Whether the element is still the one that was approved: the same kind and
+  // the same label it really had when it was collected.
+  const sameIdentity = (el, expected) => {
+    if (!expected) return true;
+    const kindName = kindOf(el);
+    if (expected.kind && kindName !== expected.kind) return false;
+    // The label that is compared is the one the element really had when it
+    // was collected: an empty label is a label too.
+    if (expected.label != null && clean(expected.label) !== labelOf(el)) return false;
+    return true;
+  };
+
+  if (kind === 'document') {
+    return { ok: true, documentId: documentId() };
+  }
+
   if (kind === 'focused') {
-    const el = document.activeElement;
-    if (!el) return { editable: false, secret: false, id: null };
+    const el = deepActive();
+    if (!el) return { editable: false, writable: false, secret: false, id: null };
     // The body is an element like every other one: it is registered too, so
     // an approved Enter is tied to the body it was approved on and not to
     // whatever has the focus later. It is never described: its text is the
     // text of the page, and the page does not belong to the model.
-    if (el === document.body) return { editable: false, secret: false, id: mark(el, 0) };
-    const editable = isEditable(el) || (el.tagName === 'INPUT' &&
-      !['checkbox', 'radio', 'submit', 'button', 'image', 'file', 'range', 'color', 'hidden'].includes(el.type));
+    if (el === document.body) {
+      const id = mark(el, 0);
+      return { editable: false, writable: false, secret: false, body: true, id, label: undefined };
+    }
     // The label is the safe one: the text of an editable field is never used,
     // but the name beside it still says what the field is.
     const label = labelOf(el);
     // The element that has the focus is named, so the worker may check later
     // that the same element still has it.
-    let id = null;
-    if (registry()) id = mark(el, 0);
-    return { editable, secret: isSecret(el, label), id, label };
-  }
-
-  if (kind === 'locate') {
-    const el = arg?.id ? collected(arg.id) : document.activeElement;
-    if (!el || el === document.body) return { ok: false, errorKey: 'voice.pageNoField' };
-    if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
-    const label = labelOf(el);
-    if (isSecret(el, label)) return { ok: false, errorKey: 'voice.pageSecret', secret: true };
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-    const r = el.getBoundingClientRect();
-    if (!r || r.width < 1 || r.height < 1) return { ok: false, errorKey: 'voice.pageGone' };
+    const id = mark(el, 0);
     return {
-      ok: true,
-      x: r.left + r.width / 2,
-      y: r.top + r.height / 2,
-      rect: { left: r.left, top: r.top, width: r.width, height: r.height },
-      secret: false,
+      editable: canWrite(el),
+      writable: writable(el),
+      secret: isSecret(el, label),
+      body: false,
+      id,
+      label,
+      kind: kindOf(el),
     };
   }
 
-  // The element the user approved: is it still the same element, is it still
-  // there, and is it still the one that is under the point that will be
-  // clicked?
-  if (kind === 'resolve') {
-    const el = arg?.id ? collected(arg.id) : null;
-    if (!el) return { ok: false, errorKey: 'voice.pageGone' };
+  if (kind === 'locate') {
+    // The element is brought into view and its place is named. This changes
+    // the page, so it only runs after the user allowed the action: a capture
+    // that is done before the question never moves anything.
+    const el = arg?.id ? collected(arg.id) : deepActive();
+    if (!el || el === document.body) return { ok: false, errorKey: 'voice.pageNoField' };
     if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
     const label = labelOf(el);
-    if (isSecret(el, label)) return { ok: false, errorKey: 'voice.pageSecret', secret: true };
-    const expected = arg?.expected ?? null;
-    if (expected) {
-      const kindName = kindOf(el);
-      if (expected.kind && kindName !== expected.kind) return { ok: false, errorKey: 'voice.pageGone' };
-      // The label that is compared is the one the element really had when it
-      // was collected: an empty label is a label too.
-      if (expected.label != null && clean(expected.label) !== label) return { ok: false, errorKey: 'voice.pageGone' };
-    }
+    if (!sameIdentity(el, arg?.expected ?? null)) return { ok: false, errorKey: 'voice.pageGone' };
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();
     if (!r || r.width < 1 || r.height < 1) return { ok: false, errorKey: 'voice.pageGone' };
@@ -227,17 +329,64 @@ export function pageProbe(kind, arg, rule) {
       ok: true,
       x,
       y,
+      rect: { left: r.left, top: r.top, width: r.width, height: r.height },
       label,
       kind: kindOf(el),
-      secret: false,
-      focused: document.activeElement === el,
+      secret: isSecret(el, label),
+      documentId: documentId(),
     };
   }
 
-  // The focus the user approved: the same element still has it, and it does
-  // not hold a secret.
+  // The element the user approved: is it still the same element, and is it
+  // still the one that was approved? Nothing of the page is changed here: the
+  // question is asked before anything moves.
+  if (kind === 'resolve') {
+    const el = arg?.id ? collected(arg.id) : null;
+    if (!el) return { ok: false, errorKey: 'voice.pageGone' };
+    if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
+    const label = labelOf(el);
+    if (!sameIdentity(el, arg?.expected ?? null)) return { ok: false, errorKey: 'voice.pageGone' };
+    return {
+      ok: true,
+      label,
+      kind: kindOf(el),
+      secret: isSecret(el, label),
+      body: el === document.body,
+      focused: deepActive() === el,
+      writable: writable(el),
+      // The document the element was found in: a page that was replaced is
+      // not the page that was approved.
+      documentId: documentId(),
+    };
+  }
+
+  // The point that was approved: is the element still under it, and is it
+  // still the same element in the same document? Nothing of the page is
+  // changed here, so it may be used in the last check before an effect.
+  if (kind === 'hit') {
+    const el = arg?.id ? collected(arg.id) : null;
+    if (!el) return { ok: false, errorKey: 'voice.pageGone' };
+    if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
+    if (!sameIdentity(el, arg?.expected ?? null)) return { ok: false, errorKey: 'voice.pageGone' };
+    const r = el.getBoundingClientRect();
+    if (!r || r.width < 1 || r.height < 1) return { ok: false, errorKey: 'voice.pageGone' };
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    // The element has to lie under the point that was approved still.
+    if (Number.isFinite(arg?.x) && (x !== arg.x || y !== arg.y)) {
+      return { ok: false, errorKey: 'voice.pageMoved' };
+    }
+    // Something that covers the element would get the click instead of it.
+    const at = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : el;
+    if (at && at !== el && !(typeof el.contains === 'function' && el.contains(at))) {
+      return { ok: false, errorKey: 'voice.pageMoved' };
+    }
+    return { ok: true, x, y, documentId: documentId() };
+  }
+
+  // The focus the user approved: the same element still has it.
   if (kind === 'focus') {
-    const active = document.activeElement;
+    const active = deepActive();
     // The focus is approved for one element. Without its identity nothing is
     // approved: there is no fallback to whatever has the focus now.
     if (!arg?.id) return { ok: false, errorKey: 'voice.pageFocusLost' };
@@ -248,19 +397,36 @@ export function pageProbe(kind, arg, rule) {
     // now is another element, and it does not inherit the approval.
     if (el.tagName === 'BODY') {
       if (active !== el) return { ok: false, errorKey: 'voice.pageFocusLost' };
-      return { ok: true, body: true };
+      return { ok: true, body: true, writable: false, secret: false, documentId: documentId() };
     }
-    if (!active || (active !== el && !(typeof el.contains === 'function' && el.contains(active)))) {
-      return { ok: false, errorKey: 'voice.pageFocusLost' };
-    }
+    // The focus is approved for one element: a field that has the focus now
+    // is another element, and it does not inherit the approval, not even when
+    // it is a child of the element that was approved.
+    if (active !== el) return { ok: false, errorKey: 'voice.pageFocusLost' };
     const label = labelOf(active);
-    if (isSecret(active, label)) return { ok: false, errorKey: 'voice.pageSecret', secret: true };
-    return { ok: true, body: false, label };
+    return { ok: true, body: false, writable: writable(active), secret: isSecret(active, label), label, documentId: documentId() };
+  }
+
+  // The value of the element the user approved. This is the only way a value
+  // leaves the page, and the worker only asks for it after the approval of
+  // that one read.
+  if (kind === 'read') {
+    const el = arg?.id ? collected(arg.id) : null;
+    if (!el) return { ok: false, errorKey: 'voice.pageGone' };
+    if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
+    if (!sameIdentity(el, arg?.expected ?? null)) return { ok: false, errorKey: 'voice.pageGone' };
+    // Only a field that can be written to is read: the page marker is never a
+    // fallback, and the body is never read.
+    if (!canWrite(el)) return { ok: false, errorKey: 'voice.pageNoField' };
+    const value = 'value' in el && typeof el.value === 'string'
+      ? el.value
+      : (el.isContentEditable ? String(el.textContent ?? '') : '');
+    return { ok: true, value, tag: String(el.tagName ?? '').toLowerCase(), secret: isSecret(el, labelOf(el)) };
   }
 
   if (kind !== 'collect') return { ok: false, errorKey: 'voice.pageGone' };
 
-  const purpose = arg?.purpose === 'type' ? 'type' : 'click';
+  const purpose = arg?.purpose === 'type' || arg?.purpose === 'read' ? 'type' : 'click';
   const SEL = purpose === 'type'
     ? 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=image]):not([type=file]):not([type=range]):not([type=color]), textarea, [contenteditable="true"], [contenteditable=""], [role=textbox], [role=searchbox], [role=combobox]'
     : 'a[href], button, input[type=submit], input[type=button], input[type=checkbox], input[type=radio], select, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=option], [role=checkbox], [role=switch], [onclick]';
@@ -275,12 +441,15 @@ export function pageProbe(kind, arg, rule) {
   if (reg) reg.clear();
   for (const el of document.querySelectorAll(SEL)) {
     const label = labelOf(el);
-    if (isSecret(el, label)) continue; // a secret field is left out entirely
+    const secret = isSecret(el, label);
+    // A field that cannot be written to cannot take the text: it is not a
+    // candidate for it, and it is not a candidate for a read either.
+    if (purpose === 'type' && !writable(el)) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
     const cs = getComputedStyle(el);
     if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue;
-    if (el.disabled || el.getAttribute('aria-hidden') === 'true') continue;
+    if (el.disabled || el.getAttribute?.('aria-hidden') === 'true') continue;
     if (!label && purpose !== 'type') continue;
     const href = el.tagName === 'A' ? el.getAttribute('href') : null;
     const inView = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
@@ -299,10 +468,12 @@ export function pageProbe(kind, arg, rule) {
       inView,
       top: Math.round(r.top + window.scrollY),
       left: Math.round(r.left),
-      secret: false,
+      // A field that holds a secret is named, never described by its value:
+      // the user has to be able to say which field they mean.
+      secret,
       // The field that has the focus is marked, so the model can tell it from
       // the others without the command having to name it.
-      focused: el === document.activeElement,
+      focused: el === deepActive(),
     };
     out.push(item);
   }
@@ -314,7 +485,8 @@ export function pageProbe(kind, arg, rule) {
   return visible.concat(rest).slice(0, cap).sort((a, b) => a.top - b.top || a.left - b.left);
 }
 
-export async function mediaControl(kind) {
+export async function mediaControl(kind, documentId = null) {
+  if (documentId && String(performance.timeOrigin) !== documentId) return { ok: false, errorKey: 'voice.pageGone' };
   const media = [...document.querySelectorAll('video, audio')];
   if (!media.length) return { ok: false, errorKey: 'voice.pageNoMedia' };
   const m = media.find((x) => !x.paused) ||
@@ -337,7 +509,8 @@ export async function mediaControl(kind) {
   return { ok: true, state: m.muted ? 'muted' : 'unmuted' };
 }
 
-export function scrollPage(kind) {
+export function scrollPage(kind, documentId = null) {
+  if (documentId && String(performance.timeOrigin) !== documentId) return { ok: false, errorKey: 'voice.pageGone' };
   const h = window.innerHeight * 0.8;
   let target = document.scrollingElement;
   if (target.scrollHeight <= target.clientHeight + 5) {
@@ -357,7 +530,8 @@ export function scrollPage(kind) {
   return { ok: true };
 }
 
-export function findText(text) {
+export function findText(text, documentId = null) {
+  if (documentId && String(performance.timeOrigin) !== documentId) return { ok: false, errorKey: 'voice.pageGone' };
   window.getSelection().removeAllRanges();
   const found = window.find(text, false, false, true, false, false, false);
   if (found) {

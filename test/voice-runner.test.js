@@ -54,6 +54,7 @@ function mockBrowser(overrides = {}) {
   const calls = [];
   const claims = [];
   const released = [];
+  const cancelled = [];
   // The order of what happened, so a test can see that one thing came before
   // another one.
   const order = [];
@@ -61,6 +62,7 @@ function mockBrowser(overrides = {}) {
     calls,
     claims,
     released,
+    cancelled,
     order,
     tabs,
     async currentTab() { return tabs[0]; },
@@ -76,15 +78,15 @@ function mockBrowser(overrides = {}) {
     async updateTab(id, changes) {
       calls.push(['updateTab', id, changes]);
       Object.assign(tabs.find((tab) => tab.id === id) ?? {}, changes);
+      return { ok: true };
     },
-    async activateTab(id) { calls.push(['activateTab', id]); order.push(`activateTab:${id}`); },
+    async activateTab(id) { calls.push(['activateTab', id]); order.push(`activateTab:${id}`); return { ok: true }; },
     async bindSession(id) { calls.push(['bindSession', id]); order.push(`bindSession:${id}`); return { ok: true }; },
-    async removeTab(id) { calls.push(['removeTab', id]); },
-    async goBack(id) { calls.push(['goBack', id]); },
-    async goForward(id) { calls.push(['goForward', id]); },
-    async reload(id) { calls.push(['reload', id]); },
-    async getZoom() { return 1; },
-    async setZoom(id, level) { calls.push(['setZoom', id, level]); },
+    async removeTab(id, options = {}) { calls.push(['removeTab', id, options]); return { ok: true }; },
+    async goBack(id) { calls.push(['goBack', id]); return { ok: true }; },
+    async goForward(id) { calls.push(['goForward', id]); return { ok: true }; },
+    async reload(id) { calls.push(['reload', id]); return { ok: true }; },
+    async zoom(id, mode) { calls.push(['zoom', id, mode]); return { ok: true, level: 1 }; },
     async inject(tabId, func, args = []) {
       calls.push(['inject', tabId, func.name, args]);
       order.push('inject');
@@ -92,10 +94,13 @@ function mockBrowser(overrides = {}) {
       return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
     },
     async input(tabId, steps, context = {}) { calls.push(['input', tabId, steps, context]); order.push('input'); return { ok: true }; },
+    async readField(tabId, element, context = {}) { calls.push(['readField', tabId, element, context]); return { ok: true, value: 'the value' }; },
+    async insertText(tabId, text) { calls.push(['insertText', tabId, text]); return { ok: true }; },
     async waitForLoad(tabId) { calls.push(['waitForLoad', tabId]); order.push(`waitForLoad:${tabId}`); },
     async ownerOf() { return null; },
     async claim(tabId) { claims.push(tabId); order.push(`claim:${tabId}`); return { ok: true }; },
     async release(tabId) { released.push(tabId); },
+    async cancel() { cancelled.push(true); },
   };
   return Object.assign(browser, overrides);
 }
@@ -199,19 +204,23 @@ test('an explicitly unavailable pinned target never falls back to another active
   }
 });
 
-test('a click asks the user first, and nothing happens when the answer is no', async () => {
-  const browser = mockBrowser();
+test('the worker decides, not the panel: a click it refuses changes nothing', async () => {
+  const browser = mockBrowser({
+    input: async (tabId, steps, context = {}) => {
+      browser.calls.push(['input', tabId, steps, context]);
+      return { ok: false, errorKey: 'voice.sayCancelled' };
+    },
+  });
   const ask = scriptedAsk({ action: choice('click'), argument: firstSpan, element: choice('e0') });
-  const approve = approves(false);
+  const approve = approves(true);
 
   const result = await runFastCommand({ ask, browser, command: 'click sign in', approve, secretTokens: ['password'], t });
 
   assert.equal(result.ok, false);
   assert.equal(result.say, 'voice.sayCancelled');
-  assert.equal(approve.asked.length, 1);
-  assert.equal(approve.asked[0].action, 'click');
+  assert.equal(approve.asked.length, 0, 'the panel is not asked: the worker asks the authority');
   assert.equal(browser.calls.filter((call) => call[0] === 'inject').length, 1, 'only the elements were read');
-  assert.equal(browser.calls.some((call) => call[0] === 'input'), false, 'nothing was clicked');
+  assert.equal(browser.calls.some((call) => call[0] === 'input'), true, 'the worker was asked to click');
 });
 
 test('a click runs on the tab the command started on once the user says yes', async () => {
@@ -228,20 +237,23 @@ test('a click runs on the tab the command started on once the user says yes', as
   assert.equal(click[3].expected.kind, 'button', 'the identity of the element travels with it');
 });
 
-test('a command that is cancelled while it waits for the user does not click', async () => {
+test('a command that is cancelled before the click does not click', async () => {
   const browser = mockBrowser();
   const ask = scriptedAsk({ action: choice('click'), argument: firstSpan, element: choice('e0') });
   const controller = new AbortController();
-  const approve = async () => {
-    controller.abort();
-    return true;
+  const original = browser.inject;
+  browser.inject = async (tabId, func, args = []) => {
+    // The user stops the command while the page is being read.
+    if (args[0] === 'collect') controller.abort();
+    return original(tabId, func, args);
   };
 
-  const result = await runFastCommand({ ask, browser, command: 'click sign in', approve, signal: controller.signal, secretTokens: ['password'], t });
+  const result = await runFastCommand({ ask, browser, command: 'click sign in', signal: controller.signal, secretTokens: ['password'], t });
 
   assert.equal(result.ok, false);
   assert.equal(result.say, 'voice.sayCancelled');
   assert.equal(browser.calls.some((call) => call[0] === 'input'), false, 'nothing was clicked');
+  assert.equal(browser.cancelled.length, 1, 'the worker was told that the command is over');
 });
 
 test('a command that was cancelled while the model was thinking changes nothing', async () => {
@@ -382,19 +394,18 @@ test('a tab that could not be named is not closed, and the open tab is not close
   assert.equal(browser.calls.some((call) => call[0] === 'removeTab'), false);
 });
 
-test('the tab that is zoomed is checked again right before the change', async () => {
+test('the tab that is zoomed is checked before the zoom is asked for', async () => {
   const checks = [];
   const browser = mockBrowser({
     ownerOf: async (id) => { checks.push(id); return null; },
-    getZoom: async () => { checks.push('zoom'); return 1; },
+    zoom: async (id, mode) => { checks.push('zoom'); browser.calls.push(['zoom', id, mode]); return { ok: true, level: 1 }; },
   });
   const ask = scriptedAsk({ action: choice('zoom_in'), argument: firstSpan, site: choice('none') });
 
   await runFastCommand({ ask, browser, command: 'zoom in', approve: approves(true), secretTokens: ['password'], t });
 
-  assert.ok(checks.indexOf(1) < checks.indexOf('zoom'), 'the tab is checked before it is read');
-  assert.ok(checks.indexOf('zoom') < checks.lastIndexOf(1), 'the tab is checked again before it is changed');
-  assert.ok(browser.calls.some((call) => call[0] === 'setZoom'));
+  assert.ok(checks.indexOf(1) < checks.indexOf('zoom'), 'the tab is checked before the zoom is asked for');
+  assert.ok(browser.calls.some((call) => call[0] === 'zoom'), 'the zoom was asked for');
 });
 
 test('the tab that is switched to is checked before it is made active', async () => {
@@ -424,7 +435,7 @@ test('a tab that changes hands while the model is thinking is not acted on', asy
   assert.equal(browser.calls.length, 0, 'the tab was not touched');
 });
 
-test('a field that holds a secret is never typed into', async () => {
+test('a field that holds a secret is offered to the worker, and its value never travels', async () => {
   const browser = mockBrowser({
     inject: async (tabId, func, args = []) => {
       browser.calls.push(['inject', tabId, func.name, args]);
@@ -439,46 +450,54 @@ test('a field that holds a secret is never typed into', async () => {
 
   const result = await runFastCommand({ ask, browser, command: 'type hello', approve: approves(true), secretTokens: ['password'], t });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.say, 'voice.saySecretField');
-  assert.equal(browser.calls.some((call) => call[0] === 'input'), false);
+  // The panel does not refuse a secret field on its own any more: the worker
+  // asks the authority about that exact field, and the user decides.
+  const input = browser.calls.find((call) => call[0] === 'input');
+  assert.ok(input, 'the worker was asked to type into the field the user named');
+  assert.equal(input[2][2].text, 'type hello');
+  assert.doesNotMatch(JSON.stringify(browser.calls), /hunter2/, 'no value travels with the field');
 });
 
-test('a field that has the focus and holds a secret is refused, not written into some other field', async () => {
+test('the text goes into the field the command named, and never into another one', async () => {
   const browser = mockBrowser({
     inject: async (tabId, func, args = []) => {
       browser.calls.push(['inject', tabId, func.name, args]);
-      if (func.name === 'pageProbe' && args[0] === 'focused') return { editable: true, secret: true };
+      if (func.name === 'pageProbe' && args[0] === 'collect') {
+        return [
+          { id: '1', kind: 'password input', label: 'Password', href: null, inView: true, top: 0, left: 0, secret: true, focused: true },
+          { id: '2', kind: 'text input', label: 'Email', href: null, inView: true, top: 20, left: 0, secret: false, focused: false },
+        ];
+      }
       if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
       return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
     },
   });
-  const ask = scriptedAsk({ action: choice('type_text'), argument: firstSpan, submit: { type: 'noul', noul: 0.9 } });
+  const ask = scriptedAsk({ action: choice('type_text'), argument: firstSpan, element: choice('e1'), submit: { type: 'noul', noul: 0.9 } });
 
   const result = await runFastCommand({ ask, browser, command: 'type hello', approve: approves(true), secretTokens: ['password'], t });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.say, 'voice.saySecretField');
-  assert.equal(browser.calls.some((call) => call[0] === 'input'), false, 'the text did not go into another field');
+  assert.equal(result.ok, true);
+  const input = browser.calls.find((call) => call[0] === 'input');
+  assert.ok(input, 'the text was typed');
+  assert.equal(input[3].element, '2', 'the text went into the field the command named');
 });
 
-test('Enter is refused in a field that holds a secret, and a refusal by the page is reported', async () => {
+test('Enter is sent to the focus that was named, and a refusal by the worker is reported', async () => {
   const secretBrowser = mockBrowser({
     inject: async (tabId, func, args = []) => {
       secretBrowser.calls.push(['inject', tabId, func.name, args]);
-      if (func.name === 'pageProbe' && args[0] === 'focused') return { editable: true, secret: true };
+      if (func.name === 'pageProbe' && args[0] === 'focused') return { editable: true, secret: true, id: 'focused-1' };
       if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
       return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
     },
   });
   const ask = scriptedAsk({ action: choice('press_enter'), argument: firstSpan });
   const refused = await runFastCommand({ ask, browser: secretBrowser, command: 'press enter', approve: approves(true), secretTokens: ['password'], t });
-  assert.equal(refused.ok, false);
-  assert.equal(refused.say, 'voice.saySecretField');
-  assert.equal(secretBrowser.calls.some((call) => call[0] === 'input'), false);
+  assert.equal(refused.ok, true, 'the worker decides about a secret field, not the panel');
+  assert.ok(secretBrowser.calls.some((call) => call[0] === 'input'), 'the worker was asked to press Enter');
 
   // The worker refuses the key: the focus went somewhere else while the
-  // question was open, and the refusal of the page is reported.
+  // question was open, and the refusal of the worker is reported.
   const pageRefuses = mockBrowser({
     input: async () => ({ ok: false, errorKey: 'voice.pageFocusLost' }),
   });
@@ -497,17 +516,18 @@ test('the approval says what is written and whether it is sent', () => {
   assert.match(approvalText({ action: 'close_tab', label: 'Private' }, translate), /voice\.approveClose/);
 });
 
-test('the runner asks for the approval with the text and the submit', async () => {
+test('the panel is never asked for a permission: the worker asks the authority', async () => {
   const browser = mockBrowser();
   const ask = scriptedAsk({ action: choice('type_text'), argument: firstSpan, element: choice('e0'), submit: { type: 'noul', noul: 0.9 } });
   const approve = approves(true);
 
   await runFastCommand({ ask, browser, command: 'type hello world', approve, secretTokens: ['password'], t });
 
-  assert.equal(approve.asked.length, 1);
-  assert.equal(approve.asked[0].action, 'type_text');
-  assert.equal(approve.asked[0].text, 'type hello world');
-  assert.equal(approve.asked[0].submit, true);
+  assert.equal(approve.asked.length, 0, 'the panel does not decide what may run');
+  const input = browser.calls.find((call) => call[0] === 'input');
+  assert.ok(input, 'the worker was asked to type');
+  assert.equal(input[2][2].text, 'type hello world', 'the text that was going to be written is named');
+  assert.equal(input[3].action, 'type_text', 'the worker is asked about the action itself');
 });
 
 test('a chained command keeps one tab, and a new tab becomes the target of the next step', async () => {
@@ -720,9 +740,9 @@ test('a command that names a field does not type into the field that has the foc
   const result = await runFastCommand({ ask, browser, command, approve, secretTokens: ['password'], t });
 
   assert.equal(result.ok, true);
-  assert.equal(approve.asked[0].label, 'Email', 'the field the command named was used');
   const input = browser.calls.find((call) => call[0] === 'input');
   assert.ok(input, 'the text was typed');
+  assert.equal(input[3].element, '2', 'the field the command named was used');
   assert.equal(input[2][2].text, 'my address', 'the text is exactly the span that was chosen');
 });
 

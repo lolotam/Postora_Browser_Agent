@@ -41,6 +41,46 @@ test('the panel that holds the claim may take it again', () => {
   assert.equal(claimTab(12, { panelId: 'panel-b', sessionId: 'session-b' }).ok, false);
 });
 
+test('another command of the same panel may not take a lease that is still held', () => {
+  const first = claimTab(1200, { panelId: 'panel-a', sessionId: 'session-a', commandId: 'cmd-1' });
+  assert.equal(first.ok, true);
+
+  // The same command may take it again: it keeps its token.
+  const same = claimTab(1200, { panelId: 'panel-a', sessionId: 'session-a', commandId: 'cmd-1' });
+  assert.equal(same.ok, true);
+  assert.equal(same.token, first.token, 'the same command keeps the same lease');
+
+  // Another command of the same panel may not: the tab is busy until the old
+  // lease is given back and its cleanup is over.
+  const other = claimTab(1200, { panelId: 'panel-a', sessionId: 'session-a', commandId: 'cmd-2' });
+  assert.equal(other.ok, false, 'the second command is refused');
+  assert.equal(claimOf(1200)?.commandId, 'cmd-1', 'the first command still holds the lease');
+
+  // The late cleanup of the first command frees the lease it held, and there
+  // is no lease of the second command that it could free.
+  assert.equal(releaseTab(1200, { panelId: 'panel-a', token: first.token }), true);
+  assert.equal(claimOf(1200), null, 'the tab is free again');
+});
+
+test('another session of the same panel may not take a lease that is still held', () => {
+  const first = claimTab(1201, { panelId: 'panel-a', sessionId: 'session-a', commandId: 'cmd-1' });
+  assert.equal(first.ok, true);
+  const other = claimTab(1201, { panelId: 'panel-a', sessionId: 'session-b', commandId: 'cmd-1' });
+  assert.equal(other.ok, false, 'the lease of another session is not this panel\'s to take');
+  assert.equal(claimOf(1201)?.sessionId, 'session-a', 'the first session still holds the lease');
+  assert.equal(releaseTab(1201, { panelId: 'panel-a', token: first.token }), true);
+});
+
+test('a lease that was taken without a command belongs to the first command that claims it', () => {
+  const first = claimTab(1202, { panelId: 'panel-a', sessionId: 'session-a' });
+  assert.equal(first.ok, true);
+  const tagged = claimTab(1202, { panelId: 'panel-a', sessionId: 'session-a', commandId: 'cmd-1' });
+  assert.equal(tagged.ok, true);
+  assert.equal(tagged.token, first.token);
+  assert.equal(claimOf(1202)?.commandId, 'cmd-1', 'the lease belongs to the command that claimed it');
+  assert.equal(releaseTab(1202, { panelId: 'panel-a', token: first.token }), true);
+});
+
 test('a claim is given back by the panel that holds it, and by nobody else', () => {
   const { token } = claimTab(13, { panelId: 'panel-a', sessionId: 'session-a' });
   assert.equal(releaseTab(13, { panelId: 'panel-b', token }), false, 'another panel cannot give it back');

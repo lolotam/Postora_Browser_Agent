@@ -2,7 +2,10 @@
 //
 // The command is planned by the fast layer's decision client — the provider,
 // model, endpoint and key the user configured — and every step that can send,
-// buy, delete or submit asks the user first.
+// buy, delete or submit is decided by the worker, which asks the session's
+// access authority. The panel does not decide anything: it plans the step and
+// hands it to the worker, and the worker asks the user (or does not, under
+// Full access) before anything changes.
 //
 // Three rules hold for every step:
 //   - the tab the command started on stays its target; nothing is retargeted
@@ -11,23 +14,28 @@
 //   - the command holds a claim on the tab it reads or changes, so a task
 //     that starts at the same moment cannot work on the same page;
 //   - the command is checked for cancellation before every change it makes,
-//     including the one that follows the user's approval.
+//     and the worker checks the grant again after every step that took time.
 //
 // The page is only read. A click, a keystroke and Enter are real input, sent
 // through the worker to the debugger: a site that ignores untrusted events
 // cannot tell them from a user's.
 
 import { chooseElement, planStep, shouldSubmit, splitCommand } from './voice-brain.js';
-import { needsConfirmation, secretRule } from './voice-safety.js';
+import { secretRule } from './voice-safety.js';
 import * as page from './voice-page.js';
 
 /**
  * Runs one spoken command.
  *
  * `ask` is the fast layer's ask (`{state, questions, signal}` → `{answers}`),
- * `browser` is the browser the steps run on, `approve` shows the user what
- * is about to happen and waits for a yes, and `t` turns a message key into the
- * panel's language.
+ * `browser` is the browser the steps run on, `emit` reports what the command
+ * did, `signal` stops it, and `t` turns a message key into the panel's
+ * language.
+ *
+ * `approve` is accepted so that the callers that still pass it keep working,
+ * but it is not a permission decision any more: nothing of this path decides
+ * what may run. The worker asks the session's access authority, and the user
+ * answers through the same card the chat uses.
  */
 export async function runFastCommand({ ask, browser, command, emit = () => {}, approve, signal, secretTokens = [], t = (key) => key }) {
   const cancelled = () => ({ ok: false, say: t('voice.sayCancelled'), cancelled: true });
@@ -38,12 +46,25 @@ export async function runFastCommand({ ask, browser, command, emit = () => {}, a
   if (!target) return { ok: false, say: t('voice.sayNoTab') };
 
   // The claim is taken before the page is read and given back when the command
-  // ends, whatever happened to it.
+  // ends, whatever happened to it. The claim also hands back the command the
+  // worker holds for this panel: every later step names it, so a step that
+  // was planned under an older mode cannot run under a newer one.
   const claims = new Set();
+  let command_ = null;
   let releasing = Promise.resolve();
   const claim = async (tabId) => {
     const res = await browser.claim(tabId);
-    if (res?.ok) claims.add(tabId);
+    if (res?.ok) {
+      claims.add(tabId);
+      if (res.command) {
+        // The worker holds another command now: the context this step was
+        // planned under is gone, and nothing of it may run.
+        if (command_ && res.command.id !== command_.id) {
+          return { ok: false, errorKey: 'voice.sayCancelled' };
+        }
+        command_ = res.command;
+      }
+    }
     return res;
   };
   const releaseAll = () => {
@@ -54,7 +75,13 @@ export async function runFastCommand({ ask, browser, command, emit = () => {}, a
     releasing = Promise.all([releasing, ...tabs.map((tabId) => browser.release(tabId).catch(() => {}))]);
     return releasing;
   };
-  const revoke = () => { void releaseAll(); };
+  const revoke = () => {
+    // The command is over: the worker drops the context it held for it, so
+    // the question that may be waiting is withdrawn and nothing of it may run
+    // any more.
+    void browser.cancel?.();
+    void releaseAll();
+  };
   signal?.addEventListener('abort', revoke, { once: true });
 
   try {
@@ -97,7 +124,7 @@ export async function runFastCommand({ ask, browser, command, emit = () => {}, a
       // on: a step that moved on tells the next one where it is.
       const ctx = await buildContext(browser, current);
       if (signal?.aborted) return { ok: false, say: t('voice.sayCancelled'), cancelled: true };
-      last = await runStep({ ask, browser, ctx, target: current, command: step, emit, approve, signal, rule, claim, t });
+      last = await runStep({ ask, browser, ctx, target: current, command: step, emit, signal, rule, claim, t });
       if (signal?.aborted) return cancelled();
       emit({ kind: 'result', command: step, ...last });
       if (last.target) current = last.target; // a step that moved on names its new target
@@ -106,6 +133,9 @@ export async function runFastCommand({ ask, browser, command, emit = () => {}, a
     return last ? { ...last, ...(!last.closedTarget ? { target: current } : {}) } : { ok: false, say: t('voice.sayNothingToDo') };
   } finally {
     await releaseAll();
+    // The command is over: the worker drops the context it held for it, so
+    // the next command of this panel starts under a context of its own.
+    if (!signal?.aborted) await browser.cancel?.();
     signal?.removeEventListener('abort', revoke);
   }
 }
@@ -136,7 +166,7 @@ async function buildContext(browser, target) {
   };
 }
 
-async function runStep({ ask, browser, ctx, target, command, emit, approve, signal, rule, claim, t }) {
+async function runStep({ ask, browser, ctx, target, command, emit, signal, rule, claim, t }) {
   const started = performance.now();
   const plan = await planStep(ask, command, ctx, { signal });
   const ms = Math.round(performance.now() - started);
@@ -148,25 +178,6 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
   if (plan.errorKey) return failed(t(plan.errorKey, { action: plan.action }));
   if (plan.unclear) return failed(t('voice.sayUnclear'));
   if (plan.action === 'unknown') return failed(t('voice.sayNotACommand'));
-
-  // The user's yes is asked for the step that is about to happen, and it is
-  // checked again afterwards: a command cancelled while the question was open
-  // must not run.
-  let approval = 'none';
-  const confirm = async (what) => {
-    if (signal?.aborted) return false;
-    const ok = await approve(what);
-    if (!ok) {
-      approval = 'refused';
-      return false;
-    }
-    if (signal?.aborted) {
-      approval = 'refused';
-      return false;
-    }
-    approval = 'given';
-    return true;
-  };
 
   // Every change asks who owns the tab it is about to change, and takes the
   // claim on it. A lookup that cannot answer stops the step: it fails closed.
@@ -191,13 +202,6 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
     return { ok: true };
   };
 
-  /** Where the element is, and whether it still holds a secret: looked at again just before the action. */
-  const locate = async (id) => {
-    const spot = await browser.inject(target.id, page.pageProbe, ['locate', { id }, rule], { signal });
-    if (!spot?.ok) return { ok: false, say: t(spot?.errorKey ?? 'voice.pageGone') };
-    return { ok: true, spot };
-  };
-
   /** What the worker checks the element against, so a twin is not the same field. */
   const identity = (element) => ({
     kind: element?.kind ?? null,
@@ -209,7 +213,7 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
   /** Closes a tab that was opened but never shown, so it does not stay behind. */
   const discardTab = async (tabId) => {
     try {
-      await browser.removeTab(tabId);
+      await browser.removeTab(tabId, { orphan: true });
     } catch {
       // The tab is gone already.
     }
@@ -227,10 +231,6 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
     }
     throw err;
   }
-  // A step that can send, buy, delete or submit never runs without the yes.
-  if (outcome.ok && needsConfirmation(plan.action) && approval === 'none') {
-    return failed(t('voice.sayNeedsConfirm'));
-  }
   return outcome;
 
   async function act() {
@@ -241,7 +241,8 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         if (!plan.url) return failed(t('voice.sayNoSite'));
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.updateTab(target.id, { url: plan.url });
+        const res = await browser.updateTab(target.id, { url: plan.url });
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayNoSite'));
         await browser.waitForLoad(target.id, { signal });
         const tab = await browser.getTab(target.id);
         return {
@@ -260,7 +261,8 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         // The tab is opened without the focus, claimed and bound to this
         // session, and only then shown: a tab that appears out of nowhere
         // must not take the session with it.
-        const created = await browser.openTab({ url: plan.url, windowId: target.windowId });
+        const created = await browser.openTab({ url: plan.url, windowId: target.windowId, tabId: target.id });
+        if (!created?.id) return failed(t('voice.sayCannotDo'));
         let shown = false;
         try {
           const held = await claim(created.id);
@@ -268,7 +270,8 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
           const bound = await browser.bindSession(created.id);
           if (!bound.ok) return failed(t('voice.sayOwnerUnknown'));
           if (signal?.aborted) return cancelled;
-          await browser.activateTab(created.id);
+          const res = await browser.activateTab(created.id);
+          if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayOwnerUnknown'));
           shown = true;
           if (plan.url) await browser.waitForLoad(created.id, { signal });
           const tab = await browser.getTab(created.id);
@@ -291,7 +294,8 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         if (!plan.url) return failed(t('voice.sayNoSearch'));
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.updateTab(target.id, { url: plan.url });
+        const res = await browser.updateTab(target.id, { url: plan.url });
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayNoSearch'));
         await browser.waitForLoad(target.id, { signal });
         const tab = await browser.getTab(target.id);
         return {
@@ -306,25 +310,20 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
 
       case 'click': {
         const elements = await browser.inject(target.id, page.pageProbe, ['collect', { purpose: 'click' }, rule], { signal });
+        if (elements?.errorKey) return failed(t(elements.errorKey));
         if (!elements?.length) return failed(t('voice.sayNoElements'));
         const pick = await chooseElement(ask, command, ctx, elements, 'click', plan.text, { signal });
         emit({ kind: 'element', label: pick?.element?.label ?? null, confidence: pick?.confidence, candidates: elements.length });
         if (!pick?.element) return failed(t('voice.sayNotFound', { text: plan.text || '' }));
-        if (pick.element.secret) return failed(t('voice.saySecretField'));
-        if (!await confirm({ action: 'click', label: pick.element.label })) return cancelled;
-        // The tab may have changed hands while the question was open.
         const free = await guard(target.id);
         if (!free.ok) return free;
-        const spot = await locate(pick.element.id);
-        if (!spot.ok) return failed(spot.say);
-        if (signal?.aborted) return cancelled;
         // The click is real input, and the page sees what a user's hand does.
         // The element travels with it: the worker finds it again after the
         // queue, so a page that replaced it does not get the click.
         const res = await browser.input(target.id, [{ op: 'click', element: pick.element.id }], {
           element: pick.element.id,
           expected: identity(pick.element),
-          rule,
+          action: 'click',
         });
         if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayClickFailed'));
         await browser.waitForLoad(target.id, { signal });
@@ -336,24 +335,16 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         // whatever happens to have the focus: a command that names a field
         // must not land in another one.
         const fields = await browser.inject(target.id, page.pageProbe, ['collect', { purpose: 'type' }, rule], { signal });
+        if (fields?.errorKey) return failed(t(fields.errorKey));
         if (!fields?.length) return failed(t('voice.sayNoTextField'));
-        const focused = await browser.inject(target.id, page.pageProbe, ['focused', null, rule], { signal });
-        // A field that holds a secret is left alone: the text does not go into
-        // some other field instead.
-        if (focused?.secret) return failed(t('voice.saySecretField'));
         // The model picks the field, even when there is only one: a command
         // that names a field that is not on the page must not land in it.
         const pick = await chooseElement(ask, command, ctx, fields, 'type', plan.text, { signal });
         emit({ kind: 'element', label: pick?.element?.label ?? null, confidence: pick?.confidence, candidates: fields.length });
         if (!pick?.element) return failed(t('voice.sayNoFieldFound'));
-        if (pick.element.secret) return failed(t('voice.saySecretField'));
         const submit = await shouldSubmit(ask, command, { signal });
-        if (!await confirm({ action: 'type_text', label: pick.element.label, text: plan.text, submit })) return cancelled;
         const free = await guard(target.id);
         if (!free.ok) return free;
-        const spot = await locate(pick.element.id);
-        if (!spot.ok) return failed(spot.say);
-        if (signal?.aborted) return cancelled;
         // The text is written with real keys: the field is clicked, what was
         // in it is selected, and the text is inserted. The worker checks that
         // the same field still has the focus before every one of them, so a
@@ -367,7 +358,7 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         const res = await browser.input(target.id, steps, {
           element: pick.element.id,
           expected: identity(pick.element),
-          rule,
+          action: 'type_text',
         });
         if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayTypeFailed'));
         // A text that was sent may have started a page: the next step of the
@@ -376,24 +367,51 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         return { ok: true, say: t(submit ? 'voice.sayTypedSubmit' : 'voice.sayTyped'), action: plan.action, confidence: plan.confidence, ms };
       }
 
+      case 'read_field': {
+        // The value of one field, and only of that one: the user asked for
+        // it, and the worker reads it only after the user allowed that read.
+        const fields = await browser.inject(target.id, page.pageProbe, ['collect', { purpose: 'read' }, rule], { signal });
+        if (fields?.errorKey) return failed(t(fields.errorKey));
+        if (!fields?.length) return failed(t('voice.sayNoTextField'));
+        const pick = await chooseElement(ask, command, ctx, fields, 'read', plan.text, { signal });
+        emit({ kind: 'element', label: pick?.element?.label ?? null, confidence: pick?.confidence, candidates: fields.length });
+        if (!pick?.element) return failed(t('voice.sayNoFieldFound'));
+        const free = await guard(target.id);
+        if (!free.ok) return free;
+        const res = await browser.readField(target.id, pick.element.id, { expected: identity(pick.element) });
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
+        // The value belongs in the result of the command and nowhere else: it
+        // is never a caption, an audit line or a label.
+        return { ok: true, say: t('voice.sayFound', { text: res.value }), action: plan.action, confidence: plan.confidence, ms };
+      }
+
+      case 'insert_text': {
+        // The text goes into the field that has the focus right now, without
+        // naming it: a terminal takes the focus itself.
+        const free = await guard(target.id);
+        if (!free.ok) return free;
+        const res = await browser.insertText(target.id, plan.text ?? '');
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayTypeFailed'));
+        return { ok: true, say: t('voice.sayTyped'), action: plan.action, confidence: plan.confidence, ms };
+      }
+
       case 'press_enter': {
         const focused = await browser.inject(target.id, page.pageProbe, ['focused', null, rule], { signal });
-        if (focused?.secret) return failed(t('voice.saySecretField'));
+        if (focused?.errorKey) return failed(t(focused.errorKey));
         // The focus is approved for one element: the body is approved as the
         // body it was, and anything else has no identity to check. Without one
         // the Enter is refused: it would go to whatever has the focus now.
         if (!focused?.id) return failed(t('voice.pageFocusLost'));
-        if (!await confirm({ action: 'press_enter', label: t('voice.sayFocusedField') })) return cancelled;
         const free = await guard(target.id);
         if (!free.ok) return free;
         if (signal?.aborted) return cancelled;
         // The focus is looked at again in the worker, right before the key:
-        // the page may have moved it to a field that holds a secret. The body
-        // may have the focus too: Enter is a page action there as well.
+        // the page may have moved it to another field. The body may have the
+        // focus too: Enter is a page action there as well.
         const res = await browser.input(target.id, [{ op: 'key', key: 'Enter' }], {
           element: focused.id,
           expected: null,
-          rule,
+          action: 'press_key',
         });
         if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayEnterFailed'));
         // The Enter may have started a page: the next step of the chain waits
@@ -405,44 +423,51 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
       case 'scroll_down': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.inject(target.id, page.scrollPage, ['down'], { signal });
+        const res = await browser.inject(target.id, page.scrollPage, ['down'], { signal });
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         return { ok: true, say: t('voice.sayScrolledDown'), action: plan.action, confidence: plan.confidence, ms };
       }
       case 'scroll_up': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.inject(target.id, page.scrollPage, ['up'], { signal });
+        const res = await browser.inject(target.id, page.scrollPage, ['up'], { signal });
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         return { ok: true, say: t('voice.sayScrolledUp'), action: plan.action, confidence: plan.confidence, ms };
       }
       case 'scroll_top': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.inject(target.id, page.scrollPage, ['top'], { signal });
+        const res = await browser.inject(target.id, page.scrollPage, ['top'], { signal });
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         return { ok: true, say: t('voice.sayTop'), action: plan.action, confidence: plan.confidence, ms };
       }
       case 'scroll_bottom': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.inject(target.id, page.scrollPage, ['bottom'], { signal });
+        const res = await browser.inject(target.id, page.scrollPage, ['bottom'], { signal });
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         return { ok: true, say: t('voice.sayBottom'), action: plan.action, confidence: plan.confidence, ms };
       }
 
       case 'go_back': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.goBack(target.id);
+        const res = await browser.goBack(target.id);
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         return { ok: true, say: t('voice.sayBack'), action: plan.action, confidence: plan.confidence, ms };
       }
       case 'go_forward': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.goForward(target.id);
+        const res = await browser.goForward(target.id);
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         return { ok: true, say: t('voice.sayForward'), action: plan.action, confidence: plan.confidence, ms };
       }
       case 'reload': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        await browser.reload(target.id);
+        const res = await browser.reload(target.id);
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         await browser.waitForLoad(target.id, { signal });
         return { ok: true, say: t('voice.sayReloaded'), action: plan.action, confidence: plan.confidence, ms };
       }
@@ -455,12 +480,12 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         const title = ctx.tabs.find((tab) => tab.id === id)?.title;
         const free = await guard(id);
         if (!free.ok) return free;
-        if (!await confirm({ action: 'close_tab', label: title || t('voice.sayTheTab') })) return cancelled;
         // The tab may have changed hands while the question was open.
         const again = await guard(id);
         if (!again.ok) return again;
         if (signal?.aborted) return cancelled;
-        await browser.removeTab(id);
+        const res = await browser.removeTab(id);
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
         // The tab the command was on may be the one that was closed: the chain
         // ends there, and no other tab is taken up in its place.
         return {
@@ -482,7 +507,8 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         const bound = await browser.bindSession(plan.tabId);
         if (!bound.ok) return failed(t('voice.sayOwnerUnknown'));
         if (signal?.aborted) return cancelled;
-        await browser.activateTab(plan.tabId);
+        const res = await browser.activateTab(plan.tabId);
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayOwnerUnknown'));
         const tab = await browser.getTab(plan.tabId);
         return {
           ok: true,
@@ -505,7 +531,8 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         const bound = await browser.bindSession(next.id);
         if (!bound.ok) return failed(t('voice.sayOwnerUnknown'));
         if (signal?.aborted) return cancelled;
-        await browser.activateTab(next.id);
+        const res = await browser.activateTab(next.id);
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayOwnerUnknown'));
         const tab = await browser.getTab(next.id);
         return {
           ok: true,
@@ -522,13 +549,11 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
       case 'zoom_reset': {
         const free = await guard(target.id);
         if (!free.ok) return free;
-        const zoom = await browser.getZoom(target.id);
-        if (signal?.aborted) return cancelled;
-        // The tab may have changed hands while it was read.
-        const again = await guard(target.id);
-        if (!again.ok) return again;
-        const next = plan.action === 'zoom_reset' ? 0 : Math.min(5, Math.max(0.25, zoom + (plan.action === 'zoom_in' ? 0.25 : -0.25)));
-        await browser.setZoom(target.id, next);
+        // The worker reads the zoom and works out the level itself, so the
+        // level that changes is the level that was approved.
+        const res = await browser.zoom(target.id, plan.action.replace('zoom_', ''));
+        if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayCannotDo'));
+        const next = res.level ?? 0;
         return { ok: true, say: t(plan.action === 'zoom_reset' ? 'voice.sayZoomReset' : 'voice.sayZoom', { pct: Math.round((next || 1) * 100) }), action: plan.action, confidence: plan.confidence, ms };
       }
 
