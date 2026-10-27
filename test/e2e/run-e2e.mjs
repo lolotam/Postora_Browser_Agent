@@ -500,8 +500,16 @@ async function enableFullAccess(panel) {
     await panel.selectOption('#accessSelect', 'full-access');
     const opened = await panel.waitForSelector('#accessWarning[open]', { timeout: 15000 }).then(() => true, () => false);
     if (!opened) continue;
-    await panel.check('#accessAcknowledge');
-    await panel.click('#accessConfirm');
+    try {
+      await panel.check('#accessAcknowledge', { timeout: 3000 });
+      await panel.click('#accessConfirm', { timeout: 3000 });
+    } catch (error) {
+      // Initial tab/session synchronization may replace the trusted connection
+      // after the dialog opened. Its consent must be discarded, not forced.
+      // Reopen and acknowledge the warning on the new connection instead.
+      if (await panel.locator('#accessWarning[open]').count()) throw error;
+      continue;
+    }
     const confirmed = await panel.waitForFunction(() => document.getElementById('accessSelect')?.value === 'full-access', { timeout: 15000 })
       .then(() => true, () => false);
     if (confirmed) return true;
