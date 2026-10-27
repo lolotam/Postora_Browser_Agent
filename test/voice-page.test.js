@@ -273,6 +273,45 @@ test('the capture of an element changes nothing on the page', () => {
   assert.equal(scrolled, 1, 'the element is brought into view when the action goes out');
 });
 
+for (const kind of ['locate', 'hit']) {
+  test(`${kind} rejects a distinct nested control, including its decorative descendants`, () => {
+    const icon = element({ tag: 'SPAN', text: 'icon', purposes: [] });
+    const nested = element({ tag: 'BUTTON', text: 'Other action', children: [icon], purposes: [] });
+    const owner = element({ tag: 'DIV', attrs: { role: 'button', 'aria-label': 'Approved action' }, children: [nested], purposes: ['click'] });
+    nested.parentElement = owner;
+    icon.parentElement = nested;
+    owner.contains = (node) => [owner, nested, icon].includes(node);
+    const world = scope([owner]);
+    const [candidate] = collect([owner], 'click', { scope: world });
+    for (const hit of [nested, icon]) {
+      world.doc.elementFromPoint = () => hit;
+      const result = probe([owner], kind, { id: candidate.id, x: 80, y: 22 }, { scope: world }).result;
+      assert.equal(result.ok, false);
+      assert.equal(result.errorKey, 'voice.pageMoved');
+    }
+  });
+
+  test(`${kind} preserves decorative descendants of the approved control`, () => {
+    const icon = element({ tag: 'SPAN', text: 'icon', purposes: [] });
+    const owner = element({ tag: 'BUTTON', text: 'Approved action', children: [icon], purposes: ['click'] });
+    icon.parentElement = owner;
+    const world = scope([owner]);
+    const [candidate] = collect([owner], 'click', { scope: world });
+    world.doc.elementFromPoint = () => icon;
+    assert.equal(probe([owner], kind, { id: candidate.id, x: 80, y: 22 }, { scope: world }).result.ok, true);
+  });
+
+  test(`${kind} rejects an empty hit instead of treating it as the approved control`, () => {
+    const owner = element({ tag: 'BUTTON', text: 'Approved action', purposes: ['click'] });
+    const world = scope([owner]);
+    const [candidate] = collect([owner], 'click', { scope: world });
+    world.doc.elementFromPoint = () => null;
+    const result = probe([owner], kind, { id: candidate.id, x: 80, y: 22 }, { scope: world }).result;
+    assert.equal(result.ok, false);
+    assert.equal(result.errorKey, 'voice.pageMoved');
+  });
+}
+
 test('the focus is checked against the element that was approved', () => {
   const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email' }, purposes: ['type'] });
   const other = element({ tag: 'INPUT', type: 'password', attrs: { id: 'pw' }, purposes: ['type'] });

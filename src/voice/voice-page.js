@@ -107,6 +107,20 @@ export function pageProbe(kind, arg, rule) {
   const holds = (el, other) => Boolean(el) && (el === other || Boolean(el.contains && el.contains(other)) ||
     Boolean(el.shadowRoot && el.shadowRoot.contains && el.shadowRoot.contains(other)));
 
+  const receivesHit = (owner, hit) => {
+    if (owner === hit) return true;
+    if (!hit || owner === document.body || !holds(owner, hit)) return false;
+    // Icons/text may belong to a button; a separate nested control does not
+    // inherit the approval of the container it now covers.
+    for (let node = hit; node && node !== owner; node = node.parentElement ?? node.getRootNode?.()?.host ?? null) {
+      const role = node.getAttribute?.('role') ?? '';
+      if (['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY'].includes(node.tagName) ||
+        ['button', 'link', 'textbox', 'combobox', 'option', 'menuitem', 'checkbox', 'radio', 'switch'].includes(role) ||
+        node.isContentEditable || node.hasAttribute?.('onclick') || node.hasAttribute?.('tabindex')) return false;
+    }
+    return true;
+  };
+
   // The elements this extension collected, kept in the extension's own world
   // of the frame. The page cannot read them and cannot move them.
   const REGISTRY = '__postoraVoiceElements';
@@ -322,7 +336,7 @@ export function pageProbe(kind, arg, rule) {
     const y = r.top + r.height / 2;
     // Something that covers the element would get the click instead of it.
     const at = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : el;
-    if (at && at !== el && !(typeof el.contains === 'function' && el.contains(at))) {
+    if (!receivesHit(el, at)) {
       return { ok: false, errorKey: 'voice.pageMoved' };
     }
     return {
@@ -378,7 +392,7 @@ export function pageProbe(kind, arg, rule) {
     }
     // Something that covers the element would get the click instead of it.
     const at = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : el;
-    if (at && at !== el && !(typeof el.contains === 'function' && el.contains(at))) {
+    if (!receivesHit(el, at)) {
       return { ok: false, errorKey: 'voice.pageMoved' };
     }
     return { ok: true, x, y, documentId: documentId() };
