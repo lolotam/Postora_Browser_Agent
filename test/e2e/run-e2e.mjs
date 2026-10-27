@@ -352,6 +352,8 @@ const SAFETY_PAGE = `<!doctype html><html><body tabindex="-1">
 <label>Password <input id="secret" name="password" type="password" value="EXISTING-SECRET"></label>
 <button id="go">Go</button>
 <output id="out"></output>
+<a href="/safety?linked" onclick="event.preventDefault();document.getElementById('out').textContent='WRONG first handler'">Item</a>
+<a href="/safety?linked" onclick="event.preventDefault();document.getElementById('out').textContent='correct detailed handler'">Detailed item title</a>
 <script>
 window.trustedClick = false;
 const email = document.getElementById('email');
@@ -379,7 +381,7 @@ function scriptedSafetyJev() {
     const command = String(body.state?.spoken_command ?? '');
     const lower = command.toLowerCase();
     const action = lower.includes('type') ? 'type_text' : lower.includes('enter') ? 'press_enter' : 'click';
-    const wanted = action === 'type_text' ? /Email/ : action === 'click' ? /Go/ : null;
+    const wanted = action === 'type_text' ? /Email/ : action === 'click' ? (lower.includes('detailed') ? /Detailed item title/ : /Go/) : null;
     const answers = {};
     for (const [name, question] of Object.entries(body.questions)) {
       if (question.type !== 'choice') {
@@ -1362,6 +1364,16 @@ async function runVoiceSafetyScenario(context, extensionId) {
     const replaced = await target.inputValue('#email');
     if (replaced !== 'untouched@example.test') failures.push('a cloned element got the approved text');
     if (!(await lastState()).includes('err')) failures.push('the command was not reported as refused');
+
+    // Equal hrefs can have different handlers: the named title must target
+    // its own DOM element, never the earlier matching address.
+    await panel.click('#voiceBackBtn');
+    await target.goto(`${base}/safety?duplicate-links`);
+    before = await entries();
+    await command('click Detailed item title');
+    await panel.click('#voiceApproval button.primary');
+    await finished(before);
+    if (await target.textContent('#out') !== 'correct detailed handler') failures.push('the duplicate-href click reached the wrong DOM handler');
 
     // Enter on the body: it is a page action, and it has to be real.
     await panel.click('#voiceBackBtn');

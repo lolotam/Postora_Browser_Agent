@@ -221,7 +221,7 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
   } catch (err) {
     // A command that was cancelled while a page call was on its way changes
     // nothing.
-    if (err?.name === 'AbortError') return cancelled;
+    if (signal?.aborted) return cancelled;
     if (err?.code === 'voice.pageRestricted' || /voice\.pageRestricted/.test(String(err?.message ?? ''))) {
       return failed(t('voice.sayPageRestricted'));
     }

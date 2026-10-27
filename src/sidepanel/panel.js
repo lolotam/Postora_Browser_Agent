@@ -232,6 +232,7 @@ function onEvent(event) {
       // and no new task is started for it. The entry of the command keeps
       // the events of the task.
       settleVoiceCommand();
+      voiceEntryFor(event)?.setStatus(t('status.waiting'), 'thinking');
       break;
     case 'final': {
       ui.liveText?.remove();

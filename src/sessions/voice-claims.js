@@ -62,6 +62,7 @@ export function isAuthorized(tabId, { panelId = null, token = null } = {}) {
  * it is named.
  */
 export function claimTab(tabId, { panelId, sessionId, owner = 'voice control' } = {}) {
+  if (typeof panelId !== 'string' || !panelId.trim()) return { ok: false, owner: null };
   const held = leases.get(tabId);
   if (held) {
     if (held.kind === 'voice' && held.panelId === panelId && held.state === 'active') {

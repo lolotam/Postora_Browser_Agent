@@ -92,6 +92,30 @@ function voicePanel({ question = null, engine = 'postora', running = false } = {
 
 const entry = { setErr() {}, setOk() {}, addNote() {} };
 
+test('a live question restores waiting activity after the voice screen closes; replay does not', () => {
+  let status = '';
+  let settled = 0;
+  const app = vm.createContext({
+    replaying: false,
+    closeThread() {}, add() {},
+    showChat: () => { status = 'Cancelled'; },
+    setQuestion() {},
+    settleVoiceCommand: () => { settled += 1; },
+    voiceEntryFor: () => ({ setStatus: (text, state) => { status = `${text}:${state}`; } }),
+    t: (key) => key,
+  });
+  const handler = source.slice(source.indexOf('function onEvent('), source.indexOf('\nfunction threadPart('));
+  vm.runInContext(handler, app);
+  app.onEvent({ type: 'ask', question: 'Which one?' });
+  assert.equal(status, 'status.waiting:thinking');
+  assert.equal(settled, 1);
+  app.replaying = true;
+  status = 'unchanged';
+  app.onEvent({ type: 'ask', question: 'Historical question' });
+  assert.equal(status, 'unchanged');
+  assert.equal(settled, 1);
+});
+
 test('a voice command is a message of its own: the files and the draft are left alone', async () => {
   const { context, posted } = voicePanel();
   context.runVoiceCommand('scroll down', { signal: new AbortController().signal, entry });

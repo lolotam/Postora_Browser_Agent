@@ -18,6 +18,13 @@ import {
 // tab stays busy until the input that is still running has drained. The tests
 // below follow both steps.
 
+test('a malformed panel identity cannot create an unreleasable lease', () => {
+  for (const panelId of [undefined, null, '', '   ', 12]) {
+    assert.equal(claimTab(99010, { panelId }).ok, false);
+    assert.equal(claimOf(99010), null);
+  }
+});
+
 test('two commands cannot hold the same tab at the same time', () => {
   const first = claimTab(11, { panelId: 'panel-a', sessionId: 'session-a' });
   const second = claimTab(11, { panelId: 'panel-b', sessionId: 'session-a' });

@@ -266,7 +266,6 @@ export function pageProbe(kind, arg, rule) {
     : 'a[href], button, input[type=submit], input[type=button], input[type=checkbox], input[type=radio], select, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=option], [role=checkbox], [role=switch], [onclick]';
   const vh = window.innerHeight, vw = window.innerWidth;
 
-  const seen = new Map();
   const out = [];
   let n = 0;
   // The marks of an earlier collection are cleared first, so a number always
@@ -285,15 +284,8 @@ export function pageProbe(kind, arg, rule) {
     if (!label && purpose !== 'type') continue;
     const href = el.tagName === 'A' ? el.getAttribute('href') : null;
     const inView = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
-    const key = href ? 'h:' + href : null;
-    if (key && seen.has(key)) {
-      const prev = seen.get(key);
-      // Only the label the model reads becomes the longer one: the identity
-      // of the element that was collected keeps its own label.
-      if (label.length > prev.label.length) prev.label = label;
-      prev.inView = prev.inView || inView;
-      continue;
-    }
+    // Matching addresses do not imply matching actions: each DOM element
+    // keeps its own candidate, label and approved identity.
     const id = mark(el, ++n);
     const item = {
       id,
@@ -312,7 +304,6 @@ export function pageProbe(kind, arg, rule) {
       // the others without the command having to name it.
       focused: el === document.activeElement,
     };
-    if (key) seen.set(key, item);
     out.push(item);
   }
   const cap = purpose === 'type' ? 40 : 110;

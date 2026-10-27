@@ -369,15 +369,21 @@ test('the label a field really has is kept apart from the label the model reads'
   assert.equal(drifted.ok, false, 'a label that drifted is refused');
 });
 
-test('two links with the same address keep the identity of the element that was collected', () => {
+test('two links with the same address keep separate labels and approved DOM identities', () => {
   const first = element({ tag: 'A', text: 'Item', attrs: { href: '/page?merged' }, purposes: ['click'] });
-  const second = element({ tag: 'A', text: 'Detailed item title', attrs: { href: '/page?merged' }, purposes: ['click'] });
+  const second = element({ tag: 'A', text: 'Detailed item title', attrs: { href: '/page?merged' }, purposes: ['click'], rect: { left: 300 } });
   const world = scope([first, second]);
   const collected = probe([first, second], 'collect', { purpose: 'click' }, { scope: world }).result;
 
-  assert.equal(collected.length, 1, 'the two links are one candidate');
-  assert.equal(collected[0].label, 'Detailed item title', 'the model reads the longer label');
+  assert.equal(collected.length, 2, 'different handlers may live on links with the same href');
+  assert.equal(collected[0].label, 'Item');
   assert.equal(collected[0].identityLabel, 'Item', 'the identity keeps the label of the element');
+  assert.equal(collected[1].label, 'Detailed item title');
+  assert.equal(collected[1].identityLabel, 'Detailed item title');
+  assert.notEqual(collected[0].id, collected[1].id);
+  const detailed = probe([first, second], 'resolve', { id: collected[1].id, expected: { kind: 'link', label: 'Detailed item title' } }, { scope: world }).result;
+  assert.equal(detailed.ok, true);
+  assert.equal(detailed.x, 360, 'the title selects the second DOM element, not the first href match');
 
   const spot = probe([first, second], 'resolve', { id: collected[0].id, expected: { kind: 'link', label: 'Item' } }, { scope: world }).result;
   assert.equal(spot.ok, true, 'the element that was collected is the one that is clicked');

@@ -960,6 +960,14 @@ test('closing another tab lets the chain go on', async () => {
   assert.ok(browser.calls.some((call) => call[2] === 'scrollPage'), 'the chain went on in the tab it was on');
 });
 
+test('an independently aborted browser operation is not reported as user cancellation', async () => {
+  const abort = new AbortController();
+  const browser = mockBrowser({ inject: async () => { throw new DOMException('Operation timed out', 'AbortError'); } });
+  const ask = scriptedAsk({ action: choice('scroll_down'), argument: firstSpan, site: choice('none') });
+  await assert.rejects(runFastCommand({ ask, browser, command: 'scroll down', approve: approves(true), signal: abort.signal, t }), { name: 'AbortError' });
+  assert.equal(abort.signal.aborted, false);
+});
+
 test('a tab that is gone ends the chain, and no other tab is looked at', async () => {
   const browser = mockBrowser({
     getTab: async () => { throw new Error('No tab with id: 1.'); },
