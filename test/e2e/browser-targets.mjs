@@ -175,6 +175,10 @@ async function main() {
     // 6. An editor that holds a secret: its contents are not in the snapshot,
     // not in the text of the page and not in the name of the box around it.
     await page.evaluate(() => {
+      const form = document.createElement('form');
+      form.id = 'password-reset';
+      form.textContent = 'Reset link expired. Request a new link.';
+      document.body.append(form);
       const editor = document.createElement('div');
       editor.id = 'qaEditor';
       editor.setAttribute('role', 'textbox');
@@ -195,6 +199,8 @@ async function main() {
     check(!/TEST_EDITOR_SECRET/.test(editor.lines), 'the contents of a secret editor are not described');
     check(!/TEST_EDITOR_SECRET/.test(editor.text), 'the contents of a secret editor are not in the page text');
     check(!/TEST_EDITOR_SECRET/.test(editor.page), 'the contents of a secret editor are not in the text of the page');
+    check(/Reset link expired\. Request a new link\./.test(editor.text), 'snapshot retains instructions in a secret-named form');
+    check(/Reset link expired\. Request a new link\./.test(editor.page), 'page text retains instructions in a secret-named form');
     check(/original message/.test(editor.lines), 'the ordinary field keeps its value');
 
     // A still-connected original is not enough: a different control can cover

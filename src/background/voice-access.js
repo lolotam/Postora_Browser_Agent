@@ -153,6 +153,21 @@ export function createVoiceAccess({
   const panelCommand = new Map();
   // The generation of each session: the answer to "was this session stopped?".
   const generations = new Map();
+  // Cleanup is worker-owned and remains available after execution is revoked.
+  const orphanCleanups = new Set();
+
+  function cleanUnshown(command) {
+    const tasks = [];
+    for (const tabId of command.created) {
+      if (command.shown.has(tabId)) continue;
+      command.created.delete(tabId);
+      const task = chrome.tabs.remove(tabId).catch(() => {});
+      orphanCleanups.add(task);
+      void task.finally(() => orphanCleanups.delete(task));
+      tasks.push(task);
+    }
+    return Promise.all(tasks);
+  }
 
   /**
    * The generation of a session.
@@ -195,6 +210,7 @@ export function createVoiceAccess({
     }
     commands.delete(command.id);
     if (panelCommand.get(command.panelId) === command.id) panelCommand.delete(command.panelId);
+    void cleanUnshown(command);
     return true;
   }
 
@@ -691,6 +707,12 @@ export function createVoiceAccess({
         // The tab belongs to this command until it is shown: a tab that is
         // never shown is closed again, and it is not a question.
         command.created.add(created.id);
+        // Cancellation may have happened while Chrome was creating the tab.
+        // Never return an orphan under a command that no longer exists.
+        if (command.dead || !generationAlive(runner, command.generation)) {
+          await cleanUnshown(command);
+          return { ok: false, errorKey: 'voice.sayCancelled' };
+        }
         return { ok: true, tab: { id: created.id, windowId: created.windowId ?? windowId ?? null, url: created.url ?? url, title: created.title ?? '' } };
       }
       case 'history': {
@@ -905,6 +927,7 @@ export function createVoiceAccess({
     invalidatePanel(panelId, 'released');
     const leases = claims.revokePanel(panelId);
     await Promise.all(leases.map((lease) => finishLease(lease)));
+    await Promise.all([...orphanCleanups]);
   }
 
   /**
@@ -937,6 +960,7 @@ export function createVoiceAccess({
     }
     const leases = claims.revokePanel(panelId);
     await Promise.all(leases.map((lease) => finishLease(lease)));
+    await Promise.all([...orphanCleanups]);
     return true;
   }
 

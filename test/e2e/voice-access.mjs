@@ -328,6 +328,9 @@ async function secretWriteAsks(panel, target, failures) {
 async function secretReadAsks(panel, target, failures) {
   await resetPage(target);
   await resetCounters(panel);
+  // Provider dashboards commonly display existing tokens in read-only fields.
+  // Reading one still needs its own approval, not write eligibility.
+  await target.evaluate(() => { document.getElementById('pw').readOnly = true; });
   await panel.evaluate(() => window.__say('read the password field'));
 
   const card = await waitForCard(panel).catch(() => null);

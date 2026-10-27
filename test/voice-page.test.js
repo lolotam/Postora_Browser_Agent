@@ -161,6 +161,21 @@ test('a field that holds a secret is named, and its value never travels with it'
   assert.doesNotMatch(shown, /123456/, 'no one-time code is described');
 });
 
+test('read-only fields remain readable candidates without becoming writable', () => {
+  for (const tag of ['INPUT', 'TEXTAREA']) {
+    const field = element({ tag, type: 'text', attrs: { 'aria-label': 'API token' }, purposes: ['type'], value: 'TEST_READONLY_TOKEN' });
+    field.readOnly = true;
+    const world = scope([field]);
+    assert.equal(collect([field], 'type', { scope: world }).length, 0);
+    const candidates = collect([field], 'read', { scope: world });
+    assert.equal(candidates.length, 1);
+    assert.doesNotMatch(JSON.stringify(candidates), /TEST_READONLY_TOKEN/);
+    const read = probe([field], 'read', { id: candidates[0].id }, { scope: world }).result;
+    assert.equal(read.ok, true);
+    assert.equal(read.value, 'TEST_READONLY_TOKEN');
+  }
+});
+
 test('the page and the module agree on what a secret field is', () => {
   const names = ['password', 'pwd', 'cvv', 'cardNumber', 'card_number', 'credit card', 'otp', 'one-time-code',
     'verification code', 'security code', 'iban', 'account number', 'api key', 'access token', 'pin',

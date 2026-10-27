@@ -878,6 +878,59 @@ test('a tab that this command did not open may not be discarded', async () => {
   }
 });
 
+for (const end of ['cancel', 'disconnect', 'mode-change']) {
+  test(`${end} closes command-owned unshown tabs without admitting a stale cleanup action`, async () => {
+    const world = await newWorld({ title: 'Cancelled orphan', mode: 'full-access' });
+    try {
+      const opened = await world.act('open_tab', { args: { url: 'https://example.test/' } });
+      assert.equal(opened.ok, true);
+      if (end === 'cancel') await world.access.cancelCommand({ sessionId: world.runner.id, panelId: world.panelId, commandId: world.claimed.command.id }, SENDER);
+      if (end === 'disconnect') await world.access.releasePanel(world.panelId);
+      if (end === 'mode-change') {
+        world.runner.access.setMode('ask-first', { trusted: true, expectedRevision: world.runner.access.revision });
+        world.access.invalidateSession(world.runner.id, 'mode-changed');
+        await world.access.releasePanel(world.panelId);
+      }
+      assert.equal((await world.act('discard_tab', { tabId: opened.tab.id })).ok, false);
+      assert.deepEqual(tabCalls.filter((call) => call.what === 'remove').map((call) => call.id), [opened.tab.id]);
+    } finally { world.runner.dispose(); }
+  });
+}
+
+test('cancellation retains tabs the command already showed', async () => {
+  const world = await newWorld({ title: 'Shown tab', mode: 'full-access' });
+  try {
+    const opened = await world.act('open_tab', { args: { url: 'https://example.test/' } });
+    const claim = await world.access.handleClaim({ tabId: opened.tab.id, sessionId: world.runner.id, panelId: world.panelId }, SENDER);
+    assert.equal(claim.ok, true);
+    const shown = await world.act('switch_tab', { tabId: opened.tab.id, token: claim.token, args: { tabId: opened.tab.id } });
+    assert.equal(shown.ok, true);
+    await world.access.cancelCommand({ sessionId: world.runner.id, panelId: world.panelId, commandId: world.claimed.command.id }, SENDER);
+    assert.equal(tabCalls.filter((call) => call.what === 'remove').length, 0);
+  } finally { world.runner.dispose(); }
+});
+
+test('a tab created after cancellation is closed before the stale open returns', async () => {
+  const world = await newWorld({ title: 'Late orphan', mode: 'full-access' });
+  const create = chrome.tabs.create;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let creating = false;
+  chrome.tabs.create = async (args) => { creating = true; await gate; return create(args); };
+  try {
+    const pending = world.act('open_tab', { args: { url: 'https://example.test/' } });
+    await waitFor(() => creating);
+    await world.access.cancelCommand({ sessionId: world.runner.id, panelId: world.panelId, commandId: world.claimed.command.id }, SENDER);
+    release();
+    assert.equal((await pending).ok, false);
+    assert.deepEqual(tabCalls.filter((call) => call.what === 'remove').map((call) => call.id), [9]);
+  } finally {
+    release();
+    chrome.tabs.create = create;
+    world.runner.dispose();
+  }
+});
+
 test('an action that is not on the list is refused', async () => {
   const world = await newWorld({ title: 'Unknown action' });
   try {

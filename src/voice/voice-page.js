@@ -193,7 +193,8 @@ export function pageProbe(kind, arg, rule) {
     const found = [];
     const walk = (scope) => {
       for (const el of scope.querySelectorAll?.('*') ?? []) {
-        if (isSecret(el, nameOf(el))) found.push(el);
+        if ((el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'OUTPUT'].includes(el.tagName) ||
+          ['textbox', 'searchbox', 'combobox'].includes(el.getAttribute?.('role'))) && isSecret(el, nameOf(el))) found.push(el);
         if (el.shadowRoot) walk(el.shadowRoot);
       }
     };
@@ -429,8 +430,8 @@ export function pageProbe(kind, arg, rule) {
     if (!el) return { ok: false, errorKey: 'voice.pageGone' };
     if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
     if (!sameIdentity(el, arg?.expected ?? null)) return { ok: false, errorKey: 'voice.pageGone' };
-    // Only a field that can be written to is read: the page marker is never a
-    // fallback, and the body is never read.
+    // Only a real value-bearing field is read, including read-only fields:
+    // the page marker is never a fallback, and the body is never read.
     if (!canWrite(el)) return { ok: false, errorKey: 'voice.pageNoField' };
     const value = 'value' in el && typeof el.value === 'string'
       ? el.value
@@ -440,8 +441,8 @@ export function pageProbe(kind, arg, rule) {
 
   if (kind !== 'collect') return { ok: false, errorKey: 'voice.pageGone' };
 
-  const purpose = arg?.purpose === 'type' || arg?.purpose === 'read' ? 'type' : 'click';
-  const SEL = purpose === 'type'
+  const purpose = ['type', 'read'].includes(arg?.purpose) ? arg.purpose : 'click';
+  const SEL = purpose !== 'click'
     ? 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=image]):not([type=file]):not([type=range]):not([type=color]), textarea, [contenteditable="true"], [contenteditable=""], [role=textbox], [role=searchbox], [role=combobox]'
     : 'a[href], button, input[type=submit], input[type=button], input[type=checkbox], input[type=radio], select, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=option], [role=checkbox], [role=switch], [onclick]';
   const vh = window.innerHeight, vw = window.innerWidth;
@@ -456,15 +457,16 @@ export function pageProbe(kind, arg, rule) {
   for (const el of document.querySelectorAll(SEL)) {
     const label = labelOf(el);
     const secret = isSecret(el, label);
-    // A field that cannot be written to cannot take the text: it is not a
-    // candidate for it, and it is not a candidate for a read either.
+    // Reading does not require write permission: read-only fields can hold
+    // explicitly requested values, but never become typing candidates.
     if (purpose === 'type' && !writable(el)) continue;
+    if (purpose === 'read' && !canWrite(el)) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
     const cs = getComputedStyle(el);
     if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue;
     if (el.disabled || el.getAttribute?.('aria-hidden') === 'true') continue;
-    if (!label && purpose !== 'type') continue;
+    if (!label && purpose === 'click') continue;
     const href = el.tagName === 'A' ? el.getAttribute('href') : null;
     const inView = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
     // Matching addresses do not imply matching actions: each DOM element
@@ -491,7 +493,7 @@ export function pageProbe(kind, arg, rule) {
     };
     out.push(item);
   }
-  const cap = purpose === 'type' ? 40 : 110;
+  const cap = purpose !== 'click' ? 40 : 110;
   const visible = out.filter((e) => e.inView);
   const rest = out.filter((e) => !e.inView)
     .sort((a, b) => Math.abs(a.top - window.scrollY) - Math.abs(b.top - window.scrollY))

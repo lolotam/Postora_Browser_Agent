@@ -178,6 +178,19 @@ const SUGGESTION = suggestionAction.toString();
 const SNAPSHOT = snapshotPage.toString();
 const TEXT = pageText.toString();
 
+test('secret-named forms retain instructions while their field values stay redacted', () => {
+  const page = makePage({ text: '' });
+  const field = page.make({ tag: 'TEXTAREA', attrs: { 'aria-label': 'Password' }, innerText: 'TEST_PRIVATE_PASSWORD', parent: null });
+  page.make({ tag: 'FORM', attrs: { id: 'password-reset' }, innerText: 'Reset link expired. Request a new link.', children: [field] });
+  page.document.body.contains = (node) => node === page.document.body || page.state.elements.includes(node);
+  const text = page.run(TEXT, 0, 3500, rule);
+  const snapshot = page.run(SNAPSHOT, 250, 3500, rule);
+  for (const result of [text, snapshot]) {
+    assert.match(JSON.stringify(result), /Reset link expired\. Request a new link\./);
+    assert.doesNotMatch(JSON.stringify(result), /TEST_PRIVATE_PASSWORD/);
+  }
+});
+
 test('an editor referenced as another field label never exposes its contents', () => {
   const page = makePage();
   const editor = page.make({ tag: 'DIV', editable: true, attrs: { id: 'token-editor', 'aria-label': 'Access token' }, innerText: 'TEST_EDITOR_SECRET' });
