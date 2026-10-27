@@ -443,7 +443,7 @@ test('the typed command runs like a spoken one', async () => {
   assert.deepEqual(app.transcripts.at(-1), { text: 'scroll down', final: true });
 });
 
-test('the commands that were waiting are cancelled, not left working for ever', async () => {
+test('the commands that were waiting are cancelled, and the one that ran is marked too', async () => {
   const app = setup({ handsFree: true });
   await app.controller.open();
   app.created[0].hear('first');
@@ -452,7 +452,8 @@ test('the commands that were waiting are cancelled, not left working for ever', 
 
   app.controller.close();
 
-  assert.equal(app.logs[0].status, null, 'the command that ran keeps its own state');
+  assert.equal(app.logs[0].status?.text, 'Cancelled', 'the command that ran is marked as cancelled');
+  assert.equal(app.logs[0].status?.state, 'err');
   assert.equal(app.logs[1].status?.text, 'Cancelled', 'the command that never ran says it was cancelled');
   assert.equal(app.logs[1].status?.state, 'err');
 });

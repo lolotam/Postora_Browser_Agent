@@ -10,7 +10,7 @@ import { isSecretField, secretRule } from '../src/voice/voice-safety.js';
 const PROBE = pageProbe.toString();
 
 /** One element of the fake page: its box, its attributes and its text. */
-function element({ tag = 'DIV', type = '', attrs = {}, text = '', rect = {}, labels = [], editable = false, purposes = ['click'], children = [] } = {}) {
+function element({ tag = 'DIV', type = '', attrs = {}, text = '', rect = {}, labels = [], editable = false, purposes = ['click'], children = [], connected = true } = {}) {
   const el = {
     tagName: tag,
     type,
@@ -23,6 +23,7 @@ function element({ tag = 'DIV', type = '', attrs = {}, text = '', rect = {}, lab
     labels,
     purposes,
     children,
+    isConnected: connected,
     rect: { width: 120, height: 24, top: 10, left: 20, bottom: 34, right: 140, ...rect },
     getAttribute: (name) => (name in el.attrs ? el.attrs[name] : null),
     setAttribute: (name, value) => { el.attrs[name] = String(value); },
@@ -44,11 +45,15 @@ function label(text, field = null) {
   return el;
 }
 
-/** The page the script sees. */
-function page(elements, { active = null } = {}) {
+/**
+ * The page the script sees. The scope holds the world of the extension: the
+ * elements it collected are kept there, and the page cannot reach them.
+ */
+function scope(elements, { active = null } = {}) {
+  const body = element({ tag: 'BODY' });
   const doc = {
     activeElement: active,
-    body: element({ tag: 'BODY' }),
+    body,
     querySelectorAll: (selector) => {
       if (selector.includes('data-voice-id')) return elements.filter((el) => el.attrs['data-voice-id'] !== undefined);
       const purpose = selector.includes('[contenteditable') ? 'type' : 'click';
@@ -60,28 +65,29 @@ function page(elements, { active = null } = {}) {
       return doc.querySelectorAll(selector)[0] ?? null;
     },
     getElementById: (id) => elements.find((el) => el.attrs.id === id) ?? null,
+    // The element that is under the point that would be clicked.
+    elementFromPoint: (x, y) => elements.find((el) => {
+      const r = el.rect;
+      return x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height;
+    }) ?? null,
   };
   const win = { innerHeight: 800, innerWidth: 600, scrollY: 0 };
-  const globals = {
+  const context = vm.createContext({
     document: doc,
     window: win,
     getComputedStyle: () => ({ visibility: 'visible', display: 'block', opacity: '1' }),
-  };
-  return { ...globals, doc, win };
+  });
+  return { context, doc, win };
 }
 
 const rule = secretRule();
 
 /** Runs the injected script in a page of its own. */
-function probe(elements, kind, arg, { active = null } = {}) {
-  const scope = page(elements, { active });
-  const context = vm.createContext({
-    document: scope.doc,
-    window: scope.win,
-    getComputedStyle: scope.getComputedStyle,
-  });
-  const fn = vm.runInContext(`(${PROBE})`, context);
-  return { result: fn(kind, arg, rule), scope };
+function probe(elements, kind, arg, { active = null, scope: shared = null } = {}) {
+  const world = shared ?? scope(elements, { active });
+  const fn = world.context.__probe ?? vm.runInContext(`(${PROBE})`, world.context);
+  world.context.__probe = fn;
+  return { result: fn(kind, arg, rule), scope: world };
 }
 
 function collect(elements, purpose, options = {}) {
@@ -165,8 +171,9 @@ test('the field that has the focus is reported as editable, and a secret one as 
 
 test('an element is located by its mark, and a secret one is not', () => {
   const button = element({ tag: 'BUTTON', text: 'Go', purposes: ['click'] });
-  const collected = collect([button], 'click');
-  const spot = probe([button], 'locate', { id: collected[0].id }).result;
+  const world = scope([button]);
+  const collected = probe([button], 'collect', { purpose: 'click' }, { scope: world }).result;
+  const spot = probe([button], 'locate', { id: collected[0].id }, { scope: world }).result;
 
   assert.equal(spot.ok, true);
   assert.equal(spot.x, 80, 'the middle of the element');
@@ -174,8 +181,106 @@ test('an element is located by its mark, and a secret one is not', () => {
 
   // A field that was collected as ordinary and turned secret in the meantime
   // is still refused when the action is about to happen.
-  const secret = element({ tag: 'INPUT', type: 'password', attrs: { id: 'pw', 'data-voice-id': '1' }, purposes: ['type'] });
-  const refused = probe([secret], 'locate', { id: '1' }).result;
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'pw' }, purposes: ['type'] });
+  const fieldWorld = scope([field]);
+  const fieldCollected = probe([field], 'collect', { purpose: 'type' }, { scope: fieldWorld }).result;
+  field.type = 'password'; // the page turned it into a password box
+  const refused = probe([field], 'locate', { id: fieldCollected[0].id }, { scope: fieldWorld }).result;
   assert.equal(refused.ok, false);
   assert.equal(refused.errorKey, 'voice.pageSecret');
+});
+
+test('the identity of an element is the element itself, not the mark on it', () => {
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email' }, purposes: ['type'] });
+  const world = scope([field]);
+  const collected = probe([field], 'collect', { purpose: 'type' }, { scope: world }).result;
+  const id = collected[0].id;
+
+  // The page replaces the element with a twin that carries the same mark.
+  const twin = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email', 'data-voice-id': id }, purposes: ['type'], rect: { left: 300 } });
+  field.isConnected = false;
+
+  const spot = probe([twin], 'resolve', { id }, { scope: world }).result;
+  assert.equal(spot.ok, false, 'the mark alone does not make it the same element');
+  assert.equal(spot.errorKey, 'voice.pageGone');
+});
+
+test('an element that was taken out of the page is gone, even with its mark', () => {
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email' }, purposes: ['type'], connected: false });
+  const world = scope([field]);
+  const collected = probe([field], 'collect', { purpose: 'type' }, { scope: world }).result;
+  const spot = probe([field], 'resolve', { id: collected[0].id }, { scope: world }).result;
+
+  assert.equal(spot.ok, false);
+  assert.equal(spot.errorKey, 'voice.pageGone');
+});
+
+test('something that covers the element does not get the click', () => {
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email' }, purposes: ['type'] });
+  const overlay = element({ tag: 'DIV', text: 'overlay', purposes: [] });
+  const world = scope([field, overlay]);
+  const collected = probe([field, overlay], 'collect', { purpose: 'type' }, { scope: world }).result;
+  // The overlay lies over the field.
+  overlay.rect = { ...field.rect };
+  world.doc.elementFromPoint = () => overlay;
+
+  const spot = probe([field, overlay], 'resolve', { id: collected[0].id }, { scope: world }).result;
+  assert.equal(spot.ok, false);
+  assert.equal(spot.errorKey, 'voice.pageMoved');
+});
+
+test('the focus is checked against the element that was approved', () => {
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email' }, purposes: ['type'] });
+  const other = element({ tag: 'INPUT', type: 'password', attrs: { id: 'pw' }, purposes: ['type'] });
+  const world = scope([field, other], { active: other });
+  const collected = probe([field, other], 'collect', { purpose: 'type' }, { scope: world }).result;
+
+  const lost = probe([field, other], 'focus', { id: collected[0].id }, { scope: world }).result;
+  assert.equal(lost.ok, false, 'the focus went to another field');
+  assert.equal(lost.errorKey, 'voice.pageFocusLost');
+
+  // The body may have the focus: Enter is a page action there as well.
+  const bodyFocus = probe([field, other], 'focus', { id: null }, { scope: world }).result;
+  assert.equal(bodyFocus.ok, false, 'the focus is on another field, not on the body');
+
+  // Now the body has the focus.
+  world.doc.activeElement = world.doc.body;
+  const onBody = probe([field, other], 'focus', { id: null }, { scope: world }).result;
+  assert.equal(onBody.ok, true, 'the body may have the focus');
+});
+
+test('a secret field that has the focus is left alone', () => {
+  const secret = element({ tag: 'INPUT', type: 'password', attrs: { id: 'pw' }, purposes: ['type'] });
+  const world = scope([secret], { active: secret });
+  const focused = probe([secret], 'focused', null, { scope: world }).result;
+  assert.equal(focused.secret, true);
+  assert.ok(focused.id, 'the element that has the focus is named');
+
+  const check = probe([secret], 'focus', { id: focused.id }, { scope: world }).result;
+  assert.equal(check.ok, false);
+  assert.equal(check.errorKey, 'voice.pageSecret');
+});
+
+test('the page and the module agree on the secret fields of a page in Arabic', () => {
+  const names = ['كلمة المرور', 'رمز التحقق', 'رقم البطاقة', 'رمز الأمان', 'MM/YY', 'expiry',
+    'quantity', 'search', 'email', 'comment'];
+  for (const name of names) {
+    const field = element({ tag: 'INPUT', type: 'text', attrs: { id: name }, purposes: ['type'] });
+    const described = collect([field], 'type').length > 0;
+    const secret = isSecretField({ tag: 'INPUT', type: 'text', id: name, name, label: name });
+    assert.equal(described, !secret, `"${name}" is ${secret ? 'a secret' : 'ordinary'} in both`);
+  }
+});
+
+test('a card expiry and a one-time code are secrets, an ordinary field is not', () => {
+  const expiry = element({ tag: 'INPUT', type: 'text', attrs: { id: 'MM/YY', name: 'MM/YY' }, purposes: ['type'] });
+  const code = element({ tag: 'INPUT', type: 'text', attrs: { 'aria-label': 'رمز التحقق' }, purposes: ['type'] });
+  const quantity = element({ tag: 'INPUT', type: 'number', attrs: { id: 'quantity', name: 'quantity' }, purposes: ['type'] });
+  const search = element({ tag: 'INPUT', type: 'search', attrs: { id: 'search', name: 'search' }, purposes: ['type'] });
+
+  const result = collect([expiry, code, quantity, search], 'type');
+
+  assert.equal(result.length, 2, 'the expiry and the code are left out');
+  assert.ok(result.some((field) => /quantity/i.test(field.label)));
+  assert.ok(result.some((field) => /search/i.test(field.label)));
 });

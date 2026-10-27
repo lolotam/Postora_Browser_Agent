@@ -27,6 +27,9 @@ function abortError() {
  * `panelId` names this panel, so the claim it takes is its own.
  */
 export function createChromeBrowser({ sessionId = null, target = null, panelId = null } = {}) {
+  // The lease this panel holds on every tab it works on. The token names the
+  // lease, so a request that is late cannot act on a lease that was replaced.
+  const leases = new Map();
   return {
     async currentTab() {
       const pinned = typeof target === 'function' ? await target() : target;
@@ -128,12 +131,15 @@ export function createChromeBrowser({ sessionId = null, target = null, panelId =
 
     /**
      * Real input on the tab: a click, a key, text. The worker sends it through
-     * the debugger, so the page sees what a user's hand would do. A worker
-     * that cannot answer fails closed: nothing is done.
+     * the debugger, so the page sees what a user's hand would do. The element
+     * the user approved travels with it, so the worker can resolve it again
+     * after the queue and check that the focus is still where it was.
+     * A worker that cannot answer fails closed: nothing is done.
      */
-    async input(tabId, steps) {
+    async input(tabId, steps, { element = null, expected = null, rule = null } = {}) {
+      const token = leases.get(tabId) ?? null;
       try {
-        const res = await request('voice-input', { tabId, panelId, steps });
+        const res = await request('voice-input', { tabId, panelId, token, steps, element, expected, rule });
         return res ?? { ok: false, errorKey: 'voice.sayOwnerUnknown' };
       } catch {
         return { ok: false, errorKey: 'voice.sayOwnerUnknown' };
@@ -210,19 +216,24 @@ export function createChromeBrowser({ sessionId = null, target = null, panelId =
     /**
      * The claim on a tab: only one command at a time may hold it, and it is
      * held before the tab is read or changed. A claim that cannot be taken
-     * names the one that holds it.
+     * names the one that holds it. The token of the lease is kept, so the
+     * input that follows may only be sent under that lease.
      */
     async claim(tabId) {
       const res = await request('voice-claim', { tabId, panelId, sessionId });
+      if (res?.ok && res.token) leases.set(tabId, res.token);
       return res ?? { ok: false, owner: null };
     },
 
     /** Gives the claim back, so the tab is free for the next command. */
     async release(tabId) {
+      const token = leases.get(tabId) ?? null;
       try {
-        await request('voice-release', { tabId, panelId });
+        await request('voice-release', { tabId, panelId, token });
       } catch {
         /* the worker is gone: the claim is gone with it */
+      } finally {
+        leases.delete(tabId);
       }
     },
 
@@ -232,6 +243,8 @@ export function createChromeBrowser({ sessionId = null, target = null, panelId =
         await request('voice-release-all', { panelId });
       } catch {
         /* the worker is gone: the claims are gone with it */
+      } finally {
+        leases.clear();
       }
     },
   };

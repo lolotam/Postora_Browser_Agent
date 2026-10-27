@@ -242,13 +242,15 @@ export function createVoiceController({
     if (busy || !queue.length) return;
     busy = true;
     const abort = new AbortController();
-    running = abort;
     const { command, entry } = queue.shift();
+    running = { abort, entry };
     setState();
     try {
       await onCommand(command, { signal: abort.signal, entry });
     } catch (err) {
-      entry?.setErr?.(String(err?.message ?? err));
+      // A command that was cancelled says so; anything else is a failure the
+      // user has to see.
+      if (!abort.signal.aborted && err?.name !== 'AbortError') entry?.setErr?.(String(err?.message ?? err));
     } finally {
       busy = false;
       running = null;
@@ -275,7 +277,7 @@ export function createVoiceController({
     screenOpen = false;
     stopListening();
     dropQueued();
-    running?.abort();
+    cancelRunning();
     clearTimeout(speechTimer);
     speechTimer = null;
     speechToken += 1;
@@ -288,6 +290,19 @@ export function createVoiceController({
   /** The commands that were waiting never ran: the log says they were cancelled. */
   function dropQueued() {
     for (const item of queue.splice(0)) item.entry?.setErr?.(cancelledText());
+  }
+
+  /**
+   * The command that is running is stopped and marked: the screen is closed,
+   * so nothing of it may keep working, and the log has to say that it was
+   * cancelled instead of waiting for ever.
+   */
+  function cancelRunning() {
+    const run = running;
+    if (!run) return;
+    running = null;
+    run.abort.abort();
+    run.entry?.setErr?.(cancelledText());
   }
 
   function startListening() {
@@ -432,7 +447,7 @@ export function createVoiceController({
     speak,
     cancelCommand() {
       dropQueued();
-      running?.abort();
+      cancelRunning();
     },
   };
 }

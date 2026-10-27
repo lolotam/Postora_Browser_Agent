@@ -30,20 +30,34 @@ export const SECRET_WORDS = [
   'accountnumber', 'securitycode', 'verificationcode', 'verifycode', 'authcode',
   'securitypin', 'transactionpin', 'apikey', 'accesstoken', 'refreshtoken',
   'clientsecret',
+  // The expiry of a payment card is a secret of its own: a card that is
+  // nearly over is worth as much as the card.
+  'expiry', 'expiration',
+  // The same words in Arabic, as a field of a page in that language names
+  // them: the password, the code, the safety code and the card.
+  'المرور', 'السر', 'التحقق', 'الأمان', 'البطاقة',
 ];
 
 // The same words in the shape a name takes when it has no separators at all:
-// "cardNumber", "card_number" and "cardnumber" are one word to the eye.
+// "cardNumber", "card_number" and "cardnumber" are one word to the eye. The
+// Arabic names are written the same way, so "كلمة المرور" and "كلمةالمرور"
+// are one word too.
 export const SECRET_FRAGMENTS = [
   'password', 'passwd', 'passphrase', 'passcode',
   'onetimecode', 'verificationcode', 'verifycode', 'securitycode', 'authcode',
   'otpcode', 'mfacode', '2facode',
   'cardnumber', 'creditcard', 'debitcard', 'paymentcard', 'cardcvv', 'cardcvc',
   'cardsecuritycode', 'cardexpiry',
+  // The expiry of a card, on its own: "MM/YY", "Expiry", "Exp Date".
+  'mmyy', 'expirydate', 'expdate', 'expirationdate', 'validthru', 'validuntil',
   'accountnumber', 'routingnumber', 'socialsecurity',
   'securitypin', 'transactionpin', 'atmpin', 'pincode',
   'apikey', 'accesstoken', 'refreshtoken', 'clientsecret', 'authtoken',
   'sessiontoken', 'secretkey', 'sharedsecret',
+  // The Arabic names of the password, the one-time code, the safety code and
+  // the card number.
+  'كلمةالمرور', 'كلمةالسر', 'رمزالتحقق', 'رمزالتأكيد', 'رمزالأمان', 'رمزالامان',
+  'رقمالبطاقة', 'الرمزالسري', 'كودالتحقق', 'رمزالدخول',
 ];
 
 /** True for an autocomplete token that marks a field as holding a secret. */
@@ -52,16 +66,20 @@ export function isSecretToken(token) {
   return value.startsWith('cc-') || SECRET_TOKENS.includes(value);
 }
 
-/** The name of a field with its separators and its case removed. */
+/**
+ * The name of a field with its separators and its case removed. Letters of
+ * every language are kept: an Arabic name is not emptied by the cleaning, so
+ * it can still be matched.
+ */
 function compactName(text) {
-  return String(text ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return String(text ?? '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 /** The words of a name: "cardNumber" and "card_number" both give card, number. */
 function nameWords(text) {
   return String(text ?? '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .split(/[^A-Za-z0-9]+/)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
     .map((word) => word.toLowerCase());
 }

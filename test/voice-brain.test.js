@@ -5,6 +5,7 @@ import {
   candidateSpans,
   spokenToUrl,
   redactUrl,
+  RELATIVE_URL_MARKER,
   siteForUrl,
   describeElements,
   choiceConfidence,
@@ -14,9 +15,22 @@ import {
 } from '../src/voice/voice-brain.js';
 
 test('relative and protocol-relative candidate URLs cannot leak query credentials', () => {
-  assert.equal(redactUrl('/reset?token=PRIVATE#session=SECRET'), '/reset?token=*');
-  assert.equal(redactUrl('//alice:password@example.test/share?signature=PRIVATE#SECRET'), '//example.test/share?signature=*');
+  // A candidate without a scheme is only a link on the page: it is named as
+  // one, and nothing of it travels.
+  assert.equal(redactUrl('/reset?token=PRIVATE#session=SECRET'), RELATIVE_URL_MARKER);
+  assert.equal(redactUrl('//alice:password@example.test/share?signature=PRIVATE#SECRET'), RELATIVE_URL_MARKER);
   assert.equal(redactUrl('mailto:person@example.test?body=PRIVATE'), 'mailto:');
+});
+
+test('an observed address is sent as its origin and nothing else', () => {
+  // A path, a query, a fragment or a name may hold a reset link, an
+  // invitation or a search: none of them travels.
+  assert.equal(redactUrl('https://user:pass@example.test/path?token=abc#frag'), 'https://example.test');
+  assert.equal(redactUrl('https://example.test/path'), 'https://example.test');
+  assert.equal(redactUrl('https://example.test:8443/path'), 'https://example.test:8443');
+  assert.equal(redactUrl('http://example.test/'), 'http://example.test');
+  assert.equal(redactUrl(''), '');
+  assert.doesNotMatch(redactUrl('https://example.test/reset/abc123?key=PRIVATE'), /abc123|PRIVATE|reset|key/);
 });
 
 test('explicit confidence never overrides a malformed probability distribution', () => {
@@ -60,8 +74,8 @@ test('spokenToUrl: only the scheme and the host are written down', () => {
 });
 
 test('redactUrl: the secrets of an address are taken out of it', () => {
-  assert.equal(redactUrl('https://user:pass@example.test/path?token=abc#frag'), 'https://example.test/path?token=*');
-  assert.equal(redactUrl('https://example.test/path'), 'https://example.test/path');
+  assert.equal(redactUrl('https://user:pass@example.test/path?token=abc#frag'), 'https://example.test');
+  assert.equal(redactUrl('https://example.test/path'), 'https://example.test');
   assert.equal(redactUrl(''), '');
 });
 

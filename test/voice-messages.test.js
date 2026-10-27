@@ -17,6 +17,8 @@ const SOURCES = [
   'src/voice/voice-controller.js',
   'src/voice/voice-browser.js',
   'src/voice/voice-safety.js',
+  'src/voice/voice-page.js',
+  'src/background/service-worker.js',
   'src/sidepanel/panel.js',
 ];
 
@@ -28,7 +30,7 @@ const BUILT = {
 
 // The one word that is an error code and not a message: the browser names the
 // page it cannot work on with it.
-const CODES = new Set(['voice.pageRestricted']);
+const CODES = new Set(['voice.pageRestricted', 'voice.claimLost', 'voice.inputUnknown', 'voice.inputCancelled']);
 
 function literals() {
   const keys = new Set();

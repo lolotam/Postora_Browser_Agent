@@ -13,6 +13,12 @@
 // reach the model, and nothing is typed into it. Its own value is never used
 // as a label either, so a typed password cannot travel out with the page.
 //
+// The identity of an element is the element itself, not a mark on it. The
+// elements that were collected are kept in the extension's own world of the
+// frame, which the page cannot read and cannot write to. A page that copies
+// the mark onto another element, or replaces the element with a twin, has not
+// changed the identity of the element the user approved.
+//
 // The errors are message keys, not sentences: the panel translates them, so
 // the same page works in the panel's language.
 
@@ -22,9 +28,13 @@
  * `kind` says what to look at:
  *   - 'collect' with `{ purpose: 'click' | 'type' }` lists the elements of the
  *     page, with the label the model may read;
- *   - 'focused' says what has the focus;
+ *   - 'focused' says what has the focus, and names it;
  *   - 'locate' with `{ id }` (or without one, for the focused element) says
- *     where an element is and whether it still holds a secret.
+ *     where an element is and whether it still holds a secret;
+ *   - 'resolve' with `{ id, expected }` says whether the element the user
+ *     approved is still the same element, and where it is now;
+ *   - 'focus' with `{ id }` says whether the element the user approved still
+ *     has the focus, and whether it still holds a secret.
  */
 export function pageProbe(kind, arg, rule) {
   const tokens = rule?.tokens ?? [];
@@ -33,13 +43,14 @@ export function pageProbe(kind, arg, rule) {
 
   const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 
-  // The name of a field with its separators and its case removed.
-  const compact = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  // The name of a field with its separators and its case removed. The letters
+  // of every language are kept: an Arabic name is not emptied by the cleaning.
+  const compact = (s) => String(s ?? '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
   // The words of a name: "cardNumber" and "card_number" both give card, number.
   const nameWords = (s) => String(s ?? '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .split(/[^A-Za-z0-9]+/)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
     .map((word) => word.toLowerCase());
 
@@ -58,6 +69,33 @@ export function pageProbe(kind, arg, rule) {
     if (el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'password') return true;
     if (autocompleteTokens(el).some((token) => token.startsWith('cc-') || tokens.includes(token))) return true;
     return secretName(el.getAttribute('id'), el.getAttribute('name'), el.getAttribute('aria-label'), label);
+  };
+
+  // The elements this extension collected, kept in the extension's own world
+  // of the frame. The page cannot read them and cannot move them.
+  const REGISTRY = '__postoraVoiceElements';
+  const registry = () => {
+    let reg = globalThis[REGISTRY];
+    if (!reg || typeof reg.get !== 'function' || typeof reg.set !== 'function') {
+      reg = new Map();
+      globalThis[REGISTRY] = reg;
+    }
+    return reg;
+  };
+
+  // A mark that names one element for the extension. The page may copy it
+  // around, so it is never the identity of an element on its own.
+  const mark = (el, n) => {
+    let token = `v${n}`;
+    const crypto = globalThis.crypto;
+    if (crypto && typeof crypto.getRandomValues === 'function') {
+      const bits = crypto.getRandomValues(new Uint32Array(2));
+      token += `-${bits[0].toString(36)}${bits[1].toString(36)}`;
+    }
+    const reg = registry();
+    if (reg) reg.set(token, el);
+    el.setAttribute('data-voice-id', token);
+    return token;
   };
 
   // A field the user writes into: its content is the user's own text.
@@ -110,20 +148,34 @@ export function pageProbe(kind, arg, rule) {
     return role || el.tagName.toLowerCase();
   };
 
+  // The element the extension collected under this mark, or null. The mark on
+  // the page is never the identity: the element itself is, and only the
+  // extension's own world holds it.
+  const collected = (id) => {
+    const reg = registry();
+    if (!reg) return null;
+    return reg.get(id) ?? null;
+  };
+
   if (kind === 'focused') {
     const el = document.activeElement;
-    if (!el || el === document.body) return { editable: false, secret: false };
+    if (!el || el === document.body) return { editable: false, secret: false, id: null };
     const editable = isEditable(el) || (el.tagName === 'INPUT' &&
       !['checkbox', 'radio', 'submit', 'button', 'image', 'file', 'range', 'color', 'hidden'].includes(el.type));
     // The label is the safe one: the text of an editable field is never used,
     // but the name beside it still says what the field is.
     const label = labelOf(el);
-    return { editable, secret: isSecret(el, label) };
+    // The element that has the focus is named, so the worker may check later
+    // that the same element still has it.
+    let id = null;
+    if (registry() && el !== document.body) id = mark(el, 0);
+    return { editable, secret: isSecret(el, label), id, label };
   }
 
   if (kind === 'locate') {
-    const el = arg?.id ? document.querySelector(`[data-voice-id="${arg.id}"]`) : document.activeElement;
+    const el = arg?.id ? collected(arg.id) : document.activeElement;
     if (!el || el === document.body) return { ok: false, errorKey: 'voice.pageNoField' };
+    if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
     const label = labelOf(el);
     if (isSecret(el, label)) return { ok: false, errorKey: 'voice.pageSecret', secret: true };
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -136,6 +188,62 @@ export function pageProbe(kind, arg, rule) {
       rect: { left: r.left, top: r.top, width: r.width, height: r.height },
       secret: false,
     };
+  }
+
+  // The element the user approved: is it still the same element, is it still
+  // there, and is it still the one that is under the point that will be
+  // clicked?
+  if (kind === 'resolve') {
+    const el = arg?.id ? collected(arg.id) : null;
+    if (!el) return { ok: false, errorKey: 'voice.pageGone' };
+    if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
+    const label = labelOf(el);
+    if (isSecret(el, label)) return { ok: false, errorKey: 'voice.pageSecret', secret: true };
+    const expected = arg?.expected ?? null;
+    if (expected) {
+      const kindName = kindOf(el);
+      if (expected.kind && kindName !== expected.kind) return { ok: false, errorKey: 'voice.pageGone' };
+      if (expected.label && clean(expected.label) !== label) return { ok: false, errorKey: 'voice.pageGone' };
+    }
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const r = el.getBoundingClientRect();
+    if (!r || r.width < 1 || r.height < 1) return { ok: false, errorKey: 'voice.pageGone' };
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    // Something that covers the element would get the click instead of it.
+    const at = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : el;
+    if (at && at !== el && !(typeof el.contains === 'function' && el.contains(at))) {
+      return { ok: false, errorKey: 'voice.pageMoved' };
+    }
+    return {
+      ok: true,
+      x,
+      y,
+      label,
+      kind: kindOf(el),
+      secret: false,
+      focused: document.activeElement === el,
+    };
+  }
+
+  // The focus the user approved: the same element still has it, and it does
+  // not hold a secret.
+  if (kind === 'focus') {
+    const active = document.activeElement;
+    if (!arg?.id) {
+      // The body had the focus: it still may have it.
+      if (active && active !== document.body) return { ok: false, errorKey: 'voice.pageFocusLost' };
+      return { ok: true, body: true };
+    }
+    const el = collected(arg.id);
+    if (!el) return { ok: false, errorKey: 'voice.pageGone' };
+    if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
+    if (!active || (active !== el && !(typeof el.contains === 'function' && el.contains(active)))) {
+      return { ok: false, errorKey: 'voice.pageFocusLost' };
+    }
+    const label = labelOf(active);
+    if (isSecret(active, label)) return { ok: false, errorKey: 'voice.pageSecret', secret: true };
+    return { ok: true, body: false, label };
   }
 
   if (kind !== 'collect') return { ok: false, errorKey: 'voice.pageGone' };
@@ -152,6 +260,8 @@ export function pageProbe(kind, arg, rule) {
   // The marks of an earlier collection are cleared first, so a number always
   // names the element this collection found.
   document.querySelectorAll('[data-voice-id]').forEach((el) => el.removeAttribute('data-voice-id'));
+  const reg = registry();
+  if (reg) reg.clear();
   for (const el of document.querySelectorAll(SEL)) {
     const label = labelOf(el);
     if (isSecret(el, label)) continue; // a secret field is left out entirely
@@ -170,8 +280,7 @@ export function pageProbe(kind, arg, rule) {
       prev.inView = prev.inView || inView;
       continue;
     }
-    const id = String(++n);
-    el.setAttribute('data-voice-id', id);
+    const id = mark(el, ++n);
     const item = {
       id,
       kind: kindOf(el),
@@ -226,7 +335,7 @@ export function scrollPage(kind) {
     let best = null;
     for (const el of document.querySelectorAll('*')) {
       if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
-        if (!best || el.clientHeight * el.clientWidth > best.clientHeight * best.clientWidth) best = el;
+        if (!best || el.clientWidth * el.clientHeight > best.clientWidth * best.clientHeight) best = el;
       }
     }
     if (best) target = best;

@@ -1,5 +1,6 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as claims from '../src/sessions/voice-claims.js';
 
 // In-memory tabs and groups with the parts of chrome.tabs / chrome.tabGroups the controller uses.
 let tabs;
@@ -112,4 +113,44 @@ test('when the group is gone (all its tabs closed) the next claim makes a new on
   await browser.useTab(2);
   assert.equal(tabs[2].groupId, 101);
   assert.equal(groups[101].title, 'Mine');
+});
+
+test('the voice path may not take a tab while a session is grouping it', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const realGroup = chrome.tabs.group;
+  chrome.tabs.group = async (options) => { await gate; return realGroup(options); };
+  try {
+    const browser = new BrowserController({
+      title: 'Mine',
+      isTakenByOther: () => null,
+      reservation: claims.tabReservation({ sessionId: 'session-a', controllerId: 'session-a', owner: 'Mine' }),
+    });
+    const pending = browser.startOn();
+    // The grouping is under way: the tab is reserved, and the voice path may
+    // not take it while the session is taking it.
+    await new Promise((resolve) => setImmediate(resolve));
+    const voice = claims.claimTab(1, { panelId: 'panel-a', sessionId: 'session-b' });
+    assert.equal(voice.ok, false, 'the voice path is refused while the tab is being grouped');
+    assert.equal(voice.owner, 'Mine');
+
+    release();
+    await pending;
+
+    // The group is published now: the ordinary ownership holds the tab, and
+    // the reservation is over.
+    assert.equal(claims.claimOf(1), null, 'the reservation is given back once the group is published');
+    assert.equal(tabs[1].groupId, browser.groupId, 'the tab belongs to the group of the session');
+  } finally {
+    chrome.tabs.group = realGroup;
+  }
+});
+
+test('a tab that is reserved is not free for a regular task either', async () => {
+  const reserved = claims.reserveTab(9, { sessionId: 'session-a', controllerId: 'session-a', owner: 'Mine' });
+  assert.equal(reserved.ok, true);
+  assert.equal(claims.holderOf(9), 'Mine', 'the tab is busy');
+  assert.equal(claims.claimTab(9, { panelId: 'panel-a', sessionId: 'session-b' }).ok, false, 'the voice path may not take it');
+  assert.equal(claims.releaseReservation(9, reserved.token), true);
+  assert.equal(claims.holderOf(9), null, 'the tab is free again');
 });

@@ -43,8 +43,15 @@ export class SessionRunner {
     this.askNotices = []; // "needs your answer" notifications still shown
     this.settings = null;
     // A tab the voice path holds the claim on is not free either: the task
-    // waits for the voice command instead of working on the same page.
-    this.browser = new BrowserController({ title: meta.title || 'Postora', color, isTakenByOther: (tab) => voiceClaims.tabHolder(isTakenByOther, tab, { sessionId: this.id }) });
+    // waits for the voice command instead of working on the same page. The
+    // controller reserves a tab while it takes it into its group, so the voice
+    // path cannot take it in between.
+    this.browser = new BrowserController({
+      title: meta.title || 'Postora',
+      color,
+      isTakenByOther: (tab) => voiceClaims.tabHolder(isTakenByOther, tab, { sessionId: this.id }),
+      reservation: voiceClaims.tabReservation({ sessionId: this.id, controllerId: this.id, owner: meta.title || 'this session' }),
+    });
     this.browser.groupId = body.groupId ?? null;
   }
 

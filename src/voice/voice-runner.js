@@ -190,6 +190,18 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
     return { ok: true, spot };
   };
 
+  /** What the worker checks the element against, so a twin is not the same field. */
+  const identity = (element) => ({ kind: element?.kind ?? null, label: element?.label ?? null });
+
+  /** Closes a tab that was opened but never shown, so it does not stay behind. */
+  const discardTab = async (tabId) => {
+    try {
+      await browser.removeTab(tabId);
+    } catch {
+      // The tab is gone already.
+    }
+  };
+
   let outcome;
   try {
     outcome = await act();
@@ -236,22 +248,30 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         // session, and only then shown: a tab that appears out of nowhere
         // must not take the session with it.
         const created = await browser.openTab({ url: plan.url, windowId: target.windowId });
-        const held = await claim(created.id);
-        if (!held?.ok) return failed(t('voice.sayTabTaken', { owner: held?.owner || '' }));
-        const bound = await browser.bindSession(created.id);
-        if (!bound.ok) return failed(t('voice.sayOwnerUnknown'));
-        if (signal?.aborted) return cancelled;
-        await browser.activateTab(created.id);
-        if (plan.url) await browser.waitForLoad(created.id, { signal });
-        const tab = await browser.getTab(created.id);
-        return {
-          ok: true,
-          say: plan.url ? t('voice.sayOpenedNewTab', { what: plan.text || plan.url }) : t('voice.sayNewTab'),
-          action: plan.action,
-          confidence: plan.confidence,
-          ms,
-          target: { ...target, id: created.id, url: tab?.url || plan.url || '', title: tab?.title ?? '' },
-        };
+        let shown = false;
+        try {
+          const held = await claim(created.id);
+          if (!held?.ok) return failed(t('voice.sayTabTaken', { owner: held?.owner || '' }));
+          const bound = await browser.bindSession(created.id);
+          if (!bound.ok) return failed(t('voice.sayOwnerUnknown'));
+          if (signal?.aborted) return cancelled;
+          await browser.activateTab(created.id);
+          shown = true;
+          if (plan.url) await browser.waitForLoad(created.id, { signal });
+          const tab = await browser.getTab(created.id);
+          return {
+            ok: true,
+            say: plan.url ? t('voice.sayOpenedNewTab', { what: plan.text || plan.url }) : t('voice.sayNewTab'),
+            action: plan.action,
+            confidence: plan.confidence,
+            ms,
+            target: { ...target, id: created.id, url: tab?.url || plan.url || '', title: tab?.title ?? '' },
+          };
+        } finally {
+          // A tab that was not shown is an orphan: it is closed again. A tab
+          // that was shown belongs to the session and stays.
+          if (!shown) await discardTab(created.id);
+        }
       }
 
       case 'web_search': {
@@ -286,7 +306,13 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         if (!spot.ok) return failed(spot.say);
         if (signal?.aborted) return cancelled;
         // The click is real input, and the page sees what a user's hand does.
-        const res = await browser.input(target.id, [{ op: 'click', x: spot.spot.x, y: spot.spot.y }]);
+        // The element travels with it: the worker finds it again after the
+        // queue, so a page that replaced it does not get the click.
+        const res = await browser.input(target.id, [{ op: 'click', element: pick.element.id }], {
+          element: pick.element.id,
+          expected: identity(pick.element),
+          rule,
+        });
         if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayClickFailed'));
         await browser.waitForLoad(target.id, { signal });
         return { ok: true, say: t('voice.sayClicked', { label: pick.element.label }), action: plan.action, confidence: plan.confidence, ms };
@@ -316,15 +342,24 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         if (!spot.ok) return failed(spot.say);
         if (signal?.aborted) return cancelled;
         // The text is written with real keys: the field is clicked, what was
-        // in it is selected, and the text is inserted.
+        // in it is selected, and the text is inserted. The worker checks that
+        // the same field still has the focus before every one of them, so a
+        // page that moves the focus to a password box gets nothing.
         const steps = [
-          { op: 'click', x: spot.spot.x, y: spot.spot.y },
-          { op: 'key', key: 'Control+A' },
+          { op: 'click', element: pick.element.id },
+          { op: 'selectAll' },
           { op: 'text', text: plan.text ?? '' },
         ];
         if (submit) steps.push({ op: 'key', key: 'Enter' });
-        const res = await browser.input(target.id, steps);
+        const res = await browser.input(target.id, steps, {
+          element: pick.element.id,
+          expected: identity(pick.element),
+          rule,
+        });
         if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayTypeFailed'));
+        // A text that was sent may have started a page: the next step of the
+        // chain waits for it.
+        if (submit) await browser.waitForLoad(target.id, { signal });
         return { ok: true, say: t(submit ? 'voice.sayTypedSubmit' : 'voice.sayTyped'), action: plan.action, confidence: plan.confidence, ms };
       }
 
@@ -334,13 +369,19 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         if (!await confirm({ action: 'press_enter', label: t('voice.sayFocusedField') })) return cancelled;
         const free = await guard(target.id);
         if (!free.ok) return free;
-        // The field that has the focus is looked at again: it may have changed
-        // while the question was open, and a secret is left alone.
-        const spot = await locate(null);
-        if (!spot.ok) return failed(spot.say);
         if (signal?.aborted) return cancelled;
-        const res = await browser.input(target.id, [{ op: 'key', key: 'Enter' }]);
+        // The focus is looked at again in the worker, right before the key:
+        // the page may have moved it to a field that holds a secret. The body
+        // may have the focus too: Enter is a page action there as well.
+        const res = await browser.input(target.id, [{ op: 'key', key: 'Enter' }], {
+          element: focused?.id ?? null,
+          expected: null,
+          rule,
+        });
         if (!res?.ok) return failed(t(res?.errorKey ?? 'voice.sayEnterFailed'));
+        // The Enter may have started a page: the next step of the chain waits
+        // for it to settle.
+        await browser.waitForLoad(target.id, { signal });
         return { ok: true, say: t('voice.sayPressedEnter'), action: plan.action, confidence: plan.confidence, ms };
       }
 

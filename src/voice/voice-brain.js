@@ -119,9 +119,18 @@ export function candidateSpans(text, { maxLen = 14, max = 160 } = {}) {
 }
 
 /**
- * A URL without the parts that carry a secret: the user information, the
- * values of the query and the fragment. The model never sees them; the
- * browser still navigates to the full address.
+ * What an address that was observed looks like when it is sent to the model:
+ * the origin and nothing else. A path, a query, a fragment or a user name may
+ * carry a reset link, an invitation or a search the user did not mean to
+ * share, so none of them travels. A candidate that has no scheme at all is
+ * only a link on the page: it is named as one and nothing more.
+ */
+export const RELATIVE_URL_MARKER = '(relative link)';
+
+/**
+ * The address of a tab or of a link on the page, without anything that may
+ * hold a secret: the scheme and the host, and nothing else. The browser still
+ * navigates to the full address; only the model sees this.
  */
 export function redactUrl(url) {
   const value = String(url ?? '').trim();
@@ -140,15 +149,10 @@ export function redactUrl(url) {
     }
   }
   if (!/^https?:$/.test(parsed.protocol)) return parsed.protocol;
-  parsed.username = '';
-  parsed.password = '';
-  for (const key of [...parsed.searchParams.keys()]) parsed.searchParams.set(key, '*');
-  parsed.hash = '';
-  if (relative) {
-    const path = `${parsed.pathname}${parsed.search}`;
-    return value.startsWith('//') ? `//${parsed.host}${path}` : path;
-  }
-  return parsed.toString();
+  if (relative) return RELATIVE_URL_MARKER;
+  // The origin holds the scheme, the host and the port, and nothing else: no
+  // user name, no path, no query and no fragment.
+  return parsed.origin;
 }
 
 export function spokenToUrl(span) {

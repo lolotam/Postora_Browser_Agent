@@ -22,7 +22,9 @@ import { createChromeBrowser } from '../voice/voice-browser.js';
 
 const $ = (id) => document.getElementById(id);
 
-const ui = { thread: null, pending: [], running: false, question: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
+// The question that waits for an answer, and its number: a question that
+// arrives while another one is being answered is a different question.
+const ui = { thread: null, pending: [], running: false, question: null, questionId: 0, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -599,6 +601,7 @@ function renderPending() {
 
 function setQuestion(question) {
   ui.question = question;
+  ui.questionId += 1;
   add('msg ask', question);
   showPendingQuestion(question);
   $('hint').textContent = t('status.waiting');
@@ -620,6 +623,21 @@ function showPendingQuestion(question) {
   }
   $('voicePendingText').textContent = question;
   box.hidden = false;
+}
+
+/**
+ * The question that was answered is gone: the card is hidden, the panel waits
+ * for the task again and the send button goes away with it. A question that
+ * arrived while the answer was on its way is a different one: it keeps its
+ * card, its hint and its button.
+ */
+function clearAnsweredQuestion(questionId) {
+  if (ui.questionId !== questionId) return false;
+  ui.question = null;
+  showPendingQuestion(null);
+  $('hint').textContent = t('status.running');
+  $('sendBtn').hidden = true;
+  return true;
 }
 
 function setRunning(running) {
@@ -712,18 +730,23 @@ function submitComposer(text, { tabId, signal, expectedSessionId } = {}) {
   const message = { text: packed.task, display: packed.display, images: packed.images };
   const options = { signal, expectedSessionId };
   let sent;
+  // The question that is answered is remembered by its number: it is only
+  // cleared when the answer really went out, and only when it is still the
+  // question that waits.
+  const questionId = ui.questionId;
+  const answering = Boolean(ui.question);
   if (ui.question) {
     sent = send({ type: 'answer', ...message }, options);
-    ui.question = null;
-    $('hint').textContent = t('status.running');
-    $('sendBtn').hidden = true;
   } else if (ui.running) {
     sent = send({ type: 'steer', ...message, mode: settings?.steerMode ?? 'next-step' }, options);
   } else {
     // The tab the task works on: the one the voice command was meant for.
     sent = send({ type: 'run', ...message, ...(tabId ? { tabId } : {}) }, options);
   }
-  return sent.then(() => true);
+  return sent.then(() => {
+    if (answering) clearAnsweredQuestion(questionId);
+    return true;
+  });
 }
 
 /**
@@ -739,18 +762,23 @@ function sendVoiceMessage(text, { tabId, signal, expectedSessionId } = {}) {
   const message = { text: value, display: value, images: [] };
   const options = { signal, expectedSessionId };
   let sent;
+  // The question that is answered is remembered by its number: it is only
+  // cleared when the answer really went out, and only when it is still the
+  // question that waits.
+  const questionId = ui.questionId;
+  const answering = Boolean(ui.question);
   if (ui.question) {
     sent = send({ type: 'answer', ...message }, options);
-    ui.question = null;
-    $('hint').textContent = t('status.running');
-    $('sendBtn').hidden = true;
   } else if (ui.running) {
     sent = send({ type: 'steer', ...message, mode: settings?.steerMode ?? 'next-step' }, options);
   } else {
     // The tab the task works on: the one the voice command was meant for.
     sent = send({ type: 'run', ...message, ...(tabId ? { tabId } : {}) }, options);
   }
-  return sent.then(() => true);
+  return sent.then(() => {
+    if (answering) clearAnsweredQuestion(questionId);
+    return true;
+  });
 }
 
 $('composer').addEventListener('submit', (e) => {
@@ -1188,6 +1216,13 @@ async function runVoiceCommand(text, { signal, entry }) {
           if (voiceTask === task) finishVoiceTask();
         }
       }, (err) => {
+        // A command that was cancelled says so; the screen is closed and
+        // nothing of it may be written into it. The task is finished anyway,
+        // or the command would keep the screen busy for ever.
+        if (signal.aborted || err?.name === 'AbortError') {
+          if (voiceTask === task) finishVoiceTask();
+          return;
+        }
         // The task never left the panel: the command must not stay open.
         entry.setErr(String(err?.message ?? err));
         if (voiceTask === task) finishVoiceTask();
@@ -1229,6 +1264,9 @@ async function runFastVoiceCommand(text, { signal, entry }) {
       t,
     });
   } catch (err) {
+    // A command that was cancelled is not a failure of the page: the screen
+    // may be closed already, and nothing of it may be written into it.
+    if (signal.aborted || err?.name === 'AbortError') return;
     entry.setErr(String(err?.message ?? err));
     return;
   }

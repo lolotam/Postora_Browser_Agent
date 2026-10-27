@@ -83,13 +83,14 @@ test('a page that finished loading ends the wait', async () => {
 test('the claim is taken and given back through the worker', async () => {
   const chrome = chromeMock();
   try {
-    chrome.results['voice-claim'] = { ok: true };
+    chrome.results['voice-claim'] = { ok: true, token: 'lease-1' };
     const browser = createChromeBrowser({ sessionId: 'session-a', panelId: 'panel-a' });
-    assert.deepEqual(await browser.claim(3), { ok: true });
+    assert.deepEqual(await browser.claim(3), { ok: true, token: 'lease-1' });
     assert.deepEqual(chrome.sent.at(-1), { type: 'voice-claim', tabId: 3, panelId: 'panel-a', sessionId: 'session-a' });
 
     await browser.release(3);
     assert.equal(chrome.sent.at(-1).type, 'voice-release');
+    assert.equal(chrome.sent.at(-1).token, 'lease-1', 'the release names the lease it gives back');
     await browser.releaseAll();
     assert.equal(chrome.sent.at(-1).type, 'voice-release-all');
   } finally {
@@ -123,14 +124,25 @@ test('a worker that cannot answer the claim fails closed', async () => {
 test('real input goes through the worker, and a worker that cannot answer does nothing', async () => {
   const chrome = chromeMock();
   try {
+    chrome.results['voice-claim'] = { ok: true, token: 'lease-1' };
     chrome.results['voice-input'] = { ok: true };
     const browser = createChromeBrowser({ sessionId: 'session-a', panelId: 'panel-a' });
-    const res = await browser.input(3, [{ op: 'click', x: 4, y: 5 }]);
+    await browser.claim(3);
+    const res = await browser.input(3, [{ op: 'click', element: 'v1' }], { element: 'v1', expected: { kind: 'button' }, rule: { tokens: [], words: [], fragments: [] } });
     assert.equal(res.ok, true);
-    assert.deepEqual(chrome.sent.at(-1), { type: 'voice-input', tabId: 3, panelId: 'panel-a', steps: [{ op: 'click', x: 4, y: 5 }] });
+    assert.deepEqual(chrome.sent.at(-1), {
+      type: 'voice-input',
+      tabId: 3,
+      panelId: 'panel-a',
+      token: 'lease-1',
+      steps: [{ op: 'click', element: 'v1' }],
+      element: 'v1',
+      expected: { kind: 'button' },
+      rule: { tokens: [], words: [], fragments: [] },
+    }, 'the approved element, its identity and the secret rule travel with the input');
 
     chrome.results['voice-input'] = new Error('the worker is gone');
-    const failed = await browser.input(3, [{ op: 'click', x: 4, y: 5 }]);
+    const failed = await browser.input(3, [{ op: 'click', element: 'v1' }]);
     assert.equal(failed.ok, false, 'nothing is done when the worker cannot answer');
     assert.equal(failed.errorKey, 'voice.sayOwnerUnknown');
   } finally {

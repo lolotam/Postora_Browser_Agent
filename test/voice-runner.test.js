@@ -91,8 +91,8 @@ function mockBrowser(overrides = {}) {
       if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
       return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
     },
-    async input(tabId, steps) { calls.push(['input', tabId, steps]); return { ok: true }; },
-    async waitForLoad(tabId) { calls.push(['waitForLoad', tabId]); },
+    async input(tabId, steps, context = {}) { calls.push(['input', tabId, steps, context]); order.push('input'); return { ok: true }; },
+    async waitForLoad(tabId) { calls.push(['waitForLoad', tabId]); order.push(`waitForLoad:${tabId}`); },
     async ownerOf() { return null; },
     async claim(tabId) { claims.push(tabId); order.push(`claim:${tabId}`); return { ok: true }; },
     async release(tabId) { released.push(tabId); },
@@ -182,7 +182,8 @@ test('a click that navigates refreshes the pinned context before a chained searc
   });
   await runFastCommand({ ask, browser, command: 'click YouTube and search cats', approve: approves(true), t });
   assert.ok(browser.calls.some(([kind, id, changes]) => kind === 'updateTab' && id === 1 && changes.url.includes('youtube.com/results')));
-  assert.equal(ask.seen.filter((req) => req.questions.action).at(-1).state.current_tab.url, 'https://www.youtube.com/');
+  assert.equal(ask.seen.filter((req) => req.questions.action).at(-1).state.current_tab.url, 'https://www.youtube.com',
+    'the model sees the origin of the address, never its path');
 });
 
 test('an explicitly unavailable pinned target never falls back to another active tab', async () => {
@@ -222,7 +223,9 @@ test('a click runs on the tab the command started on once the user says yes', as
   assert.equal(result.ok, true);
   const click = browser.calls.find((call) => call[0] === 'input');
   assert.equal(click[1], 1, 'the click lands on the tab the command started on');
-  assert.deepEqual(click[2], [{ op: 'click', x: 12, y: 24 }], 'the click is real input at the place of the element');
+  assert.deepEqual(click[2], [{ op: 'click', element: '1' }], 'the click names the element that was approved');
+  assert.equal(click[3].element, '1', 'the element travels with the input');
+  assert.equal(click[3].expected.kind, 'button', 'the identity of the element travels with it');
 });
 
 test('a command that is cancelled while it waits for the user does not click', async () => {
@@ -474,20 +477,14 @@ test('Enter is refused in a field that holds a secret, and a refusal by the page
   assert.equal(refused.say, 'voice.saySecretField');
   assert.equal(secretBrowser.calls.some((call) => call[0] === 'input'), false);
 
-  // The target is looked at again right before the key is pressed: a field
-  // that turned secret in the meantime is left alone, and the page says why.
+  // The worker refuses the key: the focus went somewhere else while the
+  // question was open, and the refusal of the page is reported.
   const pageRefuses = mockBrowser({
-    inject: async (tabId, func, args = []) => {
-      pageRefuses.calls.push(['inject', tabId, func.name, args]);
-      if (func.name === 'pageProbe' && args[0] === 'locate') return { ok: false, errorKey: 'voice.pageSecret' };
-      if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
-      return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
-    },
+    input: async () => ({ ok: false, errorKey: 'voice.pageFocusLost' }),
   });
   const again = await runFastCommand({ ask, browser: pageRefuses, command: 'press enter', approve: approves(true), secretTokens: ['password'], t });
   assert.equal(again.ok, false);
-  assert.equal(again.say, 'voice.pageSecret', 'the refusal of the page is reported');
-  assert.equal(pageRefuses.calls.some((call) => call[0] === 'input'), false);
+  assert.equal(again.say, 'voice.pageFocusLost', 'the refusal of the worker is reported');
 });
 
 test('the approval says what is written and whether it is sent', () => {
@@ -739,6 +736,128 @@ test('a tab that is opened is claimed and bound before it is shown', async () =>
   assert.ok(shown > 0, 'the tab was shown');
   assert.ok(browser.order.indexOf('claim:3') < shown, 'the tab was claimed before it was shown');
   assert.ok(browser.order.indexOf('bindSession:3') < shown, 'the tab was bound before it was shown');
+});
+
+test('a tab that was opened but never shown is closed again', async () => {
+  const browser = mockBrowser({
+    claim: async (id) => (id === 3 ? { ok: false, owner: 'voice control' } : { ok: true }),
+  });
+  const ask = scriptedAsk({ action: choice('new_tab'), argument: firstSpan, site: choice('none') });
+
+  const result = await runFastCommand({ ask, browser, command: 'open a new tab', approve: approves(true), secretTokens: ['password'], t });
+
+  assert.equal(result.ok, false);
+  assert.equal(browser.calls.some((call) => call[0] === 'activateTab'), false, 'the tab was never shown');
+  const closed = browser.calls.find((call) => call[0] === 'removeTab');
+  assert.ok(closed, 'the tab that was opened is closed again');
+  assert.equal(closed[1], 3, 'only the tab that was opened is closed');
+});
+
+test('a tab that was opened is closed when the binding fails', async () => {
+  const browser = mockBrowser({ bindSession: async () => ({ ok: false }) });
+  const ask = scriptedAsk({ action: choice('new_tab'), argument: firstSpan, site: choice('none') });
+
+  const result = await runFastCommand({ ask, browser, command: 'open a new tab', approve: approves(true), secretTokens: ['password'], t });
+
+  assert.equal(result.ok, false);
+  assert.ok(browser.calls.some((call) => call[0] === 'removeTab' && call[1] === 3), 'the tab that was opened is closed again');
+  assert.equal(browser.calls.some((call) => call[0] === 'activateTab'), false, 'the tab was never shown');
+});
+
+test('a tab that was opened is closed when the command is cancelled', async () => {
+  const controller = new AbortController();
+  const browser = mockBrowser({
+    bindSession: async (id) => { browser.calls.push(['bindSession', id]); controller.abort(); return { ok: true }; },
+  });
+  const ask = scriptedAsk({ action: choice('new_tab'), argument: firstSpan, site: choice('none') });
+
+  const result = await runFastCommand({ ask, browser, command: 'open a new tab', approve: approves(true), signal: controller.signal, secretTokens: ['password'], t });
+
+  assert.equal(result.cancelled, true);
+  assert.ok(browser.calls.some((call) => call[0] === 'removeTab' && call[1] === 3), 'the tab that was opened is closed again');
+  assert.equal(browser.calls.some((call) => call[0] === 'activateTab'), false, 'the tab was never shown');
+});
+
+test('a tab that was opened and shown is not closed', async () => {
+  const browser = mockBrowser();
+  const ask = scriptedAsk({ action: choice('new_tab'), argument: firstSpan, site: choice('none') });
+
+  await runFastCommand({ ask, browser, command: 'open a new tab', approve: approves(true), secretTokens: ['password'], t });
+
+  assert.equal(browser.calls.some((call) => call[0] === 'activateTab'), true, 'the tab was shown');
+  assert.equal(browser.calls.some((call) => call[0] === 'removeTab'), false, 'a tab that was shown belongs to the session');
+});
+
+test('a text that was sent waits for the page before the next step of the chain', async () => {
+  const browser = mockBrowser();
+  const ask = scriptedAsk({
+    split_0: { type: 'noul', noul: 0.9 },
+    action: (question, state) => (state.spoken_command.startsWith('type') ? choice('type_text') : choice('scroll_down')),
+    argument: firstSpan,
+    site: choice('none'),
+    element: choice('e0'),
+    submit: { type: 'noul', noul: 0.9 },
+  });
+
+  await runFastCommand({ ask, browser, command: 'type hello and scroll down', approve: approves(true), secretTokens: ['password'], t });
+
+  const typed = browser.order.indexOf('input');
+  const settled = browser.order.indexOf('waitForLoad:1');
+  const lastRead = browser.order.lastIndexOf('inject');
+  assert.ok(typed >= 0 && settled > typed, 'the page is waited for after the text was sent');
+  assert.ok(lastRead > settled, 'the next step reads the page after it settled');
+});
+
+test('Enter waits for the page before the next step of the chain', async () => {
+  const browser = mockBrowser();
+  const ask = scriptedAsk({
+    split_0: { type: 'noul', noul: 0.9 },
+    action: (question, state) => (state.spoken_command.startsWith('press') ? choice('press_enter') : choice('scroll_down')),
+    argument: firstSpan,
+    site: choice('none'),
+  });
+
+  await runFastCommand({ ask, browser, command: 'press enter and scroll down', approve: approves(true), secretTokens: ['password'], t });
+
+  const pressed = browser.order.indexOf('input');
+  const settled = browser.order.indexOf('waitForLoad:1');
+  const lastRead = browser.order.lastIndexOf('inject');
+  assert.ok(pressed >= 0 && settled > pressed, 'the page is waited for after the key');
+  assert.ok(lastRead > settled, 'the next step reads the page after it settled');
+});
+
+test('the text is written with the platform chord, not with a hard-coded one', async () => {
+  const browser = mockBrowser();
+  const ask = scriptedAsk({ action: choice('type_text'), argument: firstSpan, element: choice('e0'), submit: { type: 'noul', noul: 0.2 } });
+
+  await runFastCommand({ ask, browser, command: 'type hello', approve: approves(true), secretTokens: ['password'], t });
+
+  const input = browser.calls.find((call) => call[0] === 'input');
+  assert.deepEqual(input[2].slice(0, 2), [
+    { op: 'click', element: '2' },
+    { op: 'selectAll' },
+  ], 'the runner asks for the platform chord and does not decide it');
+  assert.equal(input[2][2].op, 'text');
+  assert.doesNotMatch(JSON.stringify(input[2]), /Control\+A|Meta\+A/);
+});
+
+test('Enter is allowed when the body has the focus', async () => {
+  const browser = mockBrowser({
+    inject: async (tabId, func, args = []) => {
+      browser.calls.push(['inject', tabId, func.name, args]);
+      if (func.name === 'pageProbe' && args[0] === 'focused') return { editable: false, secret: false, id: null };
+      if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
+      return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
+    },
+  });
+  const ask = scriptedAsk({ action: choice('press_enter'), argument: firstSpan });
+
+  const result = await runFastCommand({ ask, browser, command: 'press enter', approve: approves(true), secretTokens: ['password'], t });
+
+  assert.equal(result.ok, true);
+  const input = browser.calls.find((call) => call[0] === 'input');
+  assert.equal(input[3].element, null, 'the body is the approved focus');
+  assert.deepEqual(input[2], [{ op: 'key', key: 'Enter' }]);
 });
 
 test('closing the tab the command is on ends the chain, and no other tab is taken up', async () => {
