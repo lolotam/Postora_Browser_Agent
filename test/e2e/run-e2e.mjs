@@ -785,10 +785,16 @@ async function runVoiceScenario(context, extensionId) {
     const drawn = await panel.evaluate(() => {
       const svg = document.querySelector('#voiceMicBtn svg');
       const box = svg.getBoundingClientRect();
+      const circle = document.getElementById('voiceMicBtn').getBoundingClientRect();
       const empty = getComputedStyle(document.getElementById('voiceLog'), '::before').content;
-      return { w: Math.round(box.width), h: Math.round(box.height), empty };
+      return {
+        w: Math.round(box.width), h: Math.round(box.height), empty,
+        dx: Math.abs(box.x + box.width / 2 - circle.x - circle.width / 2),
+        dy: Math.abs(box.y + box.height / 2 - circle.y - circle.height / 2),
+      };
     });
-    if (drawn.w < 30 || drawn.h < 30) failures.push(`the microphone icon is ${drawn.w}x${drawn.h}`);
+    if (drawn.w < 48 || drawn.h < 48) failures.push(`the microphone icon is ${drawn.w}x${drawn.h}`);
+    if (drawn.dx > 0.5 || drawn.dy > 0.5) failures.push(`the microphone icon is off-center (${drawn.dx}, ${drawn.dy})`);
     if (!drawn.empty || drawn.empty === 'none' || !drawn.empty.includes('No activity')) failures.push(`the empty log says nothing: ${drawn.empty}`);
 
     // A narrow panel and reduced motion are both allowed.
