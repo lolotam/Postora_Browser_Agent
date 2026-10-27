@@ -89,6 +89,20 @@
         </ul>
       </div>
     </section>
+    <!-- The access mode of this chat: one selection, the worker's own answer, and
+         the risk the answer carries. The panel never decides the mode itself. -->
+    <div class="access-bar">
+      <div class="access-row">
+        <label class="access-label" for="accessSelect" data-i18n="access.label"></label>
+        <select id="accessSelect" class="access-select" aria-describedby="accessState">
+          <option value="ask-first" data-i18n="access.askFirst"></option>
+          <option value="full-access" data-i18n="access.full"></option>
+        </select>
+        <span class="access-state" id="accessState"></span>
+      </div>
+      <p class="access-risk" id="accessRisk" hidden></p>
+      <p class="access-error" id="accessError" role="status" hidden></p>
+    </div>
     <form id="composer">
       <ul id="pending" class="pending" hidden></ul>
       <ul id="fileChips" class="file-chips" hidden></ul>
@@ -123,6 +137,10 @@
       </div>
       <span class="pill voice-pill" id="voiceState" data-i18n="voice.stateIdle"></span>
     </header>
+
+    <!-- The voice screen shows the mode the worker confirmed for this chat: the
+         same one the chat shows, not a preference of its own. -->
+    <div class="voice-access" id="voiceAccess" role="status"></div>
 
     <div class="voice-hero">
       <button type="button" id="voiceMicBtn" class="voice-mic-btn" aria-label="Microphone" data-i18n-title="composer.voice">
@@ -500,6 +518,32 @@
       <button type="button" class="primary" id="saveBtn" data-i18n="common.save"></button>
     </div>
   </section>
+
+  <!-- The warning the user reads before Full access is asked for. It is a
+       native dialog: the browser gives it the focus, the Escape key and the
+       focus it hands back. Nothing is sent until the box is ticked. -->
+  <dialog id="accessWarning" class="access-warning" aria-labelledby="accessWarningTitle" aria-describedby="accessWarningDesc">
+    <h2 id="accessWarningTitle" data-i18n="access.warning.title"></h2>
+    <p id="accessWarningDesc" class="access-warning-desc" data-i18n="access.warning.desc"></p>
+    <ul class="access-warning-list">
+      <li data-i18n="access.warning.forms"></li>
+      <li data-i18n="access.warning.data"></li>
+      <li data-i18n="access.warning.terminal"></li>
+      <li data-i18n="access.warning.fields"></li>
+      <li data-i18n="access.warning.providers"></li>
+      <li data-i18n="access.warning.history"></li>
+      <li data-i18n="access.warning.limits"></li>
+      <li data-i18n="access.warning.stops"></li>
+    </ul>
+    <label class="check access-ack">
+      <input type="checkbox" id="accessAcknowledge" />
+      <span data-i18n="access.warning.acknowledge"></span>
+    </label>
+    <div class="row end access-warning-actions">
+      <button type="button" class="ghost" id="accessCancel" data-i18n="access.warning.cancel"></button>
+      <button type="button" class="primary" id="accessConfirm" disabled data-i18n="access.warning.confirm"></button>
+    </div>
+  </dialog>
 
   <script type="module" src="panel.js"></script>
 </body>

@@ -249,6 +249,41 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .composer-box textarea:placeholder-shown { unicode-bidi: normal; direction: inherit; }
 .hint { display: block; min-height: 16px; margin-top: 4px; padding-inline: 4px; font-size: 11.5px; color: var(--muted); }
 
+/* ---------- access mode ---------- */
+/* One selection, the answer the worker gave, and the risk that answer carries.
+   The risk is a sentence, not only a colour: the panel says what Full access
+   allows, and it says it while the mode is on. */
+.access-bar { padding: 0 10px 4px; }
+.access-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.access-label { font-size: 11.5px; color: var(--text-2); flex: none; }
+.access-select {
+  flex: none; max-width: 60%; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control); background: var(--surface); padding: 3px 6px; font-size: 12px;
+}
+.access-state { font-size: 11.5px; color: var(--muted); flex: 1 1 130px; min-width: 0; }
+.access-risk {
+  margin: 6px 0 0; padding: 5px 8px; font-size: 11.5px; line-height: 1.45;
+  color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn);
+  border-radius: var(--radius-control);
+}
+.access-error { margin: 6px 0 0; font-size: 11.5px; color: var(--danger); }
+
+/* The warning before Full access is asked for. A native dialog: the browser
+   gives it the focus, the Escape key, and the focus it hands back. */
+.access-warning {
+  border: 1px solid var(--border-strong); border-radius: var(--radius-card);
+  background: var(--bg); color: var(--text); padding: 14px;
+  width: min(420px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto;
+}
+.access-warning::backdrop { background: rgba(0, 0, 0, .32); }
+.access-warning h2 { margin: 0 0 6px; font-size: 14px; }
+.access-warning-desc { margin: 0 0 8px; font-size: 12px; color: var(--text-2); }
+.access-warning-list { margin: 0 0 10px; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+.access-ack { margin-bottom: 12px; }
+.access-warning-actions { gap: 8px; }
+/* The warning is not read yet, so the confirmation is not offered: it says so. */
+.access-warning-actions button:disabled { opacity: .45; cursor: not-allowed; }
+
 /* ---------- settings ---------- */
 #settingsView { flex: 1; overflow-y: auto; padding: 12px 12px 0; }
 #settingsView h2 { margin: 2px 0 12px; font-size: 15px; }
@@ -380,6 +415,23 @@ html[dir="rtl"] .icon-back {
   background: var(--success-bg);
   color: var(--success);
   border-color: var(--success);
+}
+/* The access mode on the voice screen: the mode the worker confirmed for this
+   chat, in the same words the chat uses. */
+.voice-access {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+.voice-access.risk {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn);
 }
 
 .voice-hero {

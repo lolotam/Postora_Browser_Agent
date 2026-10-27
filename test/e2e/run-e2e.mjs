@@ -17,6 +17,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { runAccessUiScenario } from './access-ui.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -1497,6 +1498,7 @@ async function main() {
       ...(await runVoiceSwitchScenario(context, extensionId)),
       ...(await runVoiceWindowScenario(context, extensionId)),
       ...(await runVoiceReplayScenario(context, extensionId)),
+      ...(await runAccessUiScenario(context, extensionId)),
       ...(await runScenario(context, extensionId, {
         name: 'llm',
         task: 'Fill the form and report the result',

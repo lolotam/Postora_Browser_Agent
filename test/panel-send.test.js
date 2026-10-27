@@ -66,6 +66,54 @@ test('a voice submission cannot cross into a newly selected session', async () =
   assert.deepEqual(posted, []);
 });
 
+const requestAccessSource = source.slice(source.indexOf('async function requestAccess('), source.indexOf('\n/** The reason the last mode request'));
+
+test('an acknowledged mode request is bound to its live connection while session picking waits', async () => {
+  let done;
+  const picking = new Promise((resolve) => { done = resolve; });
+  const posted = [];
+  const app = panel({ picking, postMessage: (message) => posted.push(message) });
+  app.renderAccessError = () => {};
+  vm.runInContext(requestAccessSource, app);
+  const message = { type: 'access-mode', sessionId: 'original', mode: 'full-access', acknowledged: true, expectedRevision: 1 };
+  const pending = app.requestAccess(message);
+  // The restarted worker can have the same numeric revision: only the old
+  // connection read that warning, so the request must not cross to this one.
+  app.port = { postMessage: (value) => posted.push(value) };
+  app.picking = null;
+  done();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.deepEqual(posted, []);
+});
+
+test('consent does not reconnect and resend after its connection disappears', async () => {
+  let done;
+  const picking = new Promise((resolve) => { done = resolve; });
+  const posted = [];
+  const app = panel({ picking, postMessage: (message) => posted.push(message) });
+  let reconnects = 0;
+  app.connect = () => { reconnects += 1; };
+  app.renderAccessError = () => {};
+  vm.runInContext(requestAccessSource, app);
+  const pending = app.requestAccess({ type: 'access-mode', sessionId: 'original', mode: 'full-access', acknowledged: true, expectedRevision: 1 });
+  app.port = null;
+  app.picking = null;
+  done();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(reconnects, 0);
+  assert.deepEqual(posted, []);
+});
+
+test('consent sends normally on the connection that confirmed the warning state', async () => {
+  const posted = [];
+  const app = panel({ postMessage: (message) => posted.push(message) });
+  app.renderAccessError = () => {};
+  vm.runInContext(requestAccessSource, app);
+  const message = { type: 'access-mode', sessionId: 'original', mode: 'full-access', acknowledged: true, expectedRevision: 1 };
+  assert.equal(await app.requestAccess(message), true);
+  assert.deepEqual(posted, [message]);
+});
+
 /** The panel's own voice command, with the port and the settings mocked. */
 function voicePanel({ question = null, engine = 'postora', running = false } = {}) {
   const posted = [];
@@ -240,6 +288,8 @@ test('the port carries the panel, so the worker can give its tabs back', () => {
     releaseVoiceClaims() {},
     refreshAuthStates() {},
     onEvent() {},
+    // The access control of the chat: a new connection knows nothing of it.
+    accessUi: { reset() {}, reconnect() {} },
     chrome: { runtime: { connect: ({ name }) => { names.push(name); return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} } }; } } },
   });
   vm.runInContext(connectSource, context);
