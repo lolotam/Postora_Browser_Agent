@@ -21,6 +21,13 @@
 // that asked for it, and to the moment it was issued: a mode change, a stop,
 // the end of the run, or an aborted command withdraws it.
 //
+// The worker also wants to know how a question ended, so it can show the user
+// what is still waiting. That is what `onRequestSettled` is for: it is told
+// once about every question that was really asked and then settled, with the
+// id, the session, the revision, whether it was allowed and why it ended —
+// and nothing else. It never carries the arguments, the target, the value or
+// the permit, and it cannot change anything: it is told, it does not decide.
+//
 // The metadata of an operation is plain JSON — objects, arrays, strings,
 // numbers, booleans and null. Anything else is refused rather than copied in
 // a way two different values could look alike.
@@ -246,17 +253,26 @@ export class AccessAuthority {
   #onRequest;
 
   /**
+   * Told about every question that settles.
+   *
+   * It only watches: it never grants anything, and a failure of it cannot
+   * change the answer or leave a question waiting.
+   */
+  #onRequestSettled;
+
+  /**
    * `sessionId` is required: an authority without a session has nothing to
    * bind an approval to, and a missing session must never be able to answer
    * a question.
    */
-  constructor({ sessionId, onChange = () => {}, onRequest = () => {} } = {}) {
+  constructor({ sessionId, onChange = () => {}, onRequest = () => {}, onRequestSettled = () => {} } = {}) {
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new TypeError('AccessAuthority needs the session it belongs to');
     }
     this.#sessionId = sessionId;
     this.#onChange = typeof onChange === 'function' ? onChange : () => {};
     this.#onRequest = typeof onRequest === 'function' ? onRequest : () => {};
+    this.#onRequestSettled = typeof onRequestSettled === 'function' ? onRequestSettled : () => {};
   }
 
   /** The session this authority speaks for. */
@@ -423,11 +439,10 @@ export class AccessAuthority {
     }
     this.#pending.delete(id);
     if (entry.detach) entry.detach();
-    entry.settle({
-      approved: decision === ALLOW,
-      reason: decision === ALLOW ? 'allowed' : 'denied',
-      request: entry.request,
-    });
+    const approved = decision === ALLOW;
+    const reason = approved ? 'allowed' : 'denied';
+    entry.settle({ approved, reason, request: entry.request });
+    this.#announceSettled(entry.request, approved, reason);
     return { ok: true };
   }
 
@@ -439,6 +454,7 @@ export class AccessAuthority {
     for (const entry of entries) {
       if (entry.detach) entry.detach();
       entry.settle({ approved: false, reason, request: entry.request });
+      this.#announceSettled(entry.request, false, reason);
     }
     return entries.length;
   }
@@ -646,7 +662,34 @@ export class AccessAuthority {
     this.#pending.delete(id);
     if (entry.detach) entry.detach();
     entry.settle({ approved: false, reason, request: entry.request });
+    this.#announceSettled(entry.request, false, reason);
     return true;
+  }
+
+  /**
+   * Tells the observer how a question ended.
+   *
+   * The notice carries the identity of the question and its outcome, and
+   * nothing else: no arguments, no target, no value, no permit. It is frozen,
+   * so what the observer saw cannot change afterwards.
+   *
+   * An observer that throws is a problem of the observer: the answer it was
+   * told about does not change, and the question it belongs to is already
+   * settled.
+   */
+  #announceSettled(request, approved, reason) {
+    const payload = Object.freeze({
+      id: request.id,
+      sessionId: request.sessionId,
+      revision: request.revision,
+      approved: approved === true,
+      reason: typeof reason === 'string' && reason ? reason : 'unknown',
+    });
+    try {
+      this.#onRequestSettled(payload);
+    } catch {
+      // The observer cannot change what happened.
+    }
   }
 
   /** Tells the UI about a mode change, without letting it break the mode. */

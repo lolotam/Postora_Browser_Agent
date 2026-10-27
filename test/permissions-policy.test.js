@@ -805,3 +805,222 @@ test('the module needs no browser, no network, no storage and no dynamic code', 
   assert.doesNotMatch(source, /\beval\s*\(/, 'the policy module must not use dynamic code');
   assert.doesNotMatch(source, /new\s+Function\s*\(/, 'the policy module must not use dynamic code');
 });
+
+// --- what the observer of a question is told ------------------------------
+//
+// The observer only watches. It never grants anything, it is told what
+// happened to a question exactly once, and it never sees what the question
+// was about.
+
+test('an allowed question is reported once, with its outcome', async () => {
+  const settled = [];
+  const { authority, asked } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+  const pending = authority.authorize({ action: 'click', args: { index: 1 } });
+  await tick();
+  const request = asked[0];
+
+  authority.respondApproval({ id: request.id, decision: 'allow', revision: request.revision, sessionId: 'session-a' });
+  const answer = await pending;
+
+  assert.ok(answer.permit, 'the answer was not honoured');
+  assert.equal(settled.length, 1, 'the question was not reported exactly once');
+  assert.deepEqual({ ...settled[0] }, {
+    id: request.id,
+    sessionId: 'session-a',
+    revision: request.revision,
+    approved: true,
+    reason: 'allowed',
+  });
+});
+
+test('a refused question is reported once, as a refusal', async () => {
+  const settled = [];
+  const { authority, asked } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+  const pending = authority.authorize({ action: 'click', args: { index: 1 } });
+  await tick();
+  const request = asked[0];
+
+  authority.respondApproval({ id: request.id, decision: 'deny', revision: request.revision, sessionId: 'session-a' });
+  const answer = await pending;
+
+  assert.equal(answer.permit, null);
+  assert.equal(answer.reason, 'denied');
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].approved, false);
+  assert.equal(settled[0].reason, 'denied');
+});
+
+test('an answer that is wrong, late or repeated reports nothing and consumes nothing', async () => {
+  const settled = [];
+  const { authority, asked } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+  const pending = authority.authorize({ action: 'click', args: { index: 1 } });
+  await tick();
+  const request = asked[0];
+
+  const refused = [
+    ['an unknown question', { id: 'req-nobody-asked', decision: 'allow', revision: request.revision, sessionId: 'session-a' }],
+    ['another session', { id: request.id, decision: 'allow', revision: request.revision, sessionId: 'session-b' }],
+    ['a stale revision', { id: request.id, decision: 'allow', revision: request.revision + 5, sessionId: 'session-a' }],
+    ['a missing revision', { id: request.id, decision: 'allow', sessionId: 'session-a' }],
+    ['a decision that is not one', { id: request.id, decision: 'maybe', revision: request.revision, sessionId: 'session-a' }],
+    ['no decision at all', { id: request.id, revision: request.revision, sessionId: 'session-a' }],
+  ];
+  for (const [what, answer] of refused) {
+    assert.equal(authority.respondApproval(answer).ok, false, `${what} was accepted`);
+  }
+  assert.equal(settled.length, 0, 'a refused answer reported a settlement');
+  assert.equal(authority.pendingCount, 1, 'a refused answer consumed the question');
+
+  // The answer that fits is the one that counts.
+  authority.respondApproval({ id: request.id, decision: 'allow', revision: request.revision, sessionId: 'session-a' });
+  await pending;
+  assert.equal(settled.length, 1);
+
+  // A repeated answer finds nothing left to answer and reports nothing.
+  assert.equal(authority.respondApproval({ id: request.id, decision: 'deny', revision: request.revision, sessionId: 'session-a' }).ok, false);
+  assert.equal(settled.length, 1, 'a repeated answer reported a second settlement');
+});
+
+test('an aborted command settles its question once', async () => {
+  const settled = [];
+  const { authority } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+  const controller = new AbortController();
+  const pending = authority.authorize({ action: 'click' }, { signal: controller.signal });
+  await tick();
+
+  controller.abort();
+  const answer = await pending;
+
+  assert.equal(answer.permit, null);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].approved, false);
+  assert.equal(settled[0].reason, 'aborted');
+});
+
+test('a stop, a mode change and the end of the run each settle a waiting question once', async () => {
+  const cases = [
+    ['a stop', (authority) => authority.cancel('stopped'), 'stopped'],
+    ['a mode change', (authority) => authority.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision: authority.revision }), 'mode-changed'],
+    ['the end of the run', (authority) => authority.finish('finished'), 'finished'],
+  ];
+  for (const [what, end, reason] of cases) {
+    const settled = [];
+    const { authority } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+    const pending = authority.authorize({ action: 'click' });
+    await tick();
+
+    end(authority);
+    const answer = await pending;
+
+    assert.equal(answer.permit, null, `${what} allowed the action`);
+    assert.equal(settled.length, 1, `${what} did not settle the question exactly once`);
+    assert.equal(settled[0].approved, false, `${what} reported an approval`);
+    assert.equal(settled[0].reason, reason);
+  }
+});
+
+test('the report names the question and its outcome, and nothing else', async () => {
+  const settled = [];
+  const { authority, asked } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+  const pending = authority.authorize({
+    action: 'insert_text',
+    args: { text: 'a value to keep to ourselves' },
+    target: { url: 'https://shop.test/pay?token=abc123', element: { label: 'Card number' } },
+    describe: 'Type text into the focused field',
+  });
+  await tick();
+  const request = asked[0];
+
+  authority.respondApproval({ id: request.id, decision: 'allow', revision: request.revision, sessionId: 'session-a' });
+  await pending;
+
+  assert.deepEqual(Object.keys(settled[0]).sort(), ['approved', 'id', 'reason', 'revision', 'sessionId']);
+  const report = JSON.stringify(settled[0]);
+  assert.equal(report.includes('a value to keep to ourselves'), false, 'the report carried the text');
+  assert.equal(report.includes('token=abc123'), false, 'the report carried the url of the target');
+  assert.equal(report.includes('Card number'), false, 'the report carried the target');
+  assert.equal(report.includes('permit'), false, 'the report carried a permit');
+});
+
+test('the report is frozen, so what the observer saw cannot change afterwards', async () => {
+  const settled = [];
+  const { authority, asked } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+  const pending = authority.authorize({ action: 'click' });
+  await tick();
+  const request = asked[0];
+
+  authority.respondApproval({ id: request.id, decision: 'allow', revision: request.revision, sessionId: 'session-a' });
+  await pending;
+
+  assert.equal(Object.isFrozen(settled[0]), true);
+  assert.throws(() => {
+    settled[0].approved = false;
+  }, TypeError);
+  assert.equal(settled[0].approved, true);
+});
+
+test('an observer that throws changes nothing', async () => {
+  const { authority, asked } = authorityFor('session-a', {
+    onRequestSettled: () => {
+      throw new Error('the observer is broken');
+    },
+  });
+  const pending = authority.authorize({ action: 'click', args: { index: 1 } });
+  await tick();
+  const request = asked[0];
+
+  const result = authority.respondApproval({ id: request.id, decision: 'allow', revision: request.revision, sessionId: 'session-a' });
+  assert.equal(result.ok, true, 'a broken observer refused the answer');
+
+  const answer = await pending;
+  assert.ok(answer.permit, 'a broken observer took the answer away');
+  assert.equal(authority.grantValid(answer.permit, { action: 'click', args: { index: 1 } }), true);
+});
+
+test('a cancellation from the observer still stops the action', async () => {
+  let authority = null;
+  let request = null;
+  authority = new AccessAuthority({
+    sessionId: 'session-a',
+    onRequest: (value) => {
+      request = value;
+    },
+    onRequestSettled: () => {
+      authority.cancel('stopped');
+    },
+  });
+  const pending = authority.authorize({ action: 'click', args: { index: 1 } });
+  await tick();
+
+  authority.respondApproval({ id: request.id, decision: 'allow', revision: request.revision, sessionId: 'session-a' });
+  const answer = await pending;
+
+  assert.equal(answer.permit, null, 'the action ran after the observer cancelled the work');
+  assert.equal(answer.reason, 'cancelled');
+});
+
+test('a command that was already aborted never asks and never reports', async () => {
+  const settled = [];
+  const { authority, asked } = authorityFor('session-a', { onRequestSettled: (event) => settled.push(event) });
+  const controller = new AbortController();
+  controller.abort();
+
+  const answer = await authority.authorize({ action: 'click' }, { signal: controller.signal });
+
+  assert.equal(answer.permit, null);
+  assert.equal(asked.length, 0, 'an aborted command still asked the user');
+  assert.equal(settled.length, 0, 'a question that was never asked was reported');
+});
+
+test('an authority without an observer still asks and still answers', async () => {
+  const authority = new AccessAuthority({ sessionId: 'session-a' });
+  const { id, request, promise } = authority.requestApproval({ action: 'click', args: { index: 1 } });
+  assert.equal(authority.pendingCount, 1);
+
+  const result = authority.respondApproval({ id, decision: 'allow', revision: request.revision, sessionId: 'session-a' });
+  assert.equal(result.ok, true);
+
+  const answer = await promise;
+  assert.equal(answer.approved, true);
+  assert.equal(answer.request.id, id);
+});

@@ -9,7 +9,7 @@ import { createToolExecutor, toolDefinitions } from '../agent/tools.js';
 import { BrowserController } from '../browser/controller.js';
 import { Notebook } from '../agent/notebook.js';
 import { createFastLayer } from '../fast/fast-layer.js';
-import { AccessAuthority, ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
+import { AccessAuthority, ALLOW, ASK_FIRST, DENY, FULL_ACCESS } from '../permissions/policy.js';
 import { effectiveSettings, loadSettings } from '../lib/settings.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
@@ -19,9 +19,46 @@ const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
 const STREAMING = new Set(['text-delta', 'reasoning-delta', 'text-reset']);
 
+// The events that describe the state of the worker at this moment and are
+// never a moment of the conversation: a mode, a question and the way it
+// ended. They are shown, they are never stored and never replayed as chat.
+const TRANSIENT_EVENTS = new Set(['access-state', 'access-request', 'access-request-settled']);
+
 // The one page of this extension that may ask for the access mode. The check
 // is exact: the side panel of this extension, and nothing else.
 const ACCESS_PANEL_PATH = 'src/sidepanel/index.html';
+
+/**
+ * The site a target is on, without its path, its query or its fragment.
+ *
+ * A preview names the site and nothing more: a URL that carries a search or
+ * a token in its query does not belong in a panel that may be on screen.
+ */
+function safeOrigin(url) {
+  if (typeof url !== 'string' || !url) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  return parsed.origin;
+}
+
+/**
+ * The name the page gave its own element, as short as a preview can hold.
+ *
+ * The name is not a value: the browser captures the name of an element and
+ * never what is written in it, so a field that holds a secret is named and
+ * not quoted. A label is still text the page chose, so it is shortened and
+ * never longer than a preview can show.
+ */
+function safeLabel(label) {
+  if (typeof label !== 'string') return null;
+  const clean = label.replace(/\s+/g, ' ').trim().slice(0, 80);
+  return clean || null;
+}
 
 /**
  * True for a port that our own side panel opened.
@@ -63,7 +100,7 @@ export class SessionRunner {
     // The access mode is the state of the worker, not a moment of the
     // conversation: it is never a part of the transcript, and an event of
     // that kind stored by an older version is not brought back.
-    this.transcript = (body.transcript ?? []).filter((event) => event?.type !== 'access-state');
+    this.transcript = (body.transcript ?? []).filter((event) => !TRANSIENT_EVENTS.has(event?.type));
     this.storedLog = body.log;
     this.notebook = Notebook.from(body.notebook); // kept for follow-up tasks and reopening
     // Messages sent while a task runs: { id, text, model, images, mode, now }.
@@ -79,6 +116,7 @@ export class SessionRunner {
     this.portHandlers = new Map();
     this.session = null;
     this.sessionKey = null;
+    this.sessionMode = null; // the mode the model session was built for
     this.abort = null;
     this.pendingQuestion = null;
     this.saveTimer = null;
@@ -93,7 +131,13 @@ export class SessionRunner {
     this.access = new AccessAuthority({
       sessionId: this.id,
       onChange: (state) => this.onAccessChanged(state),
+      onRequest: (request) => this.onAccessRequest(request),
+      onRequestSettled: (settled) => this.onAccessRequestSettled(settled),
     });
+    // The questions the user may still answer, as the panels may show them.
+    // The worker's own memory only: a question is never stored with the
+    // session, and a rebuilt worker has none waiting.
+    this.publicRequests = new Map();
     // A tab the voice path holds the claim on is not free either: the task
     // waits for the voice command instead of working on the same page. The
     // controller reserves a tab while it takes it into its group, so the voice
@@ -114,7 +158,7 @@ export class SessionRunner {
   /** `early` holds what the panel sent before this session finished loading. */
   attach(port, early = []) {
     try {
-      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state() });
+      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), permissions: this.currentPermissions() });
     } catch {
       // The panel closed or moved on while this session loaded. Keeping its closed
       // port would make every later emit throw before reaching the next panel.
@@ -160,12 +204,12 @@ export class SessionRunner {
   /**
    * The transcript the panel may replay.
    *
-   * The access mode is the state of the worker, not a moment of the
-   * conversation. Only the live state is replayed, never a mode that was
-   * stored once.
+   * The access mode and the questions waiting for an answer are the state of
+   * the worker, not a moment of the conversation. Only the live state is
+   * replayed, never a mode or a question that was stored once.
    */
   transcriptForReplay() {
-    return this.transcript.filter((event) => event?.type !== 'access-state');
+    return this.transcript.filter((event) => !TRANSIENT_EVENTS.has(event?.type));
   }
 
   receive(msg, port = null) {
@@ -178,6 +222,7 @@ export class SessionRunner {
     else if (msg.type === 'answer') this.answer(msg.text, msg.display);
     else if (msg.type === 'dismiss-notice') this.emit({ type: 'notice-dismissed', id: msg.id });
     else if (msg.type === 'access-mode') this.setAccessMode(msg, port);
+    else if (msg.type === 'access-approval') this.answerAccessRequest(msg, port);
   }
 
   /**
@@ -233,6 +278,114 @@ export class SessionRunner {
   }
 
   /**
+   * The questions the panels may still answer, as they may show them.
+   *
+   * Only the questions that are waiting right now: a question that was
+   * answered, refused or withdrawn is gone, and a worker that starts again
+   * has none waiting.
+   */
+  currentPermissions() {
+    return [...this.publicRequests.values()];
+  }
+
+  /**
+   * What a panel may show about a question.
+   *
+   * The arguments are left out: the text that was going to be typed, the
+   * value that was going to be read and the permit itself never belong in a
+   * preview that may be on screen. What is left is the action, its kind, the
+   * site it happens on and the name the page itself gave the target — enough
+   * to know what is being asked for, and nothing that repeats what the user
+   * asked to keep private.
+   */
+  publicRequest(request) {
+    const destination = request.action === 'navigate' || request.action === 'open_tab'
+      ? request.args?.url
+      : request.action === 'web_search' ? 'https://www.google.com' : null;
+    return Object.freeze({
+      id: request.id,
+      sessionId: request.sessionId,
+      revision: request.revision,
+      action: request.action,
+      kind: request.kind,
+      origin: safeOrigin(destination) ?? safeOrigin(request.target?.url),
+      label: safeLabel(request.target?.element?.label),
+    });
+  }
+
+  /**
+   * The authority asked the user something.
+   *
+   * The panels are told what it is about, so they may show it. The question
+   * itself lives in the authority: this is only what may be seen of it.
+   *
+   * Without a panel of this extension there is nobody who could answer, and
+   * a question nobody can answer must not hold the task: it is denied at
+   * once, and the work carries on without it.
+   */
+  onAccessRequest(request) {
+    const shown = this.publicRequest(request);
+    this.publicRequests.set(shown.id, shown);
+    this.broadcast({ type: 'access-request', request: shown });
+    if (!this.trustedPorts.size) {
+      this.access.respondApproval({
+        id: request.id,
+        sessionId: request.sessionId,
+        revision: request.revision,
+        decision: DENY,
+      });
+    }
+  }
+
+  /**
+   * The question ended: it is gone from what the panels may show, and every
+   * panel of this session is told how it ended.
+   *
+   * This is the only way a question leaves the list: the authority decides
+   * what happened to it, and the runner only shows what the authority says.
+   */
+  onAccessRequestSettled(settled) {
+    const shown = this.publicRequests.get(settled.id);
+    if (shown && shown.sessionId === settled.sessionId && shown.revision === settled.revision) {
+      this.publicRequests.delete(settled.id);
+    }
+    this.broadcast({
+      type: 'access-request-settled',
+      id: settled.id,
+      sessionId: settled.sessionId,
+      revision: settled.revision,
+      approved: settled.approved === true,
+      reason: settled.reason,
+    });
+  }
+
+  /**
+   * The user's answer to one question.
+   *
+   * Only our own side panel, on a live port that belongs to this session, may
+   * answer it, and the answer has to name the exact question, the session and
+   * the revision the question was asked under. A wrong, stale, foreign or
+   * repeated answer grants nothing and leaves the question waiting for the
+   * answer that is right: the first answer that fits is the one that counts.
+   */
+  answerAccessRequest(msg, port) {
+    if (!this.livePort(port)) return this.refusal('no-port');
+    if (!ownSidePanel(port)) return this.refusal('not-trusted');
+    if (!portBoundToSession(port, this.id)) return this.refusal('other-session');
+    const id = msg?.id;
+    const sessionId = msg?.sessionId;
+    const revision = msg?.revision;
+    const decision = msg?.decision;
+    if (typeof id !== 'string' || !id) return this.refusal('unknown-request');
+    if (typeof sessionId !== 'string' || sessionId !== this.id) return this.refusal('wrong-session');
+    if (typeof revision !== 'number') return this.refusal('stale-revision');
+    if (decision !== ALLOW && decision !== DENY) return this.refusal('malformed-decision');
+    const result = this.access.respondApproval({ id, sessionId, revision, decision });
+    if (!result.ok) return this.refusal(result.reason);
+    return { ok: true, changed: true, ...this.access.state() };
+  }
+
+  /**
    * The mode moved: the task that ran under the old mode does not go on, the
    * approvals and the permits of the old mode are withdrawn, and every panel
    * of this session is told what is now in force.
@@ -245,10 +398,21 @@ export class SessionRunner {
 
   /** The mode that is really in force, to every panel of this session. */
   broadcastAccess() {
-    const state = this.access.state();
+    this.broadcast({ type: 'access-state', ...this.access.state() });
+  }
+
+  /**
+   * Tells every panel of this session something that is not a moment of the
+   * conversation.
+   *
+   * The state of the worker is not stored: a mode, a question and the way it
+   * ended belong to the moment they happen, and a panel that comes back gets
+   * the live state with the replay instead of a history of it.
+   */
+  broadcast(event) {
     for (const port of this.ports) {
       try {
-        port.postMessage({ type: 'access-state', ...state });
+        port.postMessage(event);
       } catch {
         // The panel is gone; the next one gets the state with the replay.
       }
@@ -371,7 +535,7 @@ export class SessionRunner {
       this.browser.overlay.begin({ enabled: settings.showCursor, uiLanguage: settings.uiLanguage });
       this.browser.tabId = null; // each task starts on the tab the user is looking at
       const tab = await this.browser.startOn(tabId);
-      const execute = createToolExecutor(this.browser, { askUser: (q) => this.askUser(q, abort.signal), signal: abort.signal, notebook: this.notebook, onNotebookChange: () => this.scheduleSave(), allowed: new Set(toolDefinitions(effectiveSettings(settings)).map((t) => t.name)) });
+      const execute = createToolExecutor(this.browser, { askUser: (q) => this.askUser(q, abort.signal), signal: abort.signal, notebook: this.notebook, onNotebookChange: () => this.scheduleSave(), allowed: new Set(toolDefinitions(effectiveSettings(settings)).map((t) => t.name)), access: this.access });
       const fastLayer = settings.fast.enabled && settings.fast.apiKey
         ? createFastLayer({ config: settings.fast, browser: this.browser, execute, task: text, ask: createFastAsk(settings.fast, this.notify) })
         : null;
@@ -420,17 +584,29 @@ export class SessionRunner {
   /**
    * Each task starts on the primary provider. A new model session is seeded with
    * the conversation so far when the backup finished the last task, the model
-   * settings changed, or the session was reopened from storage.
+   * settings changed, the access mode changed, or the session was reopened from
+   * storage.
+   *
+   * The mode the worker enforces is handed to the session as the runtime
+   * snapshot it is: the prompt of the primary and of the backup describe the
+   * mode that is really in force, and the key of the session includes it, so
+   * a mode that moved is described by the next task. The snapshot is read
+   * from the authority and from nowhere else: a setting, a message or a
+   * transcript never names a mode.
    */
   prepareModelSession(settings) {
-    const key = modelSessionKey(settings);
+    const accessState = this.access.state();
+    const key = modelSessionKey(settings, { accessState });
     if (this.session && this.sessionKey === key && !this.session.switched) return;
     const log = this.session?.log ?? this.storedLog;
+    const modeMoved = Boolean(this.session) && this.sessionMode !== accessState.mode;
     const reason = !this.session ? 'continuing an earlier session'
       : this.session.switched ? 'the previous task was finished by the backup provider'
-        : 'the model was changed in settings';
-    this.session = createModelSession(settings, { notify: this.notify, seed: log ? { log, reason } : null, conversationId: this.id, notebook: this.notebook });
+        : modeMoved ? 'the access mode in force changed'
+          : 'the model was changed in settings';
+    this.session = createModelSession(settings, { notify: this.notify, seed: log ? { log, reason } : null, conversationId: this.id, notebook: this.notebook, accessState });
     this.sessionKey = key;
+    this.sessionMode = accessState.mode;
   }
 
   async nameAfter(task) {
