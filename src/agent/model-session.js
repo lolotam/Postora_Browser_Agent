@@ -6,6 +6,7 @@ import { buildSystemPrompt } from './prompt.js';
 import { toolDefinitions } from './tools.js';
 import { createFastAsk } from '../fast/clients.js';
 import { COMPATIBLE_PRESETS, effectiveSettings } from '../lib/settings.js';
+import { normalizeMode } from '../permissions/policy.js';
 import { AnthropicSession } from '../providers/anthropic.js';
 import { ChatgptSession } from '../providers/chatgpt.js';
 import { CompatibleSession } from '../providers/openai-compatible.js';
@@ -17,10 +18,14 @@ export { createFastAsk };
  * A provider session for one model slot: the main one or settings.fallback.
  * `conversationId` is the saved session's id, so a provider that tracks
  * conversations (OpenCode) sees the same one after the worker restarts.
+ *
+ * `accessState` is the worker's runtime snapshot of the access mode. It is
+ * passed to the prompt of every slot, so the main model and the backup both
+ * describe the same mode the worker enforces. It is never read from settings.
  */
-function createProviderSession(slot, settings, conversationId, notify = null) {
+function createProviderSession(slot, settings, conversationId, notify = null, accessState = null) {
   const tools = toolDefinitions(effectiveSettings(settings));
-  const systemPrompt = buildSystemPrompt(effectiveSettings(settings));
+  const systemPrompt = buildSystemPrompt(effectiveSettings(settings), { accessState });
   if (slot.provider === 'chatgpt') {
     if (!slot.chatgpt.model) throw new Error('Choose a ChatGPT model in settings first.');
     return new ChatgptSession({ ...slot.chatgpt, systemPrompt, tools, notify });
@@ -64,14 +69,19 @@ function slotLabel(slot) {
  * A fresh FallbackSession. With `seed`, the conversation so far (a neutral log)
  * reaches the new primary as a handoff message: after a task the backup
  * finished, after a settings change, or when a saved session is reopened.
+ *
+ * `accessState` is the worker's runtime snapshot of the access mode. Both
+ * slots get it, so the backup cannot describe a different mode than the main
+ * model. Without a snapshot the prompt says Ask first, the mode a session
+ * starts in.
  */
-export function createModelSession(settings, { notify, seed = null, conversationId, notebook = null }) {
-  const primary = createProviderSession(settings, settings, conversationId, notify);
+export function createModelSession(settings, { notify, seed = null, conversationId, notebook = null, accessState = null } = {}) {
+  const primary = createProviderSession(settings, settings, conversationId, notify, accessState);
   if (seed?.log?.task) primary.addUserMessage(handoffMessage(seed.log, seed.reason, notebook));
   const backupEnabled = settings.fallback.enabled;
   return new FallbackSession({
     primary,
-    createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify) : null,
+    createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify, accessState) : null,
     labels: { primary: slotLabel(settings), backup: backupEnabled ? slotLabel(settings.fallback) : '' },
     notify,
     log: seed?.log ?? emptyLog(),
@@ -79,7 +89,15 @@ export function createModelSession(settings, { notify, seed = null, conversation
   });
 }
 
-/** Settings that require a new model session when they change. */
-export function modelSessionKey(settings) {
-  return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage]);
+/**
+ * Settings that require a new model session when they change.
+ *
+ * The access mode is part of it: the prompt describes the mode the worker
+ * enforces, so a mode change has to rebuild the session for the next task.
+ * The mode comes from the runtime snapshot only, normalized the same way the
+ * policy normalizes it, so a missing or malformed snapshot is Ask first and
+ * can never be anything else.
+ */
+export function modelSessionKey(settings, { accessState } = {}) {
+  return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage, normalizeMode(accessState?.mode)]);
 }
