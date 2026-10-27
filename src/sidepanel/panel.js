@@ -1718,6 +1718,8 @@ const VOICE_ACTIONS = {
   web_search: 'voice.actionSearch',
   click: 'voice.actionClick',
   type_text: 'voice.actionType',
+  read_field: 'voice.actionReadField',
+  insert_text: 'voice.actionInsertText',
   press_enter: 'voice.actionEnter',
   scroll_down: 'voice.actionScrollDown',
   scroll_up: 'voice.actionScrollUp',

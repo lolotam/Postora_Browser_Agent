@@ -338,6 +338,8 @@ export const MESSAGES = {
     'voice.actionSearch': 'بحث',
     'voice.actionClick': 'ضغط',
     'voice.actionType': 'كتابة',
+    'voice.actionReadField': 'قراءة قيمة حقل',
+    'voice.actionInsertText': 'الكتابة في الحقل الحالي',
     'voice.actionEnter': 'Enter',
     'voice.actionScrollDown': 'تمرير لتحت',
     'voice.actionScrollUp': 'تمرير لفوق',
@@ -413,6 +415,12 @@ export const MESSAGES = {
     'access.approval.actionName.switch_tab': 'التبديل إلى تبويب آخر',
     'access.approval.actionName.open_tab': 'فتح تبويب',
     'access.approval.actionName.close_tab': 'إغلاق تبويب',
+    'access.approval.actionName.zoom_in': 'تكبير الصفحة',
+    'access.approval.actionName.zoom_out': 'تصغير الصفحة',
+    'access.approval.actionName.zoom_reset': 'استعادة حجم الصفحة',
+    'access.approval.actionName.media_play_pause': 'تشغيل الوسائط أو إيقافها مؤقتًا',
+    'access.approval.actionName.media_mute': 'كتم صوت الوسائط أو إعادته',
+    'access.approval.actionName.find_on_page': 'البحث داخل الصفحة',
     // @store-strip-start
     'access.approval.actionName.run_javascript': 'تشغيل جافاسكريبت في الصفحة',
     // @store-strip-end
@@ -753,6 +761,8 @@ export const MESSAGES = {
     'voice.actionSearch': 'Search',
     'voice.actionClick': 'Click',
     'voice.actionType': 'Type',
+    'voice.actionReadField': 'Read a field',
+    'voice.actionInsertText': 'Type into the focused field',
     'voice.actionEnter': 'Enter',
     'voice.actionScrollDown': 'Scroll down',
     'voice.actionScrollUp': 'Scroll up',
@@ -828,6 +838,12 @@ export const MESSAGES = {
     'access.approval.actionName.switch_tab': 'Switch to another tab',
     'access.approval.actionName.open_tab': 'Open a tab',
     'access.approval.actionName.close_tab': 'Close a tab',
+    'access.approval.actionName.zoom_in': 'Zoom in',
+    'access.approval.actionName.zoom_out': 'Zoom out',
+    'access.approval.actionName.zoom_reset': 'Reset page zoom',
+    'access.approval.actionName.media_play_pause': 'Play or pause media',
+    'access.approval.actionName.media_mute': 'Mute or unmute media',
+    'access.approval.actionName.find_on_page': 'Find text on the page',
     // The store build has no run-JavaScript capability, so it has no approval
     // of one either.
     // @store-strip-start

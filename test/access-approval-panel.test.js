@@ -389,6 +389,22 @@ test('the name of the tool is translated, and an unknown tool keeps its own', ()
   assert.equal(panel.context.approvalWords('access.approval.action', { action: 'not_a_tool' }), 'الإجراء: not_a_tool');
 });
 
+test('voice-only action previews and selected-field activity names exist in both languages', () => {
+  for (const language of ['en', 'ar']) {
+    const panel = makePanel({ language });
+    for (const action of ['zoom_in', 'zoom_out', 'zoom_reset', 'media_play_pause', 'media_mute', 'find_on_page']) {
+      panel.context.onEvent({ type: 'access-request', request: makeRequest({ id: action, action }) });
+    }
+    assert.equal(panel.cards().length, 6);
+    for (const text of panel.texts('permission-action')) assert.doesNotMatch(text, /zoom_|media_|find_on_page|access\.approval\./);
+    const source = panelSource.slice(panelSource.indexOf('const VOICE_ACTIONS = {'), panelSource.indexOf('\n/**\n * The question the user answers'));
+    const context = vm.createContext({ t: (key) => MESSAGES[language][key] ?? key });
+    vm.runInContext(source, context);
+    assert.equal(context.voiceActionName('read_field'), MESSAGES[language]['voice.actionReadField']);
+    assert.equal(context.voiceActionName('insert_text'), MESSAGES[language]['voice.actionInsertText']);
+  }
+});
+
 test('a new language redraws the cards without making them again', () => {
   const panel = makePanel();
   panel.context.onEvent({ type: 'access-request', request: makeRequest() });
