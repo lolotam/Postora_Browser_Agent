@@ -15,9 +15,11 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { runAccessUiScenario } from './access-ui.mjs';
+import { runAccessRuntimeScenario } from './access-runtime.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -484,11 +486,35 @@ function startServer(handlers) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, counts, bodies, base: `http://127.0.0.1:${server.address().port}` })));
 }
 
-async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null }) {
+/**
+ * Full access, granted the way a user grants it.
+ *
+ * The selection opens the warning, the warning has to be read and
+ * acknowledged, and only the worker's own answer turns the mode into Full
+ * access. Nothing is granted behind the panel's back: the scenarios that
+ * exercise browser actions need this, because the default is Ask first.
+ */
+async function enableFullAccess(panel) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await panel.selectOption('#accessSelect', 'full-access');
+    const opened = await panel.waitForSelector('#accessWarning[open]', { timeout: 15000 }).then(() => true, () => false);
+    if (!opened) continue;
+    await panel.check('#accessAcknowledge');
+    await panel.click('#accessConfirm');
+    const confirmed = await panel.waitForFunction(() => document.getElementById('accessSelect')?.value === 'full-access', { timeout: 15000 })
+      .then(() => true, () => false);
+    if (confirmed) return true;
+    await panel.keyboard.press('Escape').catch(() => {});
+  }
+  return false;
+}
+
+async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null, needsFullAccess = true }) {
   const { server, counts, base } = await startServer(handlers);
   const panel = await context.newPage();
   const pageErrors = [];
   panel.on('pageerror', (err) => pageErrors.push(err.message));
+  const setupFailures = [];
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     if (name === 'llm') {
@@ -527,6 +553,14 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
       await panel.waitForTimeout(500);
     }
 
+    // The default is Ask first: a scenario that acts on the page asks the
+    // user for every action, so it raises the mode the way a user does. The
+    // grant belongs to the chat, so it is given after the worker was stopped.
+    if (needsFullAccess) {
+      const granted = await enableFullAccess(panel);
+      if (!granted) setupFailures.push('the mode could not be raised through the consent UI');
+    }
+
     if (sendEarly) {
       // A task sent as the panel opens, before it has picked its session, must still arrive.
       await panel.addInitScript((text) => addEventListener('load', () => {
@@ -550,7 +584,7 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     const threads = await panel.$$eval('.thread', (rows) => rows.map((r) => ({ open: r.open, title: r.querySelector('summary .title').textContent, meta: r.querySelector('summary .meta').textContent })));
     console.log(`\n== scenario: ${name} ==\n${steps.join('\n')}\n--- report ---\n${report}\n(LLM calls: ${counts.llm}, Jev calls: ${counts.jev}, judge calls: ${counts.judge}, decision calls: ${counts.decision})`);
 
-    const failures = [];
+    const failures = [...setupFailures];
     const pageResult = await target.textContent('#out');
     if (!report.includes(expectReport)) failures.push(`report missing "${expectReport}" (page shows "${pageResult}")`);
     if (steps.some((s) => s.includes('✗'))) failures.push('a tool step failed');
@@ -600,6 +634,7 @@ async function runParallelScenario(context, extensionId) {
   const { server, counts, base } = await startServer({ llm: perTask((task) => scriptedLlm({ askFirst: task.includes('session A') })) });
   const pages = [];
   const pageErrors = [];
+  const failures = [];
   try {
     const openPanel = async () => {
       const panel = await context.newPage();
@@ -614,8 +649,12 @@ async function runParallelScenario(context, extensionId) {
     }), base);
     await panelA.reload();
     await panelA.click('#newChatBtn');
+    // The default is Ask first, and this scenario acts on the page: the mode
+    // is raised the way a user raises it, in each chat of its own.
+    if (!(await enableFullAccess(panelA))) failures.push('session A could not raise the mode through the consent UI');
     const panelB = await openPanel();
     await panelB.click('#newChatBtn');
+    if (!(await enableFullAccess(panelB))) failures.push('session B could not raise the mode through the consent UI');
 
     const targetA = await context.newPage();
     await targetA.goto(`${base}/page?s=a`);
@@ -644,7 +683,6 @@ async function runParallelScenario(context, extensionId) {
     const sessions = await panelA.evaluate(() => chrome.runtime.sendMessage({ type: 'sessions-list' }));
     console.log(`\n== scenario: parallel ==\nA: ${reportA.replace(/\s+/g, ' ')}\nB: ${reportB.replace(/\s+/g, ' ')}\ngroups ${JSON.stringify(groups)}, sessions ${sessions.result.length}, LLM calls ${counts.llm}`);
 
-    const failures = [];
     for (const [name, report] of [['A', reportA], ['B', reportB]]) {
       if (!report.includes('Result: hello world / Blue')) failures.push(`session ${name} report is wrong: ${report}`);
     }
@@ -1221,6 +1259,10 @@ async function runVoiceReplayScenario(context, extensionId) {
     await target.goto(`${base}/page`);
     await target.bringToFront();
 
+    // The default is Ask first, and the task below acts on the page: the mode
+    // is raised the way a user raises it.
+    if (!(await enableFullAccess(panel))) failures.push('the mode could not be raised through the consent UI');
+
     // A task that asks a question: the transcript keeps the question.
     await panel.fill('#input', 'Fill the form and report the result');
     await panel.click('#sendBtn');
@@ -1499,6 +1541,7 @@ async function main() {
       ...(await runVoiceWindowScenario(context, extensionId)),
       ...(await runVoiceReplayScenario(context, extensionId)),
       ...(await runAccessUiScenario(context, extensionId)),
+      ...(await runAccessRuntimeScenario(context, extensionId)),
       ...(await runScenario(context, extensionId, {
         name: 'llm',
         task: 'Fill the form and report the result',
@@ -1525,6 +1568,9 @@ async function main() {
         name: 'steer',
         task: 'Fill the form and report the result',
         handlers: { llm: slowThinkerLlm() },
+        // This task only looks at the page, and looking needs no approval: it
+        // stays in the default mode, so the default is exercised as it is.
+        needsFullAccess: false,
         // While the model thinks, send a message: it waits as pending, then is read.
         during: async (panel) => {
           await panel.waitForSelector('#stopBtn:not([hidden])');
@@ -1593,11 +1639,35 @@ async function main() {
         ],
       })),
     ];
+    // The browser foundation has its own browser and its own fixture: it is a
+    // standalone script, so it is run as one, on this tree.
+    failures.push(...(await runStandalone('test/e2e/browser-targets.mjs')));
     if (failures.length) throw new Error(failures.join('; '));
     console.log('\nE2E PASSED');
   } finally {
     await context.close();
   }
+}
+
+/**
+ * Runs a standalone script of this tree and reports what it said.
+ *
+ * The browser it opens is its own, so it is a script of its own: it is run
+ * with the same extension and the same browser as the suite.
+ */
+async function runStandalone(script) {
+  const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', script);
+  console.log(`\n== scenario: ${path.basename(script)} ==`);
+  const child = spawn(process.execPath, [file], {
+    env: {
+      ...process.env,
+      ...(process.env.E2E_EXTENSION_DIR ? { E2E_EXTENSION_DIR: process.env.E2E_EXTENSION_DIR } : {}),
+      ...(process.env.CHROMIUM_PATH ? { CHROMIUM_PATH: process.env.CHROMIUM_PATH } : {}),
+    },
+    stdio: 'inherit',
+  });
+  const code = await new Promise((resolve) => child.on('close', resolve));
+  return code === 0 ? [] : [`${script} failed`];
 }
 
 main().catch((err) => {

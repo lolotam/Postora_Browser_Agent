@@ -76,6 +76,13 @@
   </div>
   <div id="notices" class="notices" aria-live="assertive"></div>
 
+  <!-- The actions the worker asks about. One place for both screens: the chat
+       and the voice screen show the same card, so there is one authority for an
+       action and one answer for it. It is empty — and hidden — while nothing
+       waits in it. The cards are announced here: the panel never takes the
+       focus away from what the user is writing. -->
+  <div id="approvals" class="approvals" role="region" aria-live="polite" hidden></div>
+
   <main id="chatView">
     <section id="messages" aria-live="polite">
       <div class="empty" id="emptyState">

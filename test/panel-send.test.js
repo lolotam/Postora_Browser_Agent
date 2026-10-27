@@ -6,7 +6,8 @@ import vm from 'node:vm';
 // Execute the actual panel send functions with a mocked port boundary. This
 // verifies returned promises and session/cancellation behavior, not source text.
 const source = fs.readFileSync(new URL('../src/sidepanel/panel.js', import.meta.url), 'utf8');
-const send = source.slice(source.indexOf('async function send('), source.indexOf('\nfunction onEvent('));
+// The approvals have their own section between the send and the event handler.
+const send = source.slice(source.indexOf('async function send('), source.indexOf('\n// ---------- approvals ----------'));
 const composer = source.slice(source.indexOf('function submitComposer('), source.indexOf("\n$('composer').addEventListener"));
 const voiceMessage = source.slice(source.indexOf('function sendVoiceMessage('), source.indexOf("\n$('composer').addEventListener"));
 const voiceCommand = source.slice(source.indexOf('async function runVoiceCommand('), source.indexOf('\n/** The fast layer runs the command itself'));
@@ -290,6 +291,8 @@ test('the port carries the panel, so the worker can give its tabs back', () => {
     onEvent() {},
     // The access control of the chat: a new connection knows nothing of it.
     accessUi: { reset() {}, reconnect() {} },
+    // The approvals of the chat: they belong to the connection that is gone.
+    resetApprovals() {},
     chrome: { runtime: { connect: ({ name }) => { names.push(name); return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} } }; } } },
   });
   vm.runInContext(connectSource, context);
