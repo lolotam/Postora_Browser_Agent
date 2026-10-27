@@ -19,8 +19,7 @@ import { BrowserController } from '../browser/controller.js';
 import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
-import { pageError, pageErrorKey, selectAllChord } from '../voice/voice-input.js';
-import * as page from '../voice/voice-page.js';
+import { createVoiceAccess } from './voice-access.js';
 import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive-backup.js';
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
@@ -30,6 +29,10 @@ const GROUP_COLORS = ['cyan', 'blue', 'green', 'yellow', 'purple', 'pink', 'oran
 const runners = new Map(); // sessionId → SessionRunner
 const loading = new Map(); // sessionId → Promise<SessionRunner>
 const panels = new Set(); // every open panel port, for list updates and sign-in errors
+// The live panel connections, by their name. The name carries the session and
+// the panel, so a request of the voice path can be checked against the
+// connection it claims to come from.
+const panelPorts = new Map();
 // Blank sessions handed to a panel that has not connected yet; two panels opening
 // at once must not both get the same one.
 const reserved = new Set();
@@ -47,6 +50,18 @@ function withVoiceBrowser(task) {
   voiceInputQueue = run.catch(() => {});
   return run;
 }
+
+// The worker's side of the voice path: the only place that may change a page
+// for a spoken command, and the only place that may ask the authority about
+// one.
+const voiceAccess = createVoiceAccess({
+  getRunner: (sessionId) => runnerFor(sessionId),
+  panelPorts,
+  voiceBrowser,
+  withVoiceBrowser,
+  ownerOfTab: (sessionId, tab) => isTakenByOther(sessionId, tab) || sessionWorkingIn(sessionId, tab),
+});
+
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 chrome.runtime.onInstalled.addListener(installHeaderRules);
@@ -144,9 +159,11 @@ chrome.runtime.onConnect.addListener((port) => {
   const [kind, sessionId, panelId] = port.name.split(':');
   if (kind !== 'panel' || !sessionId) return;
   panels.add(port);
+  panelPorts.set(port.name, port);
   reserved.delete(sessionId);
   port.onDisconnect.addListener(() => {
     panels.delete(port);
+    if (panelPorts.get(port.name) === port) panelPorts.delete(port.name);
     // The panel is gone: the tabs it held are freed. The authorization of
     // every one of them is withdrawn at once, and each tab is given back when
     // its own cleanup is over.
@@ -284,162 +301,30 @@ async function handleRequest(msg, sender) {
     case 'tab-owner':
       return tabOwner(await chrome.tabs.get(msg.tabId), msg.sessionId, msg.panelId);
     case 'voice-claim':
-      return voiceClaim(msg);
+      return voiceAccess.handleClaim(msg, sender);
     case 'voice-release':
-      await releaseVoiceClaim(msg.tabId, msg.panelId, msg.token);
+      await voiceAccess.releaseClaim(msg.tabId, msg.panelId, msg.token);
       return null;
     case 'voice-release-all':
-      await releaseVoiceClaims(msg.panelId);
+      await voiceAccess.releasePanel(msg.panelId);
       return null;
-    case 'voice-input':
-      return voiceInput(msg);
+    case 'voice-cancel':
+      await voiceAccess.cancelCommand(msg, sender);
+      return null;
+    case 'voice-action':
+      return voiceAccess.handleAction(msg, sender);
     default:
       throw new Error(`Unknown request ${msg.type}`);
   }
 }
 
 /**
- * The claim the voice path takes on a tab: nobody else may hold it, and the
- * tab must not be in the group of a session that is working in it. A claim
- * that cannot be taken names the one that holds it.
- */
-async function voiceClaim({ tabId, panelId, sessionId }) {
-  const tab = await chrome.tabs.get(tabId);
-  // Another session's task, or the task of this session itself: the voice
-  // path does not work on the page of a task that is still running.
-  const owner = isTakenByOther(sessionId, tab) || sessionWorkingIn(sessionId, tab);
-  if (owner) return { ok: false, owner };
-  const lease = voiceClaims.claimTab(tabId, { panelId, sessionId });
-  if (!lease.ok) return lease;
-  // The lease is held now, so nobody else may take the tab while the
-  // ownership is looked at again. A session that took the tab in the
-  // meantime keeps it, and the lease goes back.
-  const fresh = await chrome.tabs.get(tabId).catch(() => null);
-  if (!fresh) {
-    // The tab is gone: the claim fails closed, and the lease is given back
-    // the same way it is given back after a command.
-    await releaseVoiceClaim(tabId, panelId, lease.token);
-    return { ok: false, errorKey: 'voice.sayTabGone', owner: '' };
-  }
-  const owner2 = isTakenByOther(sessionId, fresh) || sessionWorkingIn(sessionId, fresh);
-  if (owner2) {
-    // The lease goes back in two steps: the authorization goes first, and the
-    // tab stays busy until the input that may still be running has drained
-    // and the debugger is detached.
-    await releaseVoiceClaim(tabId, panelId, lease.token);
-    return { ok: false, owner: owner2 };
-  }
-  return lease;
-}
-
-/**
- * Gives one lease back, in two steps. The authorization goes first, so that
- * no further input may be sent; the tab stays busy until the input that is
- * still running has drained and the debugger is detached.
- */
-async function releaseVoiceClaim(tabId, panelId, token) {
-  const lease = voiceClaims.revokeTab(tabId, { panelId, token });
-  if (!lease) return;
-  await finishVoiceLease(lease);
-}
-
-/** Waits for the input of a tab to drain, detaches the debugger and frees the tab. */
-async function finishVoiceLease(lease) {
-  // The detachment waits its turn, so an input that is running on another tab
-  // is not disturbed. An input that is running on this tab sees that its lease
-  // is not authorized any more, and stops by itself.
-  await withVoiceBrowser(() => voiceBrowser.detachTab(lease.tabId));
-  // Only this lease may be given back: a cleanup that arrives late must not
-  // free a tab that another lease holds by now.
-  voiceClaims.releaseTab(lease.tabId, { panelId: lease.panelId, token: lease.token });
-}
-
-/**
- * Gives every lease of a panel back. The authorization of all of them goes at
- * once, so a tab that waits for its cleanup does not hold up the others.
+ * Gives every lease of a panel back, and the command it was holding with
+ * them. The panel is gone: nothing of it may run any more.
  */
 async function releaseVoiceClaims(panelId) {
-  const leases = voiceClaims.revokePanel(panelId);
-  await Promise.all(leases.map((lease) => finishVoiceLease(lease)));
+  await voiceAccess.releasePanel(panelId);
 }
-
-/**
- * Real input on a tab the voice path holds the lease on: a click, a key, a
- * text. The page sees what a user's hand would do. A worker that cannot
- * answer, or a tab the panel does not hold, does nothing.
- *
- * The element the user approved is resolved here, after the queue: the page
- * may have changed while the input was waiting. The guard is asked again
- * right before every event that changes the page, and it looks at the page
- * as well as at the lease: the approved element must still be the same one,
- * still under the point that is clicked, and the focus must still be the
- * approved field.
- */
-async function voiceInput({ tabId, panelId, token, steps, rule, element, expected }) {
-  const list = Array.isArray(steps) ? steps : [];
-  // The lease must be the one that is named, and it must still be authorized:
-  // a lease whose authorization was withdrawn may not send anything.
-  if (!voiceClaims.isAuthorized(tabId, { panelId, token })) {
-    return { ok: false, errorKey: 'voice.sayOwnerUnknown' };
-  }
-  const authorized = () => voiceClaims.isAuthorized(tabId, { panelId, token });
-  try {
-    await withVoiceBrowser(async () => {
-      await voiceBrowser.borrowTab(tabId);
-      for (const step of list) {
-        // The lease is checked again before every step: a lease that was given
-        // back while this request was waiting must not click or type.
-        if (!authorized()) throw new Error('voice.claimLost');
-        if (step?.op === 'click') {
-          // The approved element is looked up now, and it must still be the
-          // same element, still there and still not a secret.
-          const spot = await voiceBrowser.inject(page.pageProbe, ['resolve', { id: element, expected }, rule]);
-          if (!spot?.ok) throw pageError(spot?.errorKey ?? 'voice.pageGone');
-          // The guard is asked again right before the button goes down: the
-          // element must still be the same one, and it must still lie under
-          // the point that is clicked.
-          const guard = async () => {
-            if (!authorized()) return false;
-            const again = await voiceBrowser.inject(page.pageProbe, ['resolve', { id: element, expected }, rule]);
-            // The probe took time: the lease may be gone by now.
-            if (!authorized()) return false;
-            if (!again?.ok) return false;
-            return again.x === spot.x && again.y === spot.y;
-          };
-          await voiceBrowser.clickAt(Number(spot.x), Number(spot.y), { wait: false, guard });
-        } else {
-          // Every other input needs the focus the user approved. The guard
-          // looks at it again right before the key or the text goes out, so
-          // a page that moved the focus in the meantime gets nothing.
-          const guard = async () => {
-            if (!authorized()) return false;
-            const focus = await voiceBrowser.inject(page.pageProbe, ['focus', { id: element }, rule]);
-            // The probe took time: the lease may be gone by now.
-            if (!authorized()) return false;
-            return Boolean(focus?.ok);
-          };
-          const focus = await voiceBrowser.inject(page.pageProbe, ['focus', { id: element }, rule]);
-          if (!focus?.ok) throw pageError(focus?.errorKey ?? 'voice.pageFocusLost');
-          if (step?.op === 'selectAll') await voiceBrowser.pressKey(selectAllChord(), { wait: false, guard });
-          else if (step?.op === 'text') await voiceBrowser.insertText(String(step.text ?? ''), { guard });
-          else if (step?.op === 'key') await voiceBrowser.pressKey(String(step.key), { wait: false, guard });
-          else throw new Error('voice.inputUnknown');
-        }
-      }
-    });
-  } catch (err) {
-    const message = String(err?.message ?? err);
-    if (/voice\.claimLost/.test(message)) return { ok: false, errorKey: 'voice.sayOwnerUnknown' };
-    if (/voice\.inputCancelled/.test(message)) return { ok: false, errorKey: 'voice.sayOwnerUnknown' };
-    if (/voice\.inputUnknown/.test(message)) return { ok: false, errorKey: 'voice.sayCannotDo' };
-    const pageKey = pageErrorKey(err);
-    if (pageKey) return { ok: false, errorKey: pageKey };
-    if (/Cannot access|chrome:\/\/|does not allow/i.test(message)) return { ok: false, errorKey: 'voice.sayPageRestricted' };
-    return { ok: false, errorKey: 'voice.sayClickFailed' };
-  }
-  return { ok: true };
-}
-
 function sessionForTab(tab) {
   return tabSessions.sessionForTab(tab, {
     ownerOf: groupOwner,

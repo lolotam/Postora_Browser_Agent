@@ -15,8 +15,12 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { runAccessUiScenario } from './access-ui.mjs';
+import { runAccessRuntimeScenario } from './access-runtime.mjs';
+import { runVoiceAccessScenario } from './voice-access.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -483,11 +487,43 @@ function startServer(handlers) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, counts, bodies, base: `http://127.0.0.1:${server.address().port}` })));
 }
 
-async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null }) {
+/**
+ * Full access, granted the way a user grants it.
+ *
+ * The selection opens the warning, the warning has to be read and
+ * acknowledged, and only the worker's own answer turns the mode into Full
+ * access. Nothing is granted behind the panel's back: the scenarios that
+ * exercise browser actions need this, because the default is Ask first.
+ */
+async function enableFullAccess(panel) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await panel.selectOption('#accessSelect', 'full-access');
+    const opened = await panel.waitForSelector('#accessWarning[open]', { timeout: 15000 }).then(() => true, () => false);
+    if (!opened) continue;
+    try {
+      await panel.check('#accessAcknowledge', { timeout: 3000 });
+      await panel.click('#accessConfirm', { timeout: 3000 });
+    } catch (error) {
+      // Initial tab/session synchronization may replace the trusted connection
+      // after the dialog opened. Its consent must be discarded, not forced.
+      // Reopen and acknowledge the warning on the new connection instead.
+      if (await panel.locator('#accessWarning[open]').count()) throw error;
+      continue;
+    }
+    const confirmed = await panel.waitForFunction(() => document.getElementById('accessSelect')?.value === 'full-access', { timeout: 15000 })
+      .then(() => true, () => false);
+    if (confirmed) return true;
+    await panel.keyboard.press('Escape').catch(() => {});
+  }
+  return false;
+}
+
+async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null, needsFullAccess = true }) {
   const { server, counts, base } = await startServer(handlers);
   const panel = await context.newPage();
   const pageErrors = [];
   panel.on('pageerror', (err) => pageErrors.push(err.message));
+  const setupFailures = [];
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     if (name === 'llm') {
@@ -526,6 +562,14 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
       await panel.waitForTimeout(500);
     }
 
+    // The default is Ask first: a scenario that acts on the page asks the
+    // user for every action, so it raises the mode the way a user does. The
+    // grant belongs to the chat, so it is given after the worker was stopped.
+    if (needsFullAccess && !sendEarly) {
+      const granted = await enableFullAccess(panel);
+      if (!granted) setupFailures.push('the mode could not be raised through the consent UI');
+    }
+
     if (sendEarly) {
       // A task sent as the panel opens, before it has picked its session, must still arrive.
       await panel.addInitScript((text) => addEventListener('load', () => {
@@ -533,6 +577,20 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
         document.getElementById('composer').requestSubmit();
       }), task);
       await panel.reload();
+      // A task submitted before session selection still runs under default
+      // Ask first. Drive its real action cards instead of relying on a Full
+      // grant from a connection that the reload may have replaced.
+      let approvals = 0;
+      const deadline = Date.now() + 60000;
+      while (!(await panel.locator('.msg.final').count()) && Date.now() < deadline) {
+        const allow = panel.locator('#approvals .permission-allow').first();
+        if (await allow.isVisible() && await allow.isEnabled()) {
+          await allow.click();
+          approvals += 1;
+        }
+        await panel.waitForTimeout(50);
+      }
+      if (approvals === 0) setupFailures.push('the early default-Ask task did not request any action approvals');
     } else {
       await panel.fill('#input', task);
       await panel.click('#sendBtn');
@@ -549,7 +607,7 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     const threads = await panel.$$eval('.thread', (rows) => rows.map((r) => ({ open: r.open, title: r.querySelector('summary .title').textContent, meta: r.querySelector('summary .meta').textContent })));
     console.log(`\n== scenario: ${name} ==\n${steps.join('\n')}\n--- report ---\n${report}\n(LLM calls: ${counts.llm}, Jev calls: ${counts.jev}, judge calls: ${counts.judge}, decision calls: ${counts.decision})`);
 
-    const failures = [];
+    const failures = [...setupFailures];
     const pageResult = await target.textContent('#out');
     if (!report.includes(expectReport)) failures.push(`report missing "${expectReport}" (page shows "${pageResult}")`);
     if (steps.some((s) => s.includes('✗'))) failures.push('a tool step failed');
@@ -599,6 +657,7 @@ async function runParallelScenario(context, extensionId) {
   const { server, counts, base } = await startServer({ llm: perTask((task) => scriptedLlm({ askFirst: task.includes('session A') })) });
   const pages = [];
   const pageErrors = [];
+  const failures = [];
   try {
     const openPanel = async () => {
       const panel = await context.newPage();
@@ -613,8 +672,12 @@ async function runParallelScenario(context, extensionId) {
     }), base);
     await panelA.reload();
     await panelA.click('#newChatBtn');
+    // The default is Ask first, and this scenario acts on the page: the mode
+    // is raised the way a user raises it, in each chat of its own.
+    if (!(await enableFullAccess(panelA))) failures.push('session A could not raise the mode through the consent UI');
     const panelB = await openPanel();
     await panelB.click('#newChatBtn');
+    if (!(await enableFullAccess(panelB))) failures.push('session B could not raise the mode through the consent UI');
 
     const targetA = await context.newPage();
     await targetA.goto(`${base}/page?s=a`);
@@ -643,7 +706,6 @@ async function runParallelScenario(context, extensionId) {
     const sessions = await panelA.evaluate(() => chrome.runtime.sendMessage({ type: 'sessions-list' }));
     console.log(`\n== scenario: parallel ==\nA: ${reportA.replace(/\s+/g, ' ')}\nB: ${reportB.replace(/\s+/g, ' ')}\ngroups ${JSON.stringify(groups)}, sessions ${sessions.result.length}, LLM calls ${counts.llm}`);
 
-    const failures = [];
     for (const [name, report] of [['A', reportA], ['B', reportB]]) {
       if (!report.includes('Result: hello world / Blue')) failures.push(`session ${name} report is wrong: ${report}`);
     }
@@ -708,7 +770,7 @@ async function runSignInAfterRestartScenario(context, extensionId) {
 /** Waits for the approval the fast layer asks for, and says what happened when it does not come. */
 async function waitForApproval(panel, pageErrors) {
   try {
-    await panel.waitForSelector('#voiceApproval:not([hidden])', { timeout: 20000 });
+    await panel.waitForSelector('#approvals .permission-request', { timeout: 20000 });
   } catch (err) {
     console.log('DIAG', await panel.evaluate(async () => ({
       entries: [...document.querySelectorAll('#voiceLog .voice-entry')].map((n) => n.textContent),
@@ -785,10 +847,16 @@ async function runVoiceScenario(context, extensionId) {
     const drawn = await panel.evaluate(() => {
       const svg = document.querySelector('#voiceMicBtn svg');
       const box = svg.getBoundingClientRect();
+      const circle = document.getElementById('voiceMicBtn').getBoundingClientRect();
       const empty = getComputedStyle(document.getElementById('voiceLog'), '::before').content;
-      return { w: Math.round(box.width), h: Math.round(box.height), empty };
+      return {
+        w: Math.round(box.width), h: Math.round(box.height), empty,
+        dx: Math.abs(box.x + box.width / 2 - circle.x - circle.width / 2),
+        dy: Math.abs(box.y + box.height / 2 - circle.y - circle.height / 2),
+      };
     });
-    if (drawn.w < 30 || drawn.h < 30) failures.push(`the microphone icon is ${drawn.w}x${drawn.h}`);
+    if (drawn.w < 48 || drawn.h < 48) failures.push(`the microphone icon is ${drawn.w}x${drawn.h}`);
+    if (drawn.dx > 0.5 || drawn.dy > 0.5) failures.push(`the microphone icon is off-center (${drawn.dx}, ${drawn.dy})`);
     if (!drawn.empty || drawn.empty === 'none' || !drawn.empty.includes('No activity')) failures.push(`the empty log says nothing: ${drawn.empty}`);
 
     // A narrow panel and reduced motion are both allowed.
@@ -810,18 +878,18 @@ async function runVoiceScenario(context, extensionId) {
 
     // The fast layer asks before it clicks, and the question can be refused.
     await waitForApproval(panel, pageErrors);
-    const asked = await panel.textContent('#voiceApproval');
+    const asked = await panel.textContent('#approvals');
     if (!/Go/.test(asked)) failures.push(`the approval does not name the element: ${asked}`);
-    const focused = await panel.evaluate(() => document.activeElement?.textContent);
-    if (!focused || !/Approve|موافقة/.test(focused)) failures.push(`the approval does not take the keyboard (${focused})`);
-    await panel.click('#voiceApproval button.ghost');
-    await panel.waitForFunction(() => document.getElementById('voiceApproval').hidden, { timeout: 10000 });
+    const focusedAllow = await panel.evaluate(() => document.activeElement?.classList.contains('permission-allow'));
+    if (focusedAllow) failures.push('a new approval stole keyboard focus onto Allow');
+    await panel.click('#approvals .permission-deny');
+    await panel.waitForSelector('#approvals .permission-request', { state: 'hidden', timeout: 10000 });
     if ((await target.textContent('#out')) !== '') failures.push('the page was clicked although the answer was no');
 
     // The same command, approved this time.
     await panel.evaluate(() => window.__say('click go'));
     await waitForApproval(panel, pageErrors);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 10000 }).catch(() => {});
     if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the approved click did not happen');
 
@@ -835,7 +903,7 @@ async function runVoiceScenario(context, extensionId) {
     // A field that holds a secret is left alone.
     await panel.evaluate(() => window.__say('type secret'));
     await waitForApproval(panel, pageErrors);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('search')?.value !== '', { timeout: 10000 }).catch(() => {});
     const fields = await target.evaluate(() => ({
       search: document.getElementById('search').value,
@@ -874,7 +942,7 @@ async function runVoiceScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#newChatBtn');
     await panel.waitForSelector('#voiceView', { state: 'hidden' });
-    const withdrawn = await panel.evaluate(() => document.getElementById('voiceApproval').hidden);
+    const withdrawn = await panel.evaluate(() => document.querySelectorAll('#approvals .permission-request').length === 0);
     if (!withdrawn) failures.push('the approval was not withdrawn when the session changed');
     await panel.waitForTimeout(1000);
     if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the page was clicked after the session changed');
@@ -948,7 +1016,7 @@ async function runVoiceWindowScenario(context, extensionId) {
     await panel.fill('#voiceTypedInput', 'click go');
     await panel.press('#voiceTypedInput', 'Enter');
     await waitForApproval(panel, pageErrors);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 10000 }).catch(() => {});
     if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the command did not act on the page the user was on');
     if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
@@ -1022,7 +1090,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     // A click: the page only reacts to one it can trust.
     await panel.evaluate(() => window.__say('click go'));
     await waitForApproval(panel, pageErrors);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 15000 }).catch(() => {});
     const clicked = await target.evaluate(() => ({
       text: document.getElementById('out')?.textContent ?? '',
@@ -1034,7 +1102,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     // A typed text: the page only reacts to an input event it can trust.
     await panel.evaluate(() => window.__say('type hello'));
     await waitForApproval(panel, pageErrors);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('field')?.value === 'hello', { timeout: 15000 }).catch(() => {});
     const typed = await target.evaluate(() => ({
       value: document.getElementById('field')?.value ?? '',
@@ -1046,7 +1114,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     // Enter: the page only reacts to a key it can trust.
     await panel.evaluate(() => window.__say('press enter'));
     await waitForApproval(panel, pageErrors);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'entered', { timeout: 15000 }).catch(() => {});
     const entered = await target.evaluate(() => document.getElementById('out')?.textContent ?? '');
     if (entered !== 'entered') failures.push(`Enter did not reach the page ("${entered}")`);
@@ -1126,6 +1194,8 @@ async function runVoiceSwitchScenario(context, extensionId) {
     // The command switches to the other tab.
     await panel.fill('#voiceTypedInput', 'switch to the other tab');
     await panel.press('#voiceTypedInput', 'Enter');
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#approvals .permission-allow');
     await panel.waitForFunction(() => document.querySelector('#voiceLog .voice-entry.ok'), { timeout: 20000 }).catch(() => {});
 
     const stillOpen = await panel.evaluate(() => !document.getElementById('voiceView').hidden);
@@ -1151,7 +1221,7 @@ async function runVoiceSwitchScenario(context, extensionId) {
     await panel.fill('#voiceTypedInput', 'click go');
     await panel.press('#voiceTypedInput', 'Enter');
     await waitForApproval(panel, pageErrors);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await second.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 15000 }).catch(() => {});
     if ((await second.textContent('#out')) !== 'clicked 1') failures.push('the command did not act on the tab it switched to');
     if ((await first.textContent('#out')) !== '') failures.push('the command acted on the tab it started on');
@@ -1213,6 +1283,10 @@ async function runVoiceReplayScenario(context, extensionId) {
     target = await context.newPage();
     await target.goto(`${base}/page`);
     await target.bringToFront();
+
+    // The default is Ask first, and the task below acts on the page: the mode
+    // is raised the way a user raises it.
+    if (!(await enableFullAccess(panel))) failures.push('the mode could not be raised through the consent UI');
 
     // A task that asks a question: the transcript keeps the question.
     await panel.fill('#input', 'Fill the form and report the result');
@@ -1331,7 +1405,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     await target.goto(`${base}/safety?redirect`);
     let before = await entries();
     await command('type approved text into Email');
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await finished(before);
     const redirected = await target.evaluate(() => ({
       email: document.getElementById('email')?.value ?? '',
@@ -1359,7 +1433,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
       const original = document.getElementById('email');
       original.replaceWith(original.cloneNode(true));
     });
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await finished(before);
     const replaced = await target.inputValue('#email');
     if (replaced !== 'untouched@example.test') failures.push('a cloned element got the approved text');
@@ -1371,7 +1445,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     await target.goto(`${base}/safety?duplicate-links`);
     before = await entries();
     await command('click Detailed item title');
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await finished(before);
     if (await target.textContent('#out') !== 'correct detailed handler') failures.push('the duplicate-href click reached the wrong DOM handler');
 
@@ -1381,7 +1455,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     await target.evaluate(() => document.body.focus());
     before = await entries();
     await command('press enter');
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await finished(before);
     const entered = await target.textContent('#out');
     if (entered !== 'trusted enter') {
@@ -1405,7 +1479,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     before = await entries();
     await command('press enter');
     await target.goto(`${base}/safety?elsewhere`);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await finished(before);
     const elsewhere = await target.textContent('#out');
     if (elsewhere !== '') failures.push(`the body Enter reached another document ("${elsewhere}")`);
@@ -1435,7 +1509,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     });
     await command('click go');
     const moved = worker.evaluate(() => globalThis.__qaMoveReached);
-    await panel.click('#voiceApproval button.primary');
+    await panel.click('#approvals .permission-allow');
     await moved;
     await panel.click('#voiceBackBtn');
     // The revocation has to reach the worker before the move is let go.
@@ -1491,6 +1565,9 @@ async function main() {
       ...(await runVoiceSwitchScenario(context, extensionId)),
       ...(await runVoiceWindowScenario(context, extensionId)),
       ...(await runVoiceReplayScenario(context, extensionId)),
+      ...(await runAccessUiScenario(context, extensionId)),
+      ...(await runAccessRuntimeScenario(context, extensionId)),
+      ...(await runVoiceAccessScenario(context, extensionId)),
       ...(await runScenario(context, extensionId, {
         name: 'llm',
         task: 'Fill the form and report the result',
@@ -1517,6 +1594,9 @@ async function main() {
         name: 'steer',
         task: 'Fill the form and report the result',
         handlers: { llm: slowThinkerLlm() },
+        // This task only looks at the page, and looking needs no approval: it
+        // stays in the default mode, so the default is exercised as it is.
+        needsFullAccess: false,
         // While the model thinks, send a message: it waits as pending, then is read.
         during: async (panel) => {
           await panel.waitForSelector('#stopBtn:not([hidden])');
@@ -1585,11 +1665,35 @@ async function main() {
         ],
       })),
     ];
+    // The browser foundation has its own browser and its own fixture: it is a
+    // standalone script, so it is run as one, on this tree.
+    failures.push(...(await runStandalone('test/e2e/browser-targets.mjs')));
     if (failures.length) throw new Error(failures.join('; '));
     console.log('\nE2E PASSED');
   } finally {
     await context.close();
   }
+}
+
+/**
+ * Runs a standalone script of this tree and reports what it said.
+ *
+ * The browser it opens is its own, so it is a script of its own: it is run
+ * with the same extension and the same browser as the suite.
+ */
+async function runStandalone(script) {
+  const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', script);
+  console.log(`\n== scenario: ${path.basename(script)} ==`);
+  const child = spawn(process.execPath, [file], {
+    env: {
+      ...process.env,
+      ...(process.env.E2E_EXTENSION_DIR ? { E2E_EXTENSION_DIR: process.env.E2E_EXTENSION_DIR } : {}),
+      ...(process.env.CHROMIUM_PATH ? { CHROMIUM_PATH: process.env.CHROMIUM_PATH } : {}),
+    },
+    stdio: 'inherit',
+  });
+  const code = await new Promise((resolve) => child.on('close', resolve));
+  return code === 0 ? [] : [`${script} failed`];
 }
 
 main().catch((err) => {

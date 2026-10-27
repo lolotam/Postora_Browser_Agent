@@ -1,18 +1,17 @@
-// The two rules the voice path follows on a page: what it may do without
-// asking, and what it must never read or write.
+// The rule that says what a field holds a secret.
 //
-// The agent's own tools hide the value of a field that holds a secret and ask
-// the user before anything that sends, buys, deletes or submits. The fast
-// voice path acts on the page directly, without the agent's tools, so it
-// follows the same two rules here.
-//
-// The secret rule is written once, here. The page scripts cannot share module
-// scope, so they get the lists as an argument and match them the same way;
+// It is written once, here. The page scripts cannot share module scope, so
+// they get the lists as an argument and match them the same way;
 // test/voice-page.test.js runs the real page script against the real rule and
 // fails when the two drift apart.
+//
+// What a step may do is not decided here: the worker's access authority asks
+// the user and decides, for every action of every path. This file only says
+// what a field holds, so that no value of a secret field travels by accident.
 
 // The autocomplete tokens that mark a field as holding a secret. A field with
-// one of them is never described, never read and never written to.
+// one of them has its value hidden in ordinary observations. Explicit reads
+// and writes are governed separately by the worker's action authority.
 export const SECRET_TOKENS = [
   'password', 'current-password', 'new-password', 'passcode', 'one-time-code',
   'otp', 'pin', 'transaction-pin', 'cvc', 'cvv', 'security-code', 'card-number',
@@ -122,25 +121,4 @@ export function secretRule() {
     words: [...SECRET_WORDS],
     fragments: [...SECRET_FRAGMENTS],
   };
-}
-
-// The steps that only move the browser: what is on screen changes, but nothing
-// on the site does.
-export const BROWSER_ACTIONS = new Set([
-  'navigate', 'new_tab', 'web_search', 'scroll_down', 'scroll_up', 'scroll_top',
-  'scroll_bottom', 'go_back', 'go_forward', 'reload', 'switch_tab', 'next_tab',
-  'previous_tab', 'zoom_in', 'zoom_out', 'zoom_reset', 'media_play_pause',
-  'media_mute', 'find_on_page',
-]);
-
-// The steps that act on the page itself: they can send, buy, delete, log in or
-// submit. The user confirms each of them before it runs.
-export const PAGE_ACTIONS = new Set(['click', 'type_text', 'press_enter']);
-
-// Closing a tab throws away what was in it.
-export const DESTRUCTIVE_ACTIONS = new Set(['close_tab']);
-
-/** True when the step needs the user's confirmation before it runs. */
-export function needsConfirmation(action) {
-  return PAGE_ACTIONS.has(action) || DESTRUCTIVE_ACTIONS.has(action);
 }

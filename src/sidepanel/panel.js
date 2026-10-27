@@ -1,6 +1,9 @@
 import { renderMarkdown, reportFileName } from './markdown.js';
 import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
 import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
+import { createAccessUi } from './access.js';
+import { createPermissionUi } from './permissions.js';
+import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
 import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
@@ -57,12 +60,33 @@ let reconnected = false;
 function connect() {
   // The port name carries the panel: the worker gives the tabs this panel
   // holds back when the port closes.
-  port = chrome.runtime.connect({ name: `panel:${sessionId}:${voicePanelId}` });
-  port.onMessage.addListener(onEvent);
+  const myPort = chrome.runtime.connect({ name: `panel:${sessionId}:${voicePanelId}` });
+  const mySession = sessionId;
+  port = myPort;
+  // A new connection knows nothing yet: what the worker confirmed belonged to
+  // the old one, and the new worker has to say what the mode is now.
+  accessUi.reset();
+  accessUi.reconnect();
+  // The approvals of the old connection are gone with it: a card of a worker
+  // that is not there any more answers nothing.
+  resetApprovals();
+  // Every listener keeps the port and the chat it was made for: a late message
+  // or a late disconnect from a port that is gone changes nothing.
+  myPort.onMessage.addListener((event) => {
+    if (myPort !== port || mySession !== sessionId) return;
+    onEvent(event);
+  });
   // The worker is gone: the task it was running is gone with it.
-  port.onDisconnect.addListener(() => {
+  myPort.onDisconnect.addListener(() => {
+    if (myPort !== port) return;
     port = null;
     reconnected = true;
+    // The worker took its authority with it: nothing is confirmed any more,
+    // and nothing is sent until a new worker says what the mode is.
+    accessUi.reset();
+    // The approvals go with it: the cards of a worker that is gone answer
+    // nothing, and they are not on the screen either.
+    resetApprovals();
     cancelVoiceTask(t('voice.cancelled'));
     // The claims of this panel are given back: the worker may be gone, and a
     // tab that nobody holds is free again.
@@ -88,15 +112,299 @@ function pick(choose) {
   return run;
 }
 
-async function send(message, { signal, expectedSessionId } = {}) {
+// ---------- access mode ----------
+
+// The mode of this chat: Ask first or Full access. The panel never decides it:
+// it asks the worker and shows what the worker confirmed, so a mode that was
+// never confirmed never appears as Full access. The control is built once and
+// asks which chat it is about every time, because the chat can change under it.
+let accessErrorKey = '';
+
+const accessUi = createAccessUi({
+  elements: {
+    select: $('accessSelect'),
+    state: $('accessState'),
+    risk: $('accessRisk'),
+    voice: $('voiceAccess'),
+    warning: $('accessWarning'),
+    acknowledge: $('accessAcknowledge'),
+    confirm: $('accessConfirm'),
+    cancel: $('accessCancel'),
+  },
+  t,
+  request: (message) => requestAccess(message),
+  getSessionId: () => sessionId,
+});
+
+/**
+ * The mode is a request to the worker, about the chat the message names.
+ *
+ * The chat is bound to the message: a chat that is chosen while the message is
+ * on its way is not the chat the user agreed to, so the message goes nowhere
+ * rather than to the wrong chat. The failure is shown where the mode is shown,
+ * and it is raised again so the control keeps the mode the worker confirmed.
+ */
+async function requestAccess(message) {
+  const expectedPort = port;
+  try {
+    await send(message, { expectedSessionId: message.sessionId, expectedPort });
+    return true;
+  } catch (err) {
+    accessErrorKey = 'access.error.send';
+    renderAccessError();
+    throw err;
+  }
+}
+
+/** The reason the last mode request did not go out, in the panel's language. */
+function renderAccessError() {
+  const node = $('accessError');
+  if (!node) return;
+  node.textContent = accessErrorKey ? t(accessErrorKey) : '';
+  node.hidden = !accessErrorKey;
+}
+
+/**
+ * The worker said what the mode is. The state is the worker's own, and it is
+ * only read when it is about the chat the panel is on.
+ */
+function applyAccessState(state) {
+  accessUi.apply(state);
+  if (!state || state.sessionId !== sessionId) return;
+  // The worker spoke about the mode: the panel is in step with it again.
+  accessErrorKey = '';
+  renderAccessError();
+  handOverAccessIntent();
+}
+
+// The choice the user made while the worker was not there. It belongs to the
+// chat it was made for, and it is only a choice: the control opens a new
+// warning for it, and the warning is read before anything is asked for.
+let accessIntent = null;
+let accessIntentTimer = null;
+let accessIntentRetried = false;
+// The handover itself: the control is the one that acts on the choice.
+let accessHandover = false;
+
+/**
+ * The choice of the access control, seen before the control sees it.
+ *
+ * The control needs the mode the worker confirmed: a choice that is made
+ * while the worker is gone, or before it has said what the mode of this chat
+ * is, cannot be bound to a chat and a policy revision. Such a choice waits:
+ * the panel asks the worker again and hands the choice to the control when
+ * the worker has said what the mode is. The control never shows a mode the
+ * worker has not confirmed, and the warning it opens is always a new one.
+ */
+document.addEventListener('change', (event) => {
+  if (event.target !== $('accessSelect')) return;
+  if (accessHandover) return; // this change is the handover of a waiting choice
+  const mode = event.target.value === FULL_ACCESS ? FULL_ACCESS : ASK_FIRST;
+  if (accessUi.connected && accessUi.confirmed.revision > 0) return; // the control can act on it
+  // The control must not act on a choice it cannot bind: the choice waits.
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+  accessIntent = { sessionId, mode };
+  accessIntentRetried = false;
+  accessUi.restore(); // the selection goes back to the mode the worker confirmed
+  connectForAccess();
+  waitForAccessState();
+}, true);
+
+/** The worker is asked again, and the panel waits for the state it sends. */
+function connectForAccess() {
+  if (port) return; // there is a connection, and its state is on its way
+  try {
+    connect();
+  } catch (err) {
+    accessErrorKey = 'access.error.connect';
+    renderAccessError();
+  }
+}
+
+/** The state the panel waits for did not come: the port may be gone. */
+function accessIntentTimeout() {
+  accessIntentTimer = null;
+  if (!accessIntent) return;
+  if (!accessIntentRetried) {
+    // The port the panel had may be gone without the panel having been told:
+    // the worker was stopped. A new one is opened for the chat that is on.
+    accessIntentRetried = true;
+    port?.disconnect();
+    port = null;
+    connectForAccess();
+    waitForAccessState();
+    return;
+  }
+  // The worker does not answer: the choice is dropped, and the panel says so
+  // where the mode is shown. Nothing was asked for.
+  clearAccessIntent();
+  accessErrorKey = 'access.error.connect';
+  renderAccessError();
+}
+
+/** How long the panel waits for the state of the worker it asked again. */
+function waitForAccessState() {
+  clearTimeout(accessIntentTimer);
+  accessIntentTimer = setTimeout(accessIntentTimeout, 2500);
+}
+
+/** A choice that waits is dropped: the chat it was made for is gone. */
+function clearAccessIntent() {
+  accessIntent = null;
+  accessIntentRetried = false;
+  clearTimeout(accessIntentTimer);
+  accessIntentTimer = null;
+}
+
+/**
+ * The choice that waited is handed to the control: the worker has said what
+ * the mode of this chat is, and the warning the control opens is a new one,
+ * bound to that chat and that revision. Nothing is sent, and nothing is
+ * remembered of an older choice.
+ */
+function handOverAccessIntent() {
+  if (!accessIntent || accessIntent.sessionId !== sessionId) return;
+  if (!accessUi.connected || accessUi.confirmed.revision <= 0) return;
+  const mode = accessIntent.mode;
+  clearAccessIntent();
+  accessHandover = true;
+  const select = $('accessSelect');
+  select.value = mode;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  accessHandover = false;
+}
+
+async function send(message, { signal, expectedSessionId, expectedPort } = {}) {
   while (picking) await picking.catch(() => {});
   if (!sessionId) await showTabSession(); // the lookup on open failed; the message still needs a session
   signal?.throwIfAborted();
   if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
     throw new DOMException('Session changed', 'AbortError');
   }
+  // A consent read on one connection cannot be sent on a restarted worker's
+  // connection, even if its new session revision happens to be the same.
+  if (expectedPort !== undefined && (!expectedPort || expectedPort !== port)) {
+    throw new DOMException('Connection changed', 'AbortError');
+  }
   if (!port) connect();
   port.postMessage(message);
+}
+
+// ---------- approvals ----------
+
+// The actions the worker asks the user about. One card per request, drawn in
+// the one place both screens can see: the chat and the voice screen share it,
+// so there is one authority for an action and one answer for it.
+//
+// The worker owns the request. The panel draws what the worker published — the
+// action, the site and the name of the target — and nothing else: the
+// arguments, the value and the permit are never on the screen.
+const permissionUi = createPermissionUi({
+  container: $('approvals'),
+  t: approvalWords,
+  getSessionId: () => sessionId,
+  getConnection: () => port,
+  getRevision: () => accessUi.confirmed.revision,
+  // The answer goes out on the connection and for the chat the card was drawn
+  // for. The helper holds both of them, and they are handed on as they are.
+  send: (message, options) => send(message, options),
+});
+
+/** The requests that are live, by their id: what the worker still waits for. */
+const permissionRequests = new Map();
+
+/**
+ * The words of a card.
+ *
+ * The name of a tool is translated when the panel knows it: an Arabic panel
+ * should not ask about a "type_text". A tool it does not know keeps the name
+ * it has, which is the only honest thing to show.
+ */
+function approvalWords(key, vars = {}) {
+  if (key === 'access.approval.action' && typeof vars?.action === 'string') {
+    const nameKey = `access.approval.actionName.${vars.action}`;
+    const name = t(nameKey);
+    if (name !== nameKey) return t(key, { ...vars, action: name });
+  }
+  return t(key, vars);
+}
+
+/** The shared area is only on the screen while something waits in it. */
+function syncApprovals() {
+  const node = $('approvals');
+  if (node) node.hidden = permissionUi.count === 0;
+}
+
+/**
+ * The worker asks for one action to be allowed.
+ *
+ * The request belongs to the chat, the revision and the connection it was made
+ * with, and the card is drawn for it alone. A request of another chat, of
+ * another revision, or one that arrives on no live connection is not drawn.
+ */
+function applyAccessRequest(event) {
+  const drawn = permissionUi.apply(event);
+  const request = event?.request;
+  if (drawn && request && typeof request.id === 'string') permissionRequests.set(request.id, request);
+  syncApprovals();
+}
+
+/**
+ * The request is settled: the card goes with it.
+ *
+ * A settlement may arrive before the mode it was asked under is confirmed
+ * again — the worker says that a request ended before it says what the mode is
+ * now — so it is processed as it comes, and the cards that are left are the
+ * ones the worker still waits for.
+ */
+function settleAccessRequest(event) {
+  const settled = permissionUi.settle(event);
+  // The cache follows the card: a settlement that is not the one of this
+  // request — another chat, another revision, another connection — changes
+  // nothing, and the request it names stays where it was.
+  if (settled) {
+    const id = event?.id;
+    if (typeof id === 'string') permissionRequests.delete(id);
+  }
+  syncApprovals();
+}
+
+/**
+ * The worker said what the mode is now.
+ *
+ * A mode that moved takes the approvals of the old mode with it: the cards
+ * that were asked under it are gone, and the ones that are asked under the new
+ * mode are drawn again.
+ */
+function refreshApprovals() {
+  permissionUi.replay([...permissionRequests.values()]);
+  syncApprovals();
+}
+
+/**
+ * The worker replays the state of the chat.
+ *
+ * The mode comes before the approvals: a card belongs to the revision the
+ * worker confirmed, so the mode is applied first and the requests are drawn
+ * under it. What the worker still waits for is what is left; the history of
+ * the chat is not a request.
+ */
+function applyAccessReplay(state, permissions) {
+  applyAccessState(state);
+  permissionRequests.clear();
+  for (const request of Array.isArray(permissions) ? permissions : []) {
+    if (request && typeof request.id === 'string') permissionRequests.set(request.id, request);
+  }
+  permissionUi.replay(permissions);
+  syncApprovals();
+}
+
+/** The worker is gone, or the chat changed: every card goes with it. */
+function resetApprovals() {
+  permissionRequests.clear();
+  permissionUi.reset();
+  syncApprovals();
 }
 
 function onEvent(event) {
@@ -116,6 +424,30 @@ function onEvent(event) {
       if (event.question) setQuestion(event.question);
       ui.pending = event.pending ?? [];
       renderPending();
+      // The worker's own state, sent with the replay: the mode that is really
+      // in force for this chat now, not a moment of the conversation, and the
+      // requests it still waits for under it.
+      applyAccessReplay(event.access, event.permissions);
+      break;
+    case 'access-state':
+      // The worker says what the mode is now. A state that belongs to the
+      // replayed history is not a state of this chat: it changes nothing.
+      if (replaying) break;
+      applyAccessState(event);
+      // A mode that moved takes the approvals of the old mode with it.
+      refreshApprovals();
+      break;
+    case 'access-request':
+      // The worker asks for one action to be allowed. Only the connection that
+      // is live now may ask: a request of a worker that is gone, or one that
+      // belongs to the history, is not a question that waits for an answer.
+      if (replaying) break;
+      applyAccessRequest(event);
+      break;
+    case 'access-request-settled':
+      // The request is over: the card goes with it.
+      if (replaying) break;
+      settleAccessRequest(event);
       break;
     case 'status':
       setRunning(event.running);
@@ -1386,6 +1718,8 @@ const VOICE_ACTIONS = {
   web_search: 'voice.actionSearch',
   click: 'voice.actionClick',
   type_text: 'voice.actionType',
+  read_field: 'voice.actionReadField',
+  insert_text: 'voice.actionInsertText',
   press_enter: 'voice.actionEnter',
   scroll_down: 'voice.actionScrollDown',
   scroll_up: 'voice.actionScrollUp',
@@ -1568,6 +1902,15 @@ async function openSession(id) {
   sessionId = id;
   ui.replayed = false;
   ui.running = false;
+  // The mode belonged to the chat that is left: it goes with it, so a warning
+  // or a Full label of the old chat cannot survive into the new one.
+  accessUi.reset();
+  // The approvals of the chat that is left go with it: a card of another chat
+  // answers nothing, and it is not on the screen either.
+  resetApprovals();
+  // A choice that was waiting for the worker was made for the chat that is
+  // left: it goes with it too.
+  clearAccessIntent();
   // The command that was running belongs to the session that is left: it is
   // stopped with the microphone, and the approval with it, so nothing acts on
   // the tab of the session that is gone.
@@ -1932,6 +2275,13 @@ $('langBtn').addEventListener('click', async () => {
 /** Static text is retranslated by setLanguage; text this file renders is redrawn here. */
 function applyLanguage(language) {
   setLanguage(language);
+  // The words of the access control change; the mode the worker confirmed and
+  // the chat it belongs to do not.
+  accessUi.updateLanguage(t);
+  // The words of the approvals change too; the requests that wait for an
+  // answer do not.
+  permissionUi.updateLanguage(approvalWords);
+  renderAccessError();
   renderFiles();
   if (!settings) return;
   for (const provider of ACCOUNT_PROVIDERS) if (authState[provider]) showAuth(provider, authState[provider]);
@@ -2041,6 +2391,11 @@ async function init() {
   presets = data.presets;
   fastPresets = data.fastPresets;
   setLanguage(resolveLanguage(settings.uiLanguage, chrome.i18n.getUILanguage()));
+  // The access control is drawn again in the language the panel settled on.
+  // The mode it shows is still the one the worker confirmed.
+  accessUi.updateLanguage(t);
+  // The same for the approvals: the words change, the requests do not.
+  permissionUi.updateLanguage(approvalWords);
   renderDriveState();
   // The fast layer and its backup offer the same decision providers.
   const fastOptions = Object.entries(fastPresets).map(([id, p]) => `<option value="${id}">${escapeAttr(p.label)}</option>`).join('');

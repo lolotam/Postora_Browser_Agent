@@ -14,6 +14,8 @@ export const ACTIONS = {
   web_search: 'Search for something: on Google, or on a named site like YouTube / Amazon / Wikipedia, or on the site currently open (e.g. "search for cats", "look up the weather", "find lofi music on youtube").',
   click: 'Click, press, open, select or play a specific link, button, video, result or item that is visible on the current page (e.g. "click sign in", "open the first result", "play the second video").',
   type_text: 'Type / write / enter / fill some text into a text box or input field on the page (e.g. "type hello world", "write my name in the email field").',
+  read_field: 'Read the value of ONE field that is on the page (e.g. "read the password field", "what does the one-time code say"). Only that one field is read, and only after the user allowed it.',
+  insert_text: 'Type text into the field that has the focus right now, without naming it (e.g. "type ls -la", "type hello there" while a terminal has the focus).',
   press_enter: 'Press Enter / submit / send the current form or input.',
   scroll_down: 'Scroll down the page / go down / show more.',
   scroll_up: 'Scroll up the page / go up.',
@@ -37,7 +39,7 @@ export const ACTIONS = {
 };
 
 /** The steps that need an argument of their own. */
-const NEEDS_TEXT = new Set(['web_search', 'type_text', 'find_on_page']);
+const NEEDS_TEXT = new Set(['web_search', 'type_text', 'find_on_page', 'insert_text', 'read_field']);
 
 /** How sure the answer has to be before the step runs. */
 export const MIN_CONFIDENCE = 0.4;
@@ -457,6 +459,7 @@ export async function chooseElement(ask, command, ctx, elements, purpose, argume
   // The model may say that none of them is the one the user meant: a command
   // that names a field that is not on the page must not land in another one.
   if (purpose === 'click') criteria.none = 'None of these elements matches what the user asked to click.';
+  else if (purpose === 'read') criteria.none = 'None of these fields is the one whose value should be read.';
   else criteria.none = 'None of these fields is the one the user named.';
 
   const question =
@@ -466,9 +469,14 @@ export async function chooseElement(ask, command, ctx, elements, purpose, argume
         'Elements are listed in page order (top to bottom). Words like "first", "second", "third" refer to the ' +
         'numbered content items (e.g. "1st video of 5", "2nd search result of 8"), never to menus or sponsored ads. ' +
         'Avoid sponsored ads unless the user explicitly asks for an ad. Prefer elements that are on screen.'
-      : `The user said "${command}" to their browser. Which text field should the text "${argumentText}" be typed into? ` +
-        'If the user named a field, pick that one; if it is not on the page, answer "none" rather than pick another field. ' +
-        'If no field is named, pick the most prominent / main input (e.g. the search box or message box).';
+      : purpose === 'read'
+        ? `The user said "${command}" to their browser. Which field should be read? ` +
+          (argumentText ? `They are referring to "${argumentText}". ` : '') +
+          'Only one field is read, and only after the user allowed it. If the user named a field, pick that one; ' +
+          'if it is not on the page, answer "none" rather than pick another field.'
+        : `The user said "${command}" to their browser. Which text field should the text "${argumentText}" be typed into? ` +
+          'If the user named a field, pick that one; if it is not on the page, answer "none" rather than pick another field. ' +
+          'If no field is named, pick the most prominent / main input (e.g. the search box or message box).';
 
   const reply = await ask({
     state: { spoken_command: command, page: { title: trimForState(ctx.title, 120), url: trimForState(redactUrl(ctx.url), 200) } },
