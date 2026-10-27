@@ -53,6 +53,7 @@ function makePage({ text = 'A page with ordinary words.' } = {}) {
     children = [], shadow = null, parent = 'body',
   } = {}) => {
     const node = {
+      nodeType: 1,
       tagName: tag,
       type,
       attrs: { ...attrs },
@@ -81,6 +82,7 @@ function makePage({ text = 'A page with ordinary words.' } = {}) {
     });
     // The text of the element is the text of its own and of its children.
     Object.defineProperty(node, 'textContent', {
+      configurable: true,
       get: () => [innerText, ...children.map((child) => child.textContent ?? '')].filter(Boolean).join(''),
     });
     node.getAttribute = (name) => (name in node.attrs ? node.attrs[name] : null);
@@ -186,6 +188,17 @@ test('an editor referenced as another field label never exposes its contents', (
   assert.doesNotMatch(JSON.stringify(captured), /TEST_EDITOR_SECRET/);
   const snapshot = page.run(SNAPSHOT, 250, 3500, rule);
   assert.doesNotMatch(JSON.stringify(snapshot), /TEST_EDITOR_SECRET/);
+});
+
+test('capturing a button does not read a different secret editor even to test whether it is empty', () => {
+  const page = makePage();
+  const button = page.make({ tag: 'BUTTON', attrs: { 'aria-label': 'Send' }, innerText: 'Send' });
+  const editor = page.make({ tag: 'DIV', editable: true, attrs: { 'aria-label': 'Access token' } });
+  let reads = 0;
+  Object.defineProperty(editor, 'textContent', { get() { reads += 1; return 'UNREQUESTED_EDITOR_VALUE'; } });
+  page.window.__agentElements = [button];
+  assert.equal(page.run(TARGET, 'capture', { kind: 'element', index: 0 }, rule).ok, true);
+  assert.equal(reads, 0);
 });
 
 test('the label that belongs to a field is part of its name', () => {
@@ -486,7 +499,8 @@ test('the contents of a control that holds a secret stay out of the page and its
     editable: true,
   });
   // The box around it shows the text of the editor as its own.
-  const wrapper = page.make({ tag: 'DIV', innerText: 'TEST_EDITOR_SECRET', children: [editor] });
+  const wrapper = page.make({ tag: 'DIV', children: [editor] });
+  Object.defineProperty(wrapper, 'innerText', { get: () => editor.innerText });
   page.window.__agentElements = [wrapper, editor];
 
   const snap = page.run(SNAPSHOT, 250, 3500, rule);

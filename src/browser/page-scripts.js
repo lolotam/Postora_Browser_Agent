@@ -157,7 +157,7 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     const found = [];
     const walk = (scope) => {
       for (const el of scope.querySelectorAll('*')) {
-        if (isSecret(el) && el.textContent && el.textContent.trim()) found.push(el);
+        if (isSecret(el)) found.push(el);
         if (el.shadowRoot) walk(el.shadowRoot);
       }
     };
@@ -481,7 +481,7 @@ export function elementAction(index, action, value, quiet, rule, target) {
     const found = [];
     const walk = (scope) => {
       for (const node of scope.querySelectorAll('*')) {
-        if (isSecret(node) && node.textContent && node.textContent.trim()) found.push(node);
+        if (isSecret(node)) found.push(node);
         if (node.shadowRoot) walk(node.shadowRoot);
       }
     };
@@ -866,7 +866,7 @@ export function permissionTarget(kind, arg, rule) {
     const found = [];
     const walk = (scope) => {
       for (const el of scope.querySelectorAll('*')) {
-        if (isSecret(el) && el.textContent && el.textContent.trim()) found.push(el);
+        if (isSecret(el)) found.push(el);
         if (el.shadowRoot) walk(el.shadowRoot);
       }
     };
@@ -1077,7 +1077,7 @@ export function pageText(start, length, rule) {
     const found = [];
     const walk = (scope) => {
       for (const el of scope.querySelectorAll('*')) {
-        if (isSecret(el) && el.textContent && el.textContent.trim()) found.push(el);
+        if (isSecret(el)) found.push(el);
         if (el.shadowRoot) walk(el.shadowRoot);
       }
     };
