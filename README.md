@@ -41,6 +41,7 @@ You choose the model, the auth method, and the reasoning effort.
 - **One API key per provider:** a key entered for one provider is reused by the backup slot and the fast layer whenever they pick the same provider. The Anthropic key is shared by the main Claude slot and the one of its backup.
 - **Sessions:** several sessions, saved on your computer, with search, rename and delete. Sessions can run tasks at the same time; each works only in its own Chrome tab group and never brings a tab to the front. The side panel follows the tab in front: a new tab starts on a blank session, and a tab where a task ran (or that the user picked a session for) keeps its session.
 - **Interface:** Arabic or English, light or dark following the system. The agent replies in the language of the task, or always in a language you switch on in settings. Settings can be backed up to a file and restored after reinstalling.
+- **Voice control:** click the composer microphone (or press **Alt+Shift+V** while the panel is focused) to open the voice screen: live transcript, continuous listening, optional spoken replies, typed commands and an activity log. **Back to chat** stops capture. Settings selects the existing Postora agent (default) or the configured fast provider alone. Fast-only asks before clicks, typing, submitting or closing tabs and refuses secret fields. If Chrome needs microphone permission, a separate window opens; commands remain targeted at the original browser tab.
 
 ## Privacy
 

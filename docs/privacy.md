@@ -1,6 +1,6 @@
 # Privacy Policy — Postora Browser Agent
 
-Last updated: 9 October 2026
+Last updated: 27 October 2026
 
 Postora Browser Agent ("the extension") is an AI agent in Chrome's side panel. You give it a task, and it reads and operates the web pages needed to carry it out, then writes you a report. This policy explains what data the extension handles, where it goes, and how to delete it.
 
@@ -14,6 +14,7 @@ The extension has no server of its own. The developer does not receive your task
 | Content of the pages the agent works on: address, title, visible text, the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
 | API keys and account sign-in tokens (ChatGPT, Claude, Grok) you enter | When you save settings | Stored on your computer; each key/token is sent only to its own provider |
 | Settings | When you save them | Stored on your computer |
+| Speech and its transcript | Only after voice listening is enabled | Chrome's Web Speech recognition service processes speech; the resulting command is sent to your selected execution provider |
 | Google account name, email address and profile picture | Only if you sign in with Google (optional) | Stored on your computer; the picture is shown in the header |
 | A backup of your settings, keys and account sign-in tokens | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
 | Feedback message, star rating, and an email address (one you type, or your Google email if signed in) | Only when you press Send in the feedback box, or give a task five stars | Sent to the developer by email through Formspree |
@@ -37,6 +38,16 @@ The backup is stored without extra encryption and is protected by your Google ac
 ## Notifications (optional)
 
 If you turn on "Notify me" in Settings, Chrome asks you to allow notifications. The extension then shows a desktop notification when a task finishes, needs your answer or stops with an error, only while you are on another tab. The notification says only that ("A task finished"); it contains no task, page or report text, and nothing is sent anywhere. Turning the switch off gives the permission back.
+
+## Voice control (optional)
+
+Voice control uses Chrome's Web Speech API, which may process audio through a remote speech service and requires an internet connection. The extension does not store audio recordings. "Keep listening" captures subsequent commands until you stop the microphone or leave the voice screen. Optional spoken replies use the browser's speech-synthesis service. Voice preferences are stored locally.
+
+The Postora execution mode sends the transcript through the normal agent. Fast-only mode sends it and the necessary tab/element descriptions to the configured fast provider (and its backup if enabled), without consulting the main model. An observed tab or link address is reduced to its origin (scheme and host) before it reaches that provider: no username, path, query or fragment travels, and a link without a scheme is named only as a relative link. Titles remain visible, and an address you explicitly include in a command is part of that command's text and is used for the navigation as it was said. The voice activity list stays in the open panel; normal Postora tasks also enter the saved session.
+
+Fast-only asks for confirmation before clicking, typing, submitting or closing a tab. Fields that hold a secret are left out of its element descriptions and typing actions: the rule is a list of names, in English and in Arabic, for passwords, one-time codes, safety codes, card numbers and card expiry, together with the browser's own password and card markers. It is a rule about names, so a field whose name says nothing about what it holds is not recognised.
+
+The element that was approved is looked up again in the page and checked at the moment the input is sent: it must be the same element, still on the page, and not covered by something else. A key or a text goes out only while the focus is still the approved field and that field does not hold a secret, so a page that moved the focus to a password box gets nothing; a body that was approved is approved as that body, and a page that replaced the document does not inherit it. An element that was copied, replaced or covered never inherits the approval. The first click of an approved action may give the focus back to the approved field, and the point that is clicked is worked out again just before the click, so an element that had moved earlier can still be clicked.
 
 ## Feedback
 

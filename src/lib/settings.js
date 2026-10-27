@@ -121,6 +121,10 @@ export const DEFAULT_SETTINGS = {
   // A message sent while a task runs: 'next-step', 'interrupt' or 'queue' (see SessionRunner.steer).
   steerMode: 'next-step',
   uiLanguage: 'auto',
+  // Voice control execution engine: 'postora' or 'fast_only'. The voice
+  // screen's own preferences (hands-free, spoken replies) live in their own
+  // storage keys, so they are saved without touching these settings.
+  voiceEngine: 'postora',
   // Off: the agent replies in the language the task is written in.
   replyLanguage: { enabled: false, language: '' },
   // One API key per provider for every slot (see shareKeys).

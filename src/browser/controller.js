@@ -25,6 +25,9 @@ const KEYS = {
   PageDown: { code: 'PageDown', keyCode: 34 },
 };
 const MODIFIERS = { Alt: 1, Control: 2, Ctrl: 2, Meta: 4, Cmd: 4, Shift: 8 };
+// The error a guarded input throws when the guard says the input may not
+// happen any more: the lease it belonged to is gone.
+export const INPUT_CANCELLED = 'voice.inputCancelled';
 // After an action, the page counts as settled once its content stops changing for
 // SETTLE_QUIET_MS (capped at SETTLE_MAX_MS), instead of a fixed pause: a static page
 // moves on at once, results that load by script still get time to appear.
@@ -39,12 +42,18 @@ const SETTLE_MAX_MS = 800;
  * never brought to the front; input and screenshots go through CDP.
  */
 export class BrowserController {
-  constructor({ title = 'Postora', color = 'cyan', isTakenByOther = () => null } = {}) {
+  constructor({ title = 'Postora', color = 'cyan', isTakenByOther = () => null, reservation = null } = {}) {
     this.title = title;
     this.color = color;
     this.isTakenByOther = isTakenByOther;
+    // How a tab is reserved while it is being taken into the group. It is an
+    // adapter, so this file stays free of the worker's state.
+    this.reservation = reservation;
     this.groupId = null;
     this.tabId = null;
+    // True while the controller works on a tab it borrowed: it never falls
+    // back to another tab when that one is gone.
+    this.borrowed = false;
     // The tab the task started on stays open. Tabs this session opened are closed
     // once it leaves them, so a long task does not keep every page in memory.
     this.homeTabId = null;
@@ -67,12 +76,34 @@ export class BrowserController {
         this.tabId = null;
       }
     }
+    // A borrowed tab is never replaced by another one: the command that
+    // borrowed it acts on no tab at all when that tab is gone.
+    if (this.borrowed) throw new Error('The tab this command acts on is gone.');
     return this.startOn();
   }
 
-  /** A task begins on the tab the user is looking at, which joins the session's group. */
-  async startOn() {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  /**
+   * Works on a tab without taking it into the session's group: the voice path
+   * borrows the tab it was pointed at, so no session owns it and no other
+   * session is pushed out of it.
+   */
+  async borrowTab(tabId) {
+    const tab = await chrome.tabs.get(tabId);
+    this.tabId = tabId;
+    this.borrowed = true;
+    return tab;
+  }
+
+  /**
+   * A task begins on the tab the user is looking at, which joins the session's
+   * group. `tabId` names the tab to work on when the caller knows it: a voice
+   * command pins the tab it was meant for, and the microphone window that asks
+   * for the permission must not become the target.
+   */
+  async startOn(tabId = null) {
+    const tab = tabId == null
+      ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
+      : await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error('No active tab found.');
     const claimed = await this.useTab(tab.id);
     this.homeTabId = claimed.id;
@@ -80,9 +111,12 @@ export class BrowserController {
   }
 
   async useTab(tabId) {
-    const tab = await this.claimTab(tabId);
+    // The tab this controller had before is remembered before the new one is
+    // claimed: claiming publishes the new tab.
     const previous = this.tabId;
+    const tab = await this.claimTab(tabId);
     this.tabId = tabId;
+    this.borrowed = false;
     if (previous !== null && previous !== tabId) {
       await this.overlay.leave(previous);
       await this.closeIfLeft(previous);
@@ -141,20 +175,68 @@ export class BrowserController {
 
   async claimTab(tabId) {
     const tab = await chrome.tabs.get(tabId);
-    if (this.ownsTab(tab)) return tab;
+    // A tab that another session holds is refused, even when it is already in
+    // this session's group: the voice path's claim is a claim too.
     const owner = this.isTakenByOther(tab);
     if (owner) throw new Error(`Tab ${tabId} is used by session "${owner}". Use a tab of your own or open a new one.`);
-    if (this.groupId !== null) {
-      try {
-        await chrome.tabs.group({ tabIds: [tabId], groupId: this.groupId });
-        return { ...tab, groupId: this.groupId };
-      } catch {
-        this.groupId = null; // every tab of the group was closed, so the group is gone
-      }
+    if (this.ownsTab(tab)) return tab;
+    // The tab is reserved before the grouping starts. Grouping is asynchronous,
+    // and the voice path must not take the tab while the session is taking it.
+    const reservation = await this.reserveTab(tabId);
+    if (!reservation.ok) {
+      throw new Error(`Tab ${tabId} is used by session "${reservation.owner}". Use a tab of your own or open a new one.`);
     }
-    this.groupId = await chrome.tabs.group({ tabIds: [tabId] });
-    await chrome.tabGroups.update(this.groupId, { title: this.title, color: this.color });
-    return { ...tab, groupId: this.groupId };
+    try {
+      if (this.groupId !== null) {
+        try {
+          await chrome.tabs.group({ tabIds: [tabId], groupId: this.groupId });
+          this.publishTab(tabId);
+          return { ...tab, groupId: this.groupId };
+        } catch {
+          this.groupId = null; // every tab of the group was closed, so the group is gone
+        }
+      }
+      this.groupId = await chrome.tabs.group({ tabIds: [tabId] });
+      await chrome.tabGroups.update(this.groupId, { title: this.title, color: this.color });
+      this.publishTab(tabId);
+      return { ...tab, groupId: this.groupId };
+    } finally {
+      // The group is published now, so the ordinary ownership is visible and
+      // the reservation may go. A failure gives it back as well.
+      await this.releaseTab(tabId, reservation);
+    }
+  }
+
+  /**
+   * The tab this controller works on is published before the reservation that
+   * held it is given back: the ordinary ownership is visible as soon as the
+   * reservation is over, so nobody may take the tab in between.
+   */
+  publishTab(tabId) {
+    this.tabId = tabId;
+  }
+
+  /** Reserves a tab while it is being grouped, when an adapter was given. */
+  async reserveTab(tabId) {
+    if (!this.reservation) return { ok: true, token: null };
+    try {
+      const res = await this.reservation.reserve(tabId);
+      if (res?.ok) return { ok: true, token: res.token ?? null };
+      return { ok: false, owner: res?.owner ?? 'another session' };
+    } catch {
+      // A reservation that cannot be taken fails closed: the tab is not touched.
+      return { ok: false, owner: 'another session' };
+    }
+  }
+
+  /** Gives a reservation back. */
+  async releaseTab(tabId, reservation) {
+    if (!this.reservation || !reservation?.token) return;
+    try {
+      await this.reservation.release(tabId, reservation.token);
+    } catch {
+      // The tab is free anyway: the session owns it through its group.
+    }
   }
 
   async rename(title) {
@@ -163,7 +245,13 @@ export class BrowserController {
     await chrome.tabGroups.update(this.groupId, { title }).catch(() => {}); // the group may have closed
   }
 
-  async cdp(method, params = {}) {
+  /**
+   * Sends one command to the debugger. A `guard` says whether the command may
+   * still be sent: it is asked again after the debugger was attached, right
+   * before the command that changes the page goes out.
+   */
+  async cdp(method, params = {}, { guard = null } = {}) {
+    if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const tab = await this.currentTab();
     assertControllable(tab.url);
     if (!this.attached.has(tab.id)) {
@@ -174,6 +262,7 @@ export class BrowserController {
       }
       this.attached.add(tab.id);
     }
+    if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     return chrome.debugger.sendCommand({ tabId: tab.id }, method, params);
   }
 
@@ -186,6 +275,17 @@ export class BrowserController {
       }
     }
     this.attached.clear();
+  }
+
+  /** Detaches one tab, leaving the others alone. */
+  async detachTab(tabId) {
+    if (!this.attached.has(tabId)) return;
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch {
+      // Already detached, or the tab is gone.
+    }
+    this.attached.delete(tabId);
   }
 
   async inject(func, args = []) {
@@ -235,14 +335,20 @@ export class BrowserController {
     await this.waitForLoad({ expectNavigation: true });
   }
 
-  async clickAt(x, y, { button = 'left', clickCount = 1 } = {}) {
-    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  async clickAt(x, y, { button = 'left', clickCount = 1, wait = true, guard = null } = {}) {
+    await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, { guard });
     await this.overlay.click(x, y);
     for (let i = 1; i <= clickCount; i += 1) {
-      await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i });
+      // The move and the overlay took time: the guard is asked again right
+      // before the button goes down, so a click that was withdrawn never
+      // reaches the page.
+      await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i }, { guard });
+      // The button is always let go, or it stays down in the page. The guard
+      // is not asked again: a withdrawal after the press must not leave the
+      // mouse held down.
       await this.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: i });
     }
-    await this.waitForLoad();
+    if (wait) await this.waitForLoad();
   }
 
   async hoverAt(x, y) {
@@ -250,12 +356,12 @@ export class BrowserController {
     await delay(300);
   }
 
-  async insertText(text) {
-    await this.cdp('Input.insertText', { text });
+  async insertText(text, { guard = null } = {}) {
+    await this.cdp('Input.insertText', { text }, { guard });
   }
 
   /** Presses a key or chord such as "Enter", "Control+A" or "Shift+Tab". */
-  async pressKey(combo) {
+  async pressKey(combo, { wait = true, guard = null } = {}) {
     const parts = combo.split('+').map((p) => p.trim()).filter(Boolean);
     const keyName = parts.pop();
     const modifiers = parts.reduce((mask, m) => mask | (MODIFIERS[m] ?? 0), 0);
@@ -271,9 +377,10 @@ export class BrowserController {
       nativeVirtualKeyCode: spec.keyCode,
       modifiers,
     };
-    await this.cdp('Input.dispatchKeyEvent', { ...base, type: spec.text ? 'keyDown' : 'rawKeyDown', text: spec.text });
+    await this.cdp('Input.dispatchKeyEvent', { ...base, type: spec.text ? 'keyDown' : 'rawKeyDown', text: spec.text }, { guard });
+    // The key is always let go, or it stays down in the page.
     await this.cdp('Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
-    await this.waitForLoad();
+    if (wait) await this.waitForLoad();
   }
 
   /** Scrolls by a number of screens (negative = up) at a point, default viewport centre. */

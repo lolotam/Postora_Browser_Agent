@@ -4,12 +4,14 @@
 import { FallbackSession, emptyLog, handoffMessage } from './fallback-session.js';
 import { buildSystemPrompt } from './prompt.js';
 import { toolDefinitions } from './tools.js';
-import { askWithBackup, fastClientFor } from '../fast/clients.js';
+import { createFastAsk } from '../fast/clients.js';
 import { COMPATIBLE_PRESETS, effectiveSettings } from '../lib/settings.js';
 import { AnthropicSession } from '../providers/anthropic.js';
 import { ChatgptSession } from '../providers/chatgpt.js';
 import { CompatibleSession } from '../providers/openai-compatible.js';
 import { GrokAccountSession } from '../providers/responses.js';
+
+export { createFastAsk };
 
 /**
  * A provider session for one model slot: the main one or settings.fallback.
@@ -80,10 +82,4 @@ export function createModelSession(settings, { notify, seed = null, conversation
 /** Settings that require a new model session when they change. */
 export function modelSessionKey(settings) {
   return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage]);
-}
-
-export function createFastAsk(fast, notify) {
-  return fast.fallback.enabled && fast.fallback.apiKey
-    ? askWithBackup({ primary: fast, backup: fast.fallback, notify })
-    : fastClientFor(fast);
 }

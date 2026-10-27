@@ -12,6 +12,7 @@ import { createFastLayer } from '../fast/fast-layer.js';
 import { effectiveSettings, loadSettings } from '../lib/settings.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
+import * as voiceClaims from '../sessions/voice-claims.js';
 
 const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
@@ -41,7 +42,16 @@ export class SessionRunner {
     this.asks = 0;
     this.askNotices = []; // "needs your answer" notifications still shown
     this.settings = null;
-    this.browser = new BrowserController({ title: meta.title || 'Postora', color, isTakenByOther: (tab) => isTakenByOther(this.id, tab) });
+    // A tab the voice path holds the claim on is not free either: the task
+    // waits for the voice command instead of working on the same page. The
+    // controller reserves a tab while it takes it into its group, so the voice
+    // path cannot take it in between.
+    this.browser = new BrowserController({
+      title: meta.title || 'Postora',
+      color,
+      isTakenByOther: (tab) => voiceClaims.tabHolder(isTakenByOther, tab, { sessionId: this.id }),
+      reservation: voiceClaims.tabReservation({ sessionId: this.id, controllerId: this.id, owner: meta.title || 'this session' }),
+    });
     this.browser.groupId = body.groupId ?? null;
   }
 
@@ -65,7 +75,7 @@ export class SessionRunner {
   }
 
   receive(msg) {
-    if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images });
+    if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images, tabId: msg.tabId });
     else if (msg.type === 'steer') this.steer(msg.text, msg.mode, { display: msg.display, images: msg.images });
     else if (msg.type === 'steer-now') this.sendNow(msg.id);
     else if (msg.type === 'steer-cancel') this.dropMessage(msg.id);
@@ -165,7 +175,7 @@ export class SessionRunner {
     };
   }
 
-  async start(text, { display, images } = {}) {
+  async start(text, { display, images, tabId } = {}) {
     if (this.running) {
       this.emit({ type: 'error', message: 'A task is already running in this session. Stop it first.' });
       return;
@@ -189,7 +199,7 @@ export class SessionRunner {
       this.prepareModelSession(settings);
       this.browser.overlay.begin({ enabled: settings.showCursor, uiLanguage: settings.uiLanguage });
       this.browser.tabId = null; // each task starts on the tab the user is looking at
-      const tab = await this.browser.currentTab();
+      const tab = await this.browser.startOn(tabId);
       const execute = createToolExecutor(this.browser, { askUser: (q) => this.askUser(q, abort.signal), signal: abort.signal, notebook: this.notebook, onNotebookChange: () => this.scheduleSave(), allowed: new Set(toolDefinitions(effectiveSettings(settings)).map((t) => t.name)) });
       const fastLayer = settings.fast.enabled && settings.fast.apiKey
         ? createFastLayer({ config: settings.fast, browser: this.browser, execute, task: text, ask: createFastAsk(settings.fast, this.notify) })

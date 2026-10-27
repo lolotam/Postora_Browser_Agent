@@ -100,6 +100,55 @@ const find = (text, re) => {
   return m[1];
 };
 
+// The page the voice scenario acts on: a button to click, a field to type in,
+// and two fields that hold a secret and must never be read or written.
+const VOICE_PAGE = `<!doctype html><html><body>
+<h1>Voice test page</h1>
+<button id="go">Go</button>
+<input id="search" placeholder="Search">
+<input id="pw" type="password" placeholder="Password">
+<input id="code" autocomplete="one-time-code" placeholder="Code">
+<div id="out" data-n="0"></div>
+<script>
+document.getElementById('go').addEventListener('click', () => {
+  const out = document.getElementById('out');
+  const n = Number(out.dataset.n || 0) + 1;
+  out.dataset.n = String(n);
+  out.textContent = 'clicked ' + n;
+});
+</script>
+</body></html>`;
+
+// A page that ignores what it cannot trust: it only reacts to a click, a
+// keystroke and an Enter that the browser itself produced. A site like this
+// is the reason the voice path sends real input and never a fake event.
+const TRUSTED_PAGE = `<!doctype html><html><body>
+<h1>Trusted input</h1>
+<button id="go">Go</button>
+<input id="field" name="field" placeholder="Type here">
+<div id="out" data-clicks="0" data-trusted="no"></div>
+<script>
+const out = document.getElementById('out');
+document.getElementById('go').addEventListener('click', (event) => {
+  if (!event.isTrusted) return; // a synthetic click is ignored
+  out.dataset.clicks = String(Number(out.dataset.clicks) + 1);
+  out.dataset.trusted = 'yes';
+  out.textContent = 'clicked ' + out.dataset.clicks;
+});
+document.getElementById('field').addEventListener('input', (event) => {
+  if (!event.isTrusted) return; // a synthetic input is ignored
+  out.dataset.trusted = 'yes';
+  out.textContent = 'typed ' + document.getElementById('field').value;
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && event.isTrusted) {
+    out.dataset.trusted = 'yes';
+    out.textContent = 'entered';
+  }
+});
+</script>
+</body></html>`;
+
 /** Mock LLM for the "llm" scenario: drives the whole task itself. */
 /** With askFirst the run starts by asking the user, so it stays running until a test answers. */
 function scriptedLlm({ askFirst = false } = {}) {
@@ -211,6 +260,25 @@ function scriptedJudge() {
   };
 }
 
+/** Mock Jev for the voice screen: it clicks or types, depending on the command. */
+function scriptedVoiceJev() {
+  return (body) => {
+    const command = String(body.state?.spoken_command ?? '');
+    const wanted = command.includes('type') ? 'type_text' : 'click';
+    const answers = {};
+    for (const [name, question] of Object.entries(body.questions)) {
+      if (question.type === 'choice') {
+        const keys = Object.keys(question.criteria);
+        const pick = keys.includes(wanted) ? wanted : (keys.find((k) => k !== 'none') ?? 'none');
+        answers[name] = { type: 'choice', choice: pick, confidence: 0.9, probabilities: { [pick]: 0.95 } };
+      } else {
+        answers[name] = { type: 'noul', noul: 0.05 };
+      }
+    }
+    return { model: 'jev-mock', answers };
+  };
+}
+
 /** Mock Vercel decision API: answers like scriptedJev, in the gateway's answer shape. */
 function scriptedGatewayJev() {
   const jev = scriptedJev();
@@ -225,8 +293,125 @@ function scriptedGatewayJev() {
   };
 }
 
+/** Mock Jev for the trusted-input page: it clicks, types or presses Enter. */
+function scriptedTrustedJev() {
+  return (body) => {
+    const command = String(body.state?.spoken_command ?? '');
+    const wanted = command.toLowerCase().includes('type') ? 'type_text'
+      : command.toLowerCase().includes('enter') ? 'press_enter'
+        : 'click';
+    // The text that is typed is the text after the verb, not the whole
+    // command.
+    const argument = command.replace(/^\s*type\s+/i, '').trim();
+    const answers = {};
+    for (const [name, question] of Object.entries(body.questions)) {
+      if (question.type === 'choice') {
+        const keys = Object.keys(question.criteria);
+        const wanted_key = name === 'argument'
+          ? Object.entries(question.criteria).find(([, value]) => value === `"${argument}"`)?.[0]
+          : null;
+        const pick = wanted_key
+          ?? (keys.includes(wanted) ? wanted : (keys.find((k) => k !== 'none') ?? 'none'));
+        answers[name] = { type: 'choice', choice: pick, confidence: 0.9, probabilities: { [pick]: 0.95 } };
+      } else {
+        answers[name] = { type: 'noul', noul: 0.05 };
+      }
+    }
+    return { model: 'jev-mock', answers };
+  };
+}
+
+/** Mock Jev for the tab switch: it switches to the last tab that is open. */function scriptedSwitchJev() {
+  return (body) => {
+    const command = String(body.state?.spoken_command ?? '').toLowerCase();
+    const answers = {};
+    for (const [name, question] of Object.entries(body.questions)) {
+      if (question.type === 'choice') {
+        const keys = Object.keys(question.criteria).filter((key) => key !== 'none');
+        let pick = 'none';
+        if (name === 'action') pick = command.includes('switch') ? 'switch_tab' : 'click';
+        else if (name === 'tab') pick = keys.at(-1) ?? 'none';
+        else pick = keys[0] ?? 'none';
+        answers[name] = { type: 'choice', choice: pick, confidence: 0.9, probabilities: { [pick]: 0.95 } };
+      } else {
+        answers[name] = { type: 'noul', noul: 0.05 };
+      }
+    }
+    return { model: 'jev-mock', answers };
+  };
+}
+
+/**
+ * The page the voice path acts on when the page is hostile: a click that
+ * moves the focus to a password box, an element that is replaced by a twin
+ * that carries the same mark, and a key that the page only accepts when it
+ * is real.
+ */
+const SAFETY_PAGE = `<!doctype html><html><body tabindex="-1">
+<label>Email <input id="email" name="email" aria-label="Email" value="untouched@example.test"></label>
+<label>Password <input id="secret" name="password" type="password" value="EXISTING-SECRET"></label>
+<button id="go">Go</button>
+<output id="out"></output>
+<a href="/safety?linked" onclick="event.preventDefault();document.getElementById('out').textContent='WRONG first handler'">Item</a>
+<a href="/safety?linked" onclick="event.preventDefault();document.getElementById('out').textContent='correct detailed handler'">Detailed item title</a>
+<script>
+window.trustedClick = false;
+const email = document.getElementById('email');
+const secret = document.getElementById('secret');
+email.addEventListener('click', (event) => {
+  window.trustedClick = event.isTrusted;
+  // The page moves the focus to the password box right after the click.
+  if (location.search.includes('redirect')) secret.focus();
+});
+document.getElementById('go').addEventListener('click', (event) => {
+  if (event.isTrusted) document.getElementById('out').textContent = 'clicked';
+});
+document.addEventListener('keydown', (event) => {
+  if (event.isTrusted && event.key === 'Enter') document.getElementById('out').textContent = 'trusted enter';
+});
+</script>
+</body></html>`;
+
+/** Mock Jev for the safety page: it types into the field, or presses Enter, or clicks. */
+function scriptedSafetyJev() {
+  const pick = (picked) => ({ type: 'choice', choice: picked, confidence: 0.95, probabilities: { [picked]: 0.97 } });
+  // What the mock chose, so a test can see the argument it picked.
+  const chosen = [];
+  const jev = (body) => {
+    const command = String(body.state?.spoken_command ?? '');
+    const lower = command.toLowerCase();
+    const action = lower.includes('type') ? 'type_text' : lower.includes('enter') ? 'press_enter' : 'click';
+    const wanted = action === 'type_text' ? /Email/ : action === 'click' ? (lower.includes('detailed') ? /Detailed item title/ : /Go/) : null;
+    const answers = {};
+    for (const [name, question] of Object.entries(body.questions)) {
+      if (question.type !== 'choice') {
+        answers[name] = { type: 'noul', noul: 0.05 };
+        continue;
+      }
+      const keys = Object.keys(question.criteria);
+      let choice = 'none';
+      if (name === 'action') choice = keys.includes(action) ? action : 'none';
+      else if (name === 'argument') {
+        // The text that is typed is the argument of the command: the words
+        // after the verb and before the field it goes into.
+        const span = command.replace(/^\s*type\s+/i, '').replace(/\s+into\s+.*$/i, '').trim();
+        choice = Object.entries(question.criteria).find(([, value]) => value === `"${span}"`)?.[0] ?? 'none';
+      } else if (name === 'element' && wanted) {
+        choice = Object.entries(question.criteria).find(([, value]) => wanted.test(value))?.[0] ?? 'none';
+      } else if (name !== 'site') choice = keys.find((key) => key !== 'none') ?? 'none';
+      chosen.push({ name, choice, value: question.criteria[choice] ?? null });
+      answers[name] = pick(choice);
+    }
+    return { model: 'jev-mock', answers };
+  };
+  jev.chosen = chosen;
+  return jev;
+}
+
 function startServer(handlers) {
   const counts = { llm: 0, jev: 0, judge: 0, decision: 0, backup: 0 };
+  // Every request the provider got, so a test can look at what left the page.
+  const bodies = [];
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => { raw += c; });
@@ -234,12 +419,21 @@ function startServer(handlers) {
       try {
         if (req.url === '/widgets') {
           res.writeHead(200, { 'Content-Type': 'text/html' }).end(WIDGETS);
+        } else if (req.url === '/voice') {
+          res.writeHead(200, { 'Content-Type': 'text/html' }).end(VOICE_PAGE);
+        } else if (req.url === '/voice2') {
+          res.writeHead(200, { 'Content-Type': 'text/html' }).end(VOICE_PAGE);
+        } else if (req.url === '/trusted') {
+          res.writeHead(200, { 'Content-Type': 'text/html' }).end(TRUSTED_PAGE);
+        } else if (req.url === '/safety' || req.url.startsWith('/safety?')) {
+          res.writeHead(200, { 'Content-Type': 'text/html' }).end(SAFETY_PAGE);
         } else if (req.url === '/page' || req.url.startsWith('/page?')) {
           res.writeHead(200, { 'Content-Type': 'text/html' }).end(PAGE);
         } else if (req.url === '/v1/models') {
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: [{ id: 'mock-model' }] }));
         } else if (req.url === '/v1/chat/completions' || req.url === '/b1/chat/completions') {
           const body = JSON.parse(raw);
+          bodies.push(raw);
           const isBackup = req.url.startsWith('/b1/');
           if (body.response_format) {
             counts.judge += 1;
@@ -274,6 +468,7 @@ function startServer(handlers) {
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(handlers.decision(body)));
         } else if (req.url === '/v1/systemone') {
           counts.jev += 1;
+          bodies.push(raw);
           if (req.headers.authorization !== 'Bearer jev-key') throw new Error('missing Jev key');
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(handlers.jev(JSON.parse(raw))));
         } else {
@@ -285,7 +480,7 @@ function startServer(handlers) {
       }
     });
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, counts, base: `http://127.0.0.1:${server.address().port}` })));
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, counts, bodies, base: `http://127.0.0.1:${server.address().port}` })));
 }
 
 async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null }) {
@@ -510,6 +705,769 @@ async function runSignInAfterRestartScenario(context, extensionId) {
   }
 }
 
+/** Waits for the approval the fast layer asks for, and says what happened when it does not come. */
+async function waitForApproval(panel, pageErrors) {
+  try {
+    await panel.waitForSelector('#voiceApproval:not([hidden])', { timeout: 20000 });
+  } catch (err) {
+    console.log('DIAG', await panel.evaluate(async () => ({
+      entries: [...document.querySelectorAll('#voiceLog .voice-entry')].map((n) => n.textContent),
+      state: document.getElementById('voiceState').textContent,
+      active: (await chrome.tabs.query({ active: true, lastFocusedWindow: true })).map((t) => t.url),
+    })));
+    console.log('PAGE ERRORS', pageErrors);
+    throw err;
+  }
+}
+
+/**
+ * The voice screen: the composer microphone opens it, the words it hears reach
+ * the transcript that is on screen, the fast layer asks before it acts, and a
+ * field that holds a secret is left alone.
+ */
+async function runVoiceScenario(context, extensionId) {
+  const { server, counts, base } = await startServer({ jev: scriptedVoiceJev() });
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  let target = null;
+  // Chrome has no recognizer in a test: the panel gets one that says what the
+  // test tells it to, and the microphone permission is granted.
+  await panel.addInitScript(() => {
+    class MockRecognition {
+      constructor() { this.lang = ''; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1; this.started = false; }
+      start() { this.started = true; window.__recognition = this; }
+      stop() { this.started = false; this.onend?.(); }
+      abort() { this.started = false; this.onend?.(); }
+    }
+    window.SpeechRecognition = MockRecognition;
+    window.webkitSpeechRecognition = MockRecognition;
+    window.__say = (text) => window.__recognition?.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: text }], { isFinal: true })] });
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: { query: async (descriptor) => ({ state: descriptor?.name === 'microphone' ? 'granted' : 'prompt', onchange: null }) },
+    });
+  });
+  try {
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      settings: {
+        provider: 'compatible',
+        compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
+        fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
+        voiceEngine: 'fast_only',
+        vision: true,
+        maxSteps: 12,
+      },
+    }), base);
+    await panel.reload();
+
+    target = await context.newPage();
+    await target.goto(`${base}/voice`);
+    await target.bringToFront();
+
+    const failures = [];
+
+    // The composer microphone opens the voice screen.
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    const screen = await panel.evaluate(() => ({
+      count: document.querySelectorAll('#voiceLive').length,
+      inView: Boolean(document.getElementById('voiceLive').closest('#voiceView')),
+      chatHidden: document.getElementById('chatView').hidden,
+    }));
+    if (screen.count !== 1) failures.push(`the panel has ${screen.count} transcripts`);
+    if (!screen.inView) failures.push('the transcript is not the one in the voice screen');
+    if (!screen.chatHidden) failures.push('the chat is still shown behind the voice screen');
+
+    // The microphone icon fills the button, and the empty log says so in the
+    // panel's language.
+    const drawn = await panel.evaluate(() => {
+      const svg = document.querySelector('#voiceMicBtn svg');
+      const box = svg.getBoundingClientRect();
+      const empty = getComputedStyle(document.getElementById('voiceLog'), '::before').content;
+      return { w: Math.round(box.width), h: Math.round(box.height), empty };
+    });
+    if (drawn.w < 30 || drawn.h < 30) failures.push(`the microphone icon is ${drawn.w}x${drawn.h}`);
+    if (!drawn.empty || drawn.empty === 'none' || !drawn.empty.includes('No activity')) failures.push(`the empty log says nothing: ${drawn.empty}`);
+
+    // A narrow panel and reduced motion are both allowed.
+    await panel.setViewportSize({ width: 320, height: 640 });
+    const narrow = await panel.evaluate(() => {
+      const view = document.getElementById('voiceView');
+      return view.scrollWidth > view.clientWidth + 1;
+    });
+    if (narrow) failures.push('the voice screen overflows a narrow panel');
+    await panel.emulateMedia({ reducedMotion: 'reduce' });
+    const motion = await panel.evaluate(() => getComputedStyle(document.getElementById('voiceMicBtn')).animationName);
+    if (motion !== 'none') failures.push(`the microphone still animates with reduced motion (${motion})`);
+    await panel.emulateMedia({ reducedMotion: 'no-preference' });
+    await panel.setViewportSize({ width: 400, height: 720 });
+
+    // The words reach the transcript that is on screen.
+    await panel.evaluate(() => window.__say('click go'));
+    await panel.waitForFunction(() => document.getElementById('voiceLive').textContent.includes('click go'), { timeout: 10000 });
+
+    // The fast layer asks before it clicks, and the question can be refused.
+    await waitForApproval(panel, pageErrors);
+    const asked = await panel.textContent('#voiceApproval');
+    if (!/Go/.test(asked)) failures.push(`the approval does not name the element: ${asked}`);
+    const focused = await panel.evaluate(() => document.activeElement?.textContent);
+    if (!focused || !/Approve|موافقة/.test(focused)) failures.push(`the approval does not take the keyboard (${focused})`);
+    await panel.click('#voiceApproval button.ghost');
+    await panel.waitForFunction(() => document.getElementById('voiceApproval').hidden, { timeout: 10000 });
+    if ((await target.textContent('#out')) !== '') failures.push('the page was clicked although the answer was no');
+
+    // The same command, approved this time.
+    await panel.evaluate(() => window.__say('click go'));
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#voiceApproval button.primary');
+    await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 10000 }).catch(() => {});
+    if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the approved click did not happen');
+
+    // The activity log holds the command and how it ended.
+    await panel.waitForFunction(() => document.querySelector('#voiceLog .voice-entry.ok'), { timeout: 20000 }).catch(() => {});
+    const entries = await panel.$$eval('#voiceLog .voice-entry', (rows) => rows.map((row) => row.className));
+    if (entries.length !== 2) failures.push(`expected two commands in the log, got ${entries.length}`);
+    if (!entries.some((name) => name.includes('err'))) failures.push('the refused command is not marked as failed');
+    if (!entries.some((name) => name.includes('ok'))) failures.push('the approved command is not marked as done');
+
+    // A field that holds a secret is left alone.
+    await panel.evaluate(() => window.__say('type secret'));
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#voiceApproval button.primary');
+    await target.waitForFunction(() => document.getElementById('search')?.value !== '', { timeout: 10000 }).catch(() => {});
+    const fields = await target.evaluate(() => ({
+      search: document.getElementById('search').value,
+      password: document.getElementById('pw').value,
+      code: document.getElementById('code').value,
+    }));
+    if (!fields.search) failures.push('the text was not typed into the field');
+    if (fields.password) failures.push('a password field was written into');
+    if (fields.code) failures.push('a one-time code field was written into');
+
+    // The fast layer ran the command: the main model was never asked.
+    if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
+    if (counts.jev < 3) failures.push(`the fast layer was asked ${counts.jev} times`);
+
+    // The switch is remembered.
+    await panel.check('#voiceSpeak');
+    await panel.bringToFront(); // a background tab is not reloaded in time
+    await panel.reload();
+    await target.bringToFront(); // the panel is a page in a tab here; the user's tab leads
+    await panel.click('#voiceToggle');
+    await panel.waitForFunction(() => document.getElementById('voiceSpeak')?.checked === true, { timeout: 10000 });
+    const remembered = await panel.evaluate(() => chrome.storage.local.get('voiceSpeak'));
+    if (remembered.voiceSpeak !== true) failures.push('the spoken replies switch was not remembered');
+
+    // Back to the chat: the microphone stops.
+    await panel.click('#voiceBackBtn');
+    await panel.waitForSelector('#voiceView', { state: 'hidden' });
+    const stopped = await panel.evaluate(() => window.__recognition?.started === false);
+    if (!stopped) failures.push('the microphone is still running after Back');
+
+    // A session change stops the command that was running: the approval is
+    // withdrawn and the page of the old session is left alone.
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    await panel.evaluate(() => window.__say('click go'));
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#newChatBtn');
+    await panel.waitForSelector('#voiceView', { state: 'hidden' });
+    const withdrawn = await panel.evaluate(() => document.getElementById('voiceApproval').hidden);
+    if (!withdrawn) failures.push('the approval was not withdrawn when the session changed');
+    await panel.waitForTimeout(1000);
+    if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the page was clicked after the session changed');
+
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    console.log(`\n== scenario: voice ==\nfast calls: ${counts.jev}, main model calls: ${counts.llm}`);
+    return failures;
+  } finally {
+    await target.close();
+    await panel.close();
+    server.close();
+  }
+}
+
+/**
+ * The side panel may not ask Chrome for the microphone, so the voice screen
+ * opens a real window for it. That window takes the focus: it must not become
+ * the tab the command acts on.
+ */
+async function runVoiceWindowScenario(context, extensionId) {
+  const { server, counts, base } = await startServer({ jev: scriptedVoiceJev() });
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  await panel.addInitScript(() => {
+    class MockRecognition {
+      constructor() { this.lang = ''; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1; this.started = false; }
+      start() { this.started = true; window.__recognition = this; }
+      stop() { this.started = false; this.onend?.(); }
+      abort() { this.started = false; this.onend?.(); }
+    }
+    window.SpeechRecognition = MockRecognition;
+    window.webkitSpeechRecognition = MockRecognition;
+    // The panel cannot ask for the microphone: the real window does.
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: { query: async () => ({ state: 'prompt', onchange: null }) },
+    });
+  });
+  const failures = [];
+  try {
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      settings: {
+        provider: 'compatible',
+        compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
+        fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
+        voiceEngine: 'fast_only',
+        vision: true,
+        maxSteps: 12,
+      },
+    }), base);
+    await panel.reload();
+
+    const target = await context.newPage();
+    await target.goto(`${base}/voice`);
+    await target.bringToFront();
+
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    // The microphone window opened, with the epoch that makes it this panel's.
+    await panel.waitForFunction(async () => {
+      const tabs = await chrome.tabs.query({});
+      return tabs.some((t) => (t.url ?? '').includes('mic.html'));
+    }, { timeout: 15000 }).catch(() => {});
+    const micUrls = await panel.evaluate(async () => (await chrome.tabs.query({})).map((t) => t.url ?? '').filter((url) => url.includes('mic.html')));
+    if (!micUrls.length) failures.push('the microphone window did not open');
+    else if (!/epoch=\d+/.test(micUrls[0])) failures.push(`the microphone window has no epoch: ${micUrls[0]}`);
+
+    // The command acts on the page the user was on, not on the window.
+    await panel.fill('#voiceTypedInput', 'click go');
+    await panel.press('#voiceTypedInput', 'Enter');
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#voiceApproval button.primary');
+    await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 10000 }).catch(() => {});
+    if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the command did not act on the page the user was on');
+    if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
+
+    // Back closes the microphone window.
+    await panel.click('#voiceBackBtn');
+    await panel.waitForSelector('#voiceView', { state: 'hidden' });
+    await panel.waitForTimeout(500);
+    const left = await panel.evaluate(async () => (await chrome.tabs.query({})).some((t) => (t.url ?? '').includes('mic.html')));
+    if (left) failures.push('the microphone window stayed open after Back');
+
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    console.log(`\n== scenario: voice-window ==\nfast calls: ${counts.jev}`);
+    return failures;
+  } finally {
+    await panel.close();
+    server.close();
+  }
+}
+
+/**
+ * The page the voice path acts on ignores what it cannot trust: a click, a
+ * keystroke and Enter have to be real input, or the page does nothing at all.
+ */
+async function runVoiceTrustedScenario(context, extensionId) {
+  const { server, counts, base } = await startServer({ jev: scriptedTrustedJev() });
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  await panel.addInitScript(() => {
+    class MockRecognition {
+      constructor() { this.lang = ''; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1; this.started = false; }
+      start() { this.started = true; window.__recognition = this; }
+      stop() { this.started = false; this.onend?.(); }
+      abort() { this.started = false; this.onend?.(); }
+    }
+    window.SpeechRecognition = MockRecognition;
+    window.webkitSpeechRecognition = MockRecognition;
+    window.__say = (text) => window.__recognition?.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: text }], { isFinal: true })] });
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: { query: async (descriptor) => ({ state: descriptor?.name === 'microphone' ? 'granted' : 'prompt', onchange: null }) },
+    });
+  });
+  const failures = [];
+  let target = null;
+  try {
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      settings: {
+        provider: 'compatible',
+        compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
+        fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
+        voiceEngine: 'fast_only',
+        vision: true,
+        maxSteps: 12,
+      },
+    }), base);
+    await panel.reload();
+
+    target = await context.newPage();
+    await target.goto(`${base}/trusted`);
+    await target.bringToFront();
+
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    // The spoken replies are off: the voice output holds the microphone while
+    // it plays, and the test speaks the next command right after the reply.
+    await panel.uncheck('#voiceSpeak');
+
+    // A click: the page only reacts to one it can trust.
+    await panel.evaluate(() => window.__say('click go'));
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#voiceApproval button.primary');
+    await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 15000 }).catch(() => {});
+    const clicked = await target.evaluate(() => ({
+      text: document.getElementById('out')?.textContent ?? '',
+      trusted: document.getElementById('out')?.dataset.trusted ?? '',
+    }));
+    if (clicked.text !== 'clicked 1') failures.push(`the click did not reach the page ("${clicked.text}")`);
+    if (clicked.trusted !== 'yes') failures.push('the click was not real input');
+
+    // A typed text: the page only reacts to an input event it can trust.
+    await panel.evaluate(() => window.__say('type hello'));
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#voiceApproval button.primary');
+    await target.waitForFunction(() => document.getElementById('field')?.value === 'hello', { timeout: 15000 }).catch(() => {});
+    const typed = await target.evaluate(() => ({
+      value: document.getElementById('field')?.value ?? '',
+      trusted: document.getElementById('out')?.dataset.trusted ?? '',
+    }));
+    if (typed.value !== 'hello') failures.push(`the text was not typed ("${typed.value}")`);
+    if (typed.trusted !== 'yes') failures.push('the typed text was not real input');
+
+    // Enter: the page only reacts to a key it can trust.
+    await panel.evaluate(() => window.__say('press enter'));
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#voiceApproval button.primary');
+    await target.waitForFunction(() => document.getElementById('out')?.textContent === 'entered', { timeout: 15000 }).catch(() => {});
+    const entered = await target.evaluate(() => document.getElementById('out')?.textContent ?? '');
+    if (entered !== 'entered') failures.push(`Enter did not reach the page ("${entered}")`);
+
+    if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    console.log(`\n== scenario: voice-trusted ==\nfast calls: ${counts.jev}`);
+    return failures;
+  } finally {
+    await target?.close();
+    await panel.close();
+    server.close();
+  }
+}
+
+/**
+ * A voice command that switches to another tab: the voice screen stays open,
+ * the tab belongs to the session the panel is in, and the command after it
+ * acts on the tab the command switched to.
+ */
+async function runVoiceSwitchScenario(context, extensionId) {
+  const { server, counts, base } = await startServer({ jev: scriptedSwitchJev() });
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  // The microphone window keeps listening: a recognizer that ends at once
+  // would take the focus away from the test before the command runs.
+  await context.addInitScript(() => {
+    class MockRecognition {
+      constructor() { this.lang = ''; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1; this.started = false; }
+      start() { this.started = true; this.onstart?.(); }
+      stop() { this.started = false; this.onend?.(); }
+      abort() { this.started = false; this.onend?.(); }
+    }
+    window.SpeechRecognition = MockRecognition;
+    window.webkitSpeechRecognition = MockRecognition;
+  });
+  // The panel cannot ask for the microphone: a real window takes the focus,
+  // so the tab the command acts on has to be remembered.
+  await panel.addInitScript(() => {
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: { query: async () => ({ state: 'prompt', onchange: null }) },
+    });
+  });
+  const failures = [];
+  let first = null;
+  let second = null;
+  try {
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      settings: {
+        provider: 'compatible',
+        compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
+        fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
+        voiceEngine: 'fast_only',
+        vision: true,
+        maxSteps: 12,
+      },
+    }), base);
+    await panel.reload();
+
+    first = await context.newPage();
+    await first.goto(`${base}/voice`);
+    second = await context.newPage();
+    await second.goto(`${base}/voice2`);
+    await first.bringToFront();
+
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    // The microphone window opened and took the focus.
+    await panel.waitForFunction(async () => {
+      const tabs = await chrome.tabs.query({});
+      return tabs.some((t) => (t.url ?? '').includes('mic.html'));
+    }, { timeout: 15000 }).catch(() => {});
+
+    // The command switches to the other tab.
+    await panel.fill('#voiceTypedInput', 'switch to the other tab');
+    await panel.press('#voiceTypedInput', 'Enter');
+    await panel.waitForFunction(() => document.querySelector('#voiceLog .voice-entry.ok'), { timeout: 20000 }).catch(() => {});
+
+    const stillOpen = await panel.evaluate(() => !document.getElementById('voiceView').hidden);
+    if (!stillOpen) failures.push('the voice screen closed when the command switched the tab');
+
+    const tabs = await panel.evaluate(async () => (await chrome.tabs.query({})).map((t) => ({ id: t.id, url: t.url ?? '', active: t.active })));
+    const active = tabs.find((tab) => tab.active && tab.url.includes('/voice2'));
+    if (!active) failures.push(`the command did not make its tab the one that is active: ${JSON.stringify(tabs.map((t) => t.url))}`);
+
+    // The tab the command switched to belongs to the session of the panel, so
+    // the panel that follows the focused tab stays in this session.
+    if (active) {
+      const sessions = await panel.evaluate(async (tabId) => {
+        const switched = await chrome.runtime.sendMessage({ type: 'tab-session', tabId });
+        const own = await chrome.tabs.getCurrent();
+        const mine = await chrome.runtime.sendMessage({ type: 'tab-session', tabId: own.id });
+        return { switched: switched.result, mine: mine.result };
+      }, active.id);
+      if (sessions.switched !== sessions.mine) failures.push(`the tab the command switched to belongs to another session (${sessions.switched} and ${sessions.mine})`);
+    }
+
+    // The command after it acts on the tab it switched to.
+    await panel.fill('#voiceTypedInput', 'click go');
+    await panel.press('#voiceTypedInput', 'Enter');
+    await waitForApproval(panel, pageErrors);
+    await panel.click('#voiceApproval button.primary');
+    await second.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 15000 }).catch(() => {});
+    if ((await second.textContent('#out')) !== 'clicked 1') failures.push('the command did not act on the tab it switched to');
+    if ((await first.textContent('#out')) !== '') failures.push('the command acted on the tab it started on');
+
+    if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+
+    // Back closes the microphone window, so the next scenario starts clean.
+    await panel.click('#voiceBackBtn');
+    await panel.waitForSelector('#voiceView', { state: 'hidden' });
+    await panel.waitForTimeout(500);
+    const left = await panel.evaluate(async () => (await chrome.tabs.query({})).some((t) => (t.url ?? '').includes('mic.html')));
+    if (left) failures.push('the microphone window stayed open after Back');
+
+    console.log(`\n== scenario: voice-switch ==\nfast calls: ${counts.jev}`);
+    return failures;
+  } finally {
+    await first?.close();
+    await second?.close();
+    await panel.close();
+    server.close();
+  }
+}
+
+/**
+ * The history the worker replays is not a live event: a question from it does
+ * not close the voice screen, and it starts no task.
+ */
+async function runVoiceReplayScenario(context, extensionId) {
+  let asked = false;
+  const first = scriptedLlm({ askFirst: true });
+  const rest = scriptedLlm();
+  const llm = (body) => {
+    if (!asked) {
+      asked = true;
+      return first(body);
+    }
+    return rest(body);
+  };
+  const { server, counts, base } = await startServer({ llm });
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  let target = null;
+  const failures = [];
+  try {
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      settings: {
+        provider: 'compatible',
+        compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
+        fast: { enabled: false },
+        vision: true,
+        maxSteps: 12,
+      },
+    }), base);
+    await panel.reload();
+
+    target = await context.newPage();
+    await target.goto(`${base}/page`);
+    await target.bringToFront();
+
+    // A task that asks a question: the transcript keeps the question.
+    await panel.fill('#input', 'Fill the form and report the result');
+    await panel.click('#sendBtn');
+    await panel.waitForSelector('.msg.ask', { timeout: 30000 });
+    await panel.fill('#input', 'Yes, start');
+    await panel.click('#sendBtn');
+    await panel.waitForSelector('.msg.final', { timeout: 60000 });
+    const before = counts.llm;
+
+    // The voice screen is open when the worker is restarted: the history that
+    // comes back must not close it.
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    const cdp = await context.newCDPSession(panel);
+    await cdp.send('ServiceWorker.enable');
+    await cdp.send('ServiceWorker.stopAllWorkers');
+    await panel.waitForTimeout(800);
+    await panel.fill('#voiceTypedInput', 'hello');
+    await panel.press('#voiceTypedInput', 'Enter');
+    await panel.waitForTimeout(5000);
+    const stillOpen = await panel.evaluate(() => !document.getElementById('voiceView').hidden);
+    if (!stillOpen) failures.push('the replayed question closed the voice screen');
+    const questions = await panel.evaluate(() => document.querySelectorAll('.msg.ask').length);
+    if (questions !== 1) failures.push(`the replayed question was shown again (${questions} questions)`);
+    const waiting = await panel.evaluate(() => document.getElementById('hint').textContent);
+    if (/wait/i.test(waiting)) failures.push('the replayed question is waiting for an answer');
+
+    // The task the voice command started is stopped, so it does not work on
+    // the page of the next scenario.
+    await panel.click('#voiceBackBtn');
+    await panel.waitForSelector('#voiceView', { state: 'hidden' });
+    await panel.click('#stopBtn').catch(() => {});
+    await panel.waitForTimeout(500);
+
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    console.log(`\n== scenario: voice-replay ==\nmodel calls before ${before}, after ${counts.llm}`);
+    return failures;
+  } finally {
+    await target?.close();
+    await panel.close();
+    server.close();
+  }
+}
+
+/**
+ * The page is hostile: it moves the focus to a password box after the click,
+ * it replaces the approved element with a twin, and it only accepts real
+ * input. The approved action must not reach a secret field, a twin must not
+ * inherit the consent, and a command that was cancelled must not click.
+ */
+async function runVoiceSafetyScenario(context, extensionId) {
+  const jev = scriptedSafetyJev();
+  const { server, counts, bodies, base } = await startServer({ jev });
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  await panel.addInitScript(() => {
+    class MockRecognition {
+      constructor() { this.lang = ''; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1; this.started = false; }
+      start() { this.started = true; window.__recognition = this; }
+      stop() { this.started = false; this.onend?.(); }
+      abort() { this.started = false; this.onend?.(); }
+    }
+    window.SpeechRecognition = MockRecognition;
+    window.webkitSpeechRecognition = MockRecognition;
+    window.__say = (text) => window.__recognition?.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: text }], { isFinal: true })] });
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: { query: async (descriptor) => ({ state: descriptor?.name === 'microphone' ? 'granted' : 'prompt', onchange: null }) },
+    });
+  });
+  const failures = [];
+  let target = null;
+  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  try {
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      settings: {
+        provider: 'compatible',
+        compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
+        fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
+        voiceEngine: 'fast_only',
+        vision: true,
+        maxSteps: 12,
+      },
+    }), base);
+    await panel.reload();
+
+    target = await context.newPage();
+
+    // The number of entries in the log, so a test waits for its own command.
+    const entries = () => panel.evaluate(() => document.querySelectorAll('#voiceLog .voice-entry').length);
+    const command = async (text) => {
+      await target.bringToFront();
+      if (await panel.isHidden('#voiceView')) await panel.click('#voiceToggle');
+      await panel.fill('#voiceTypedInput', text);
+      await panel.press('#voiceTypedInput', 'Enter');
+      await waitForApproval(panel, pageErrors);
+    };
+    const finished = async (before) => {
+      await panel.waitForFunction((count) => {
+        const rows = document.querySelectorAll('#voiceLog .voice-entry');
+        if (rows.length <= count) return false;
+        const newest = rows[0]; // Voice activity is prepended, not appended.
+        return newest.classList.contains('err') || newest.classList.contains('ok');
+      }, before, { timeout: 20000 });
+    };
+    const lastState = () => panel.evaluate(() => {
+      const rows = document.querySelectorAll('#voiceLog .voice-entry');
+      return rows[0]?.className ?? '';
+    });
+
+    // A click that moves the focus to the password box: the text must not go
+    // anywhere, and the command must be reported as refused.
+    await target.goto(`${base}/safety?redirect`);
+    let before = await entries();
+    await command('type approved text into Email');
+    await panel.click('#voiceApproval button.primary');
+    await finished(before);
+    const redirected = await target.evaluate(() => ({
+      email: document.getElementById('email')?.value ?? '',
+      secret: document.getElementById('secret')?.value ?? '',
+      trusted: window.trustedClick,
+    }));
+    if (redirected.secret !== 'EXISTING-SECRET') failures.push('a password field was written into');
+    if (redirected.email !== 'untouched@example.test') failures.push('the text was typed although the focus had moved');
+    if (!redirected.trusted) failures.push('the approved click was not real input');
+    if (!(await lastState()).includes('err')) failures.push('the command was not reported as refused');
+    // The text of the command is the argument of the command: the mock picks
+    // the words that are typed, not the whole sentence.
+    const picked = jev.chosen.filter((entry) => entry.name === 'argument');
+    if (!picked.length) failures.push('the mock was never asked for the text to type');
+    else if (picked[0].value !== '"approved text"') {
+      failures.push(`the mock picked "${picked[0].value}" instead of the text to type`);
+    }
+
+    // A twin that carries the same mark is not the element that was approved.
+    await panel.click('#voiceBackBtn');
+    await target.goto(`${base}/safety?replace`);
+    before = await entries();
+    await command('type approved text into Email');
+    await target.evaluate(() => {
+      const original = document.getElementById('email');
+      original.replaceWith(original.cloneNode(true));
+    });
+    await panel.click('#voiceApproval button.primary');
+    await finished(before);
+    const replaced = await target.inputValue('#email');
+    if (replaced !== 'untouched@example.test') failures.push('a cloned element got the approved text');
+    if (!(await lastState()).includes('err')) failures.push('the command was not reported as refused');
+
+    // Equal hrefs can have different handlers: the named title must target
+    // its own DOM element, never the earlier matching address.
+    await panel.click('#voiceBackBtn');
+    await target.goto(`${base}/safety?duplicate-links`);
+    before = await entries();
+    await command('click Detailed item title');
+    await panel.click('#voiceApproval button.primary');
+    await finished(before);
+    if (await target.textContent('#out') !== 'correct detailed handler') failures.push('the duplicate-href click reached the wrong DOM handler');
+
+    // Enter on the body: it is a page action, and it has to be real.
+    await panel.click('#voiceBackBtn');
+    await target.goto(`${base}/safety?body`);
+    await target.evaluate(() => document.body.focus());
+    before = await entries();
+    await command('press enter');
+    await panel.click('#voiceApproval button.primary');
+    await finished(before);
+    const entered = await target.textContent('#out');
+    if (entered !== 'trusted enter') {
+      const why = await panel.evaluate(() => ({
+        entry: document.querySelector('#voiceLog .voice-entry')?.textContent ?? '',
+        active: document.activeElement?.tagName ?? '',
+      }));
+      const page = await target.evaluate(() => ({
+        active: document.activeElement?.tagName ?? 'none',
+        focus: document.hasFocus(),
+      }));
+      failures.push(`the body Enter did not reach the page ("${entered}") — ${JSON.stringify(why)} ${JSON.stringify(page)}`);
+    }
+
+    // A body Enter that was approved on another document: the page goes
+    // somewhere else while the question is open, and the consent does not
+    // travel with it.
+    await panel.click('#voiceBackBtn');
+    await target.goto(`${base}/safety?body`);
+    await target.evaluate(() => document.body.focus());
+    before = await entries();
+    await command('press enter');
+    await target.goto(`${base}/safety?elsewhere`);
+    await panel.click('#voiceApproval button.primary');
+    await finished(before);
+    const elsewhere = await target.textContent('#out');
+    if (elsewhere !== '') failures.push(`the body Enter reached another document ("${elsewhere}")`);
+    if (!(await lastState()).includes('err')) failures.push('the Enter on another document was not refused');
+
+    // A command that is cancelled while the mouse is still moving must not
+    // press the button.
+    await panel.click('#voiceBackBtn');
+    await target.goto(`${base}/safety?cancel`);
+    await worker.evaluate(() => {
+      const original = chrome.debugger.sendCommand.bind(chrome.debugger);
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      let reached;
+      globalThis.__qaMoveReached = new Promise((resolve) => { reached = resolve; });
+      globalThis.__qaReleaseMove = release;
+      globalThis.__qaMouseDowns = 0;
+      globalThis.__qaOriginalSend = original;
+      chrome.debugger.sendCommand = async (target, method, params) => {
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseMoved') {
+          reached();
+          await gate;
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') globalThis.__qaMouseDowns += 1;
+        return original(target, method, params);
+      };
+    });
+    await command('click go');
+    const moved = worker.evaluate(() => globalThis.__qaMoveReached);
+    await panel.click('#voiceApproval button.primary');
+    await moved;
+    await panel.click('#voiceBackBtn');
+    // The revocation has to reach the worker before the move is let go.
+    await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'sessions-list' }));
+    await worker.evaluate(() => globalThis.__qaReleaseMove());
+    await panel.waitForTimeout(600);
+    const downs = await worker.evaluate(() => globalThis.__qaMouseDowns);
+    if (downs !== 0) failures.push(`the button was pressed although the command was cancelled (${downs})`);
+    const clicked = await target.textContent('#out');
+    if (clicked === 'clicked') failures.push('the page was clicked although the command was cancelled');
+
+    // What was in the fields never travels to the provider.
+    if (bodies.some((body) => /EXISTING-SECRET|untouched@example\.test/.test(body))) {
+      failures.push('the contents of a field reached the provider');
+    }
+    if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    console.log(`\n== scenario: voice-safety ==\nfast calls: ${counts.jev}, main model calls: ${counts.llm}`);
+    return failures;
+  } finally {
+    // The debugger is put back as it was, so a failure here does not hold
+    // the mouse down for the scenarios that follow.
+    await worker.evaluate(() => {
+      if (globalThis.__qaOriginalSend) chrome.debugger.sendCommand = globalThis.__qaOriginalSend;
+      globalThis.__qaReleaseMove?.();
+    }).catch(() => {});
+    await target?.close();
+    await panel.close();
+    server.close();
+  }
+}
+
 async function main() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-e2e-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -527,6 +1485,12 @@ async function main() {
     const failures = [
       ...(await runSignInAfterRestartScenario(context, extensionId)),
       ...(await runParallelScenario(context, extensionId)),
+      ...(await runVoiceScenario(context, extensionId)),
+      ...(await runVoiceTrustedScenario(context, extensionId)),
+      ...(await runVoiceSafetyScenario(context, extensionId)),
+      ...(await runVoiceSwitchScenario(context, extensionId)),
+      ...(await runVoiceWindowScenario(context, extensionId)),
+      ...(await runVoiceReplayScenario(context, extensionId)),
       ...(await runScenario(context, extensionId, {
         name: 'llm',
         task: 'Fill the form and report the result',
