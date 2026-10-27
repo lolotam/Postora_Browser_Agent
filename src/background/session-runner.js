@@ -9,6 +9,7 @@ import { createToolExecutor, toolDefinitions } from '../agent/tools.js';
 import { BrowserController } from '../browser/controller.js';
 import { Notebook } from '../agent/notebook.js';
 import { createFastLayer } from '../fast/fast-layer.js';
+import { AccessAuthority, ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 import { effectiveSettings, loadSettings } from '../lib/settings.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
@@ -18,12 +19,51 @@ const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
 const STREAMING = new Set(['text-delta', 'reasoning-delta', 'text-reset']);
 
+// The one page of this extension that may ask for the access mode. The check
+// is exact: the side panel of this extension, and nothing else.
+const ACCESS_PANEL_PATH = 'src/sidepanel/index.html';
+
+/**
+ * True for a port that our own side panel opened.
+ *
+ * The sender must be this extension and this page: not another extension, not
+ * the microphone window, not the background page, and not a page whose URL
+ * merely starts with the same words.
+ */
+function ownSidePanel(port) {
+  const runtime = globalThis.chrome?.runtime;
+  if (!runtime?.id) return false;
+  const sender = port?.sender;
+  if (!sender || sender.id !== runtime.id) return false;
+  return sender.url === runtime.getURL(ACCESS_PANEL_PATH);
+}
+
+/**
+ * Whether the port belongs to this session.
+ *
+ * A panel names its port 'panel:<session>' or 'panel:<session>:<panel>'. A
+ * port that names another session is not this session's panel, whatever else
+ * about it looks right. A client that names no port at all is bound by the
+ * runner it attached to.
+ */
+function portBoundToSession(port, sessionId) {
+  const name = typeof port?.name === 'string' ? port.name : '';
+  if (!name) return true;
+  if (!name.startsWith('panel:')) return false;
+  const rest = name.slice('panel:'.length);
+  const cut = rest.indexOf(':');
+  return (cut === -1 ? rest : rest.slice(0, cut)) === sessionId;
+}
+
 export class SessionRunner {
   constructor({ meta, body, color, isTakenByOther, onSessionsChanged }) {
     this.id = meta.id;
     this.title = meta.title;
     this.titled = meta.titled;
-    this.transcript = body.transcript ?? [];
+    // The access mode is the state of the worker, not a moment of the
+    // conversation: it is never a part of the transcript, and an event of
+    // that kind stored by an older version is not brought back.
+    this.transcript = (body.transcript ?? []).filter((event) => event?.type !== 'access-state');
     this.storedLog = body.log;
     this.notebook = Notebook.from(body.notebook); // kept for follow-up tasks and reopening
     // Messages sent while a task runs: { id, text, model, images, mode, now }.
@@ -32,6 +72,11 @@ export class SessionRunner {
     this.turnAbort = null;
     this.onSessionsChanged = onSessionsChanged;
     this.ports = new Set();
+    // The live panels that may ask for the access mode, and the listeners
+    // this runner left on each port, so a port that goes away takes its
+    // listener with it.
+    this.trustedPorts = new Set();
+    this.portHandlers = new Map();
     this.session = null;
     this.sessionKey = null;
     this.abort = null;
@@ -42,6 +87,13 @@ export class SessionRunner {
     this.asks = 0;
     this.askNotices = []; // "needs your answer" notifications still shown
     this.settings = null;
+    // The worker's own authority for this session: what it may do and what the
+    // user has approved. It lives in the worker's memory only, so a new chat
+    // and a restarted worker both start at Ask first.
+    this.access = new AccessAuthority({
+      sessionId: this.id,
+      onChange: (state) => this.onAccessChanged(state),
+    });
     // A tab the voice path holds the claim on is not free either: the task
     // waits for the voice command instead of working on the same page. The
     // controller reserves a tab while it takes it into its group, so the voice
@@ -62,19 +114,62 @@ export class SessionRunner {
   /** `early` holds what the panel sent before this session finished loading. */
   attach(port, early = []) {
     try {
-      port.postMessage({ type: 'replay', events: this.transcript, running: this.running, question: this.pendingQuestion?.question ?? null, pending: this.inbox });
+      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state() });
     } catch {
       // The panel closed or moved on while this session loaded. Keeping its closed
       // port would make every later emit throw before reaching the next panel.
       return;
     }
     this.ports.add(port);
-    port.onDisconnect.addListener(() => this.ports.delete(port));
-    port.onMessage.addListener((msg) => this.receive(msg));
-    for (const msg of early) this.receive(msg);
+    if (ownSidePanel(port) && portBoundToSession(port, this.id)) this.trustedPorts.add(port);
+    const onMessage = (msg) => {
+      // A port that left keeps its listener in some clients: it may not change
+      // anything through it, and neither may a disposed session.
+      if (this.disposed || !this.ports.has(port)) return;
+      this.receive(msg, port);
+    };
+    const onDisconnect = () => this.detachPort(port);
+    this.portHandlers.set(port, { onMessage, onDisconnect });
+    port.onDisconnect.addListener(onDisconnect);
+    port.onMessage.addListener(onMessage);
+    for (const msg of early) this.receive(msg, port);
   }
 
-  receive(msg) {
+  /**
+   * The port is gone: it may not change anything any more.
+   *
+   * The last panel of this session is gone as well, so nothing may wait for
+   * an answer that nobody can give any more.
+   */
+  detachPort(port) {
+    if (!this.ports.has(port)) return;
+    this.ports.delete(port);
+    this.trustedPorts.delete(port);
+    const handlers = this.portHandlers.get(port);
+    this.portHandlers.delete(port);
+    if (handlers) {
+      try {
+        port.onMessage?.removeListener?.(handlers.onMessage);
+      } catch {
+        // The port is gone already; its listener goes with it.
+      }
+    }
+    if (!this.trustedPorts.size) this.access.cancel('panel-lost');
+  }
+
+  /**
+   * The transcript the panel may replay.
+   *
+   * The access mode is the state of the worker, not a moment of the
+   * conversation. Only the live state is replayed, never a mode that was
+   * stored once.
+   */
+  transcriptForReplay() {
+    return this.transcript.filter((event) => event?.type !== 'access-state');
+  }
+
+  receive(msg, port = null) {
+    if (this.disposed) return; // a session that is gone answers nothing
     if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images, tabId: msg.tabId });
     else if (msg.type === 'steer') this.steer(msg.text, msg.mode, { display: msg.display, images: msg.images });
     else if (msg.type === 'steer-now') this.sendNow(msg.id);
@@ -82,6 +177,82 @@ export class SessionRunner {
     else if (msg.type === 'stop') this.stop();
     else if (msg.type === 'answer') this.answer(msg.text, msg.display);
     else if (msg.type === 'dismiss-notice') this.emit({ type: 'notice-dismissed', id: msg.id });
+    else if (msg.type === 'access-mode') this.setAccessMode(msg, port);
+  }
+
+  /**
+   * The access mode of this session.
+   *
+   * Only our own side panel, on a live port that belongs to this session, may
+   * ask for it. The request has to name the session it is for: a request
+   * without one is not a request for this chat. Full access needs the warning
+   * the user acknowledged and the revision the panel last saw, so a request
+   * made under an older mode is refused instead of applied.
+   *
+   * A mode that is neither Ask first nor Full access is refused, not turned
+   * into one of them: a name that is not a mode changes nothing.
+   *
+   * Every answer is the state that is really in force, so a panel that asked
+   * for something it may not have ends up with the truth and not with its own
+   * request.
+   */
+  setAccessMode(msg, port) {
+    if (!this.livePort(port)) return this.refusal('no-port');
+    if (!ownSidePanel(port)) return this.refusal('not-trusted');
+    if (!portBoundToSession(port, this.id)) return this.refusal('other-session');
+    const sessionId = msg?.sessionId;
+    const mode = msg?.mode;
+    if (typeof sessionId !== 'string' || sessionId !== this.id) {
+      this.broadcastAccess();
+      return this.refusal('wrong-session');
+    }
+    if (mode !== ASK_FIRST && mode !== FULL_ACCESS) {
+      this.broadcastAccess();
+      return this.refusal('invalid-mode');
+    }
+    const result = this.access.setMode(mode, {
+      trusted: true,
+      acknowledged: msg.acknowledged === true,
+      expectedRevision: msg.expectedRevision,
+    });
+    // The panel shows the mode that is really in force, whether the request
+    // was accepted or refused. A mode that moved has already been told.
+    if (!result.changed) this.broadcastAccess();
+    return result;
+  }
+
+  /** A request that changed nothing, and the state that is in force. */
+  refusal(reason) {
+    return { ok: false, changed: false, reason, ...this.access.state() };
+  }
+
+  /** Whether the port is still one of ours and still open. */
+  livePort(port) {
+    if (!port || this.disposed) return false;
+    return this.ports.has(port);
+  }
+
+  /**
+   * The mode moved: the task that ran under the old mode does not go on, the
+   * approvals and the permits of the old mode are withdrawn, and every panel
+   * of this session is told what is now in force.
+   */
+  onAccessChanged() {
+    this.access.cancel('mode-changed'); // nothing approved under the old mode survives it
+    this.stop(); // the running task does not continue under a new mode
+    this.broadcastAccess();
+  }
+
+  /** The mode that is really in force, to every panel of this session. */
+  broadcastAccess() {
+    const state = this.access.state();
+    for (const port of this.ports) {
+      try {
+        port.postMessage({ type: 'access-state', ...state });
+      } catch {
+        // The panel is gone; the next one gets the state with the replay.
+      }
+    }
   }
 
   emit(event) {
@@ -221,6 +392,9 @@ export class SessionRunner {
       if (err.name !== 'AbortError') this.transition('failed'); // stopped by the user: they know
     } finally {
       clearInterval(keepAlive);
+      // The run is over: nothing it approved survives it. The mode the user
+      // chose stays, so the next task of this chat runs under it.
+      this.access.finish('finished');
       this.abort = null;
       this.pendingQuestion = null;
       this.clearAskNotices();
@@ -272,6 +446,10 @@ export class SessionRunner {
   }
 
   stop() {
+    // A stop withdraws what was approved: nothing waits for an answer and
+    // nothing that was allowed may run any more. The mode itself stays: the
+    // session may go on with the mode the user chose.
+    this.access.cancel('stopped');
     if (!this.abort) return;
     this.abort.abort();
     this.browser.overlay.end(); // feedback now, not after the current step returns
@@ -281,7 +459,8 @@ export class SessionRunner {
   dispose() {
     this.disposed = true;
     clearTimeout(this.saveTimer);
-    this.stop();
+    this.stop(); // the task stops and the authority is withdrawn
+    for (const port of [...this.ports]) this.detachPort(port);
   }
 
   askUser(question, signal) {
