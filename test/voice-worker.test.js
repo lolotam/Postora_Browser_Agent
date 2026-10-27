@@ -48,9 +48,9 @@ test('a claim that was given back while the input was waiting does not click or 
   const gate = new Promise((resolve) => { open = resolve; });
   const calls = [];
   const app = worker({ gate, calls });
-  claims.claimTab(21, { panelId: 'panel-a', sessionId: 'session-a' });
+  const { token } = claims.claimTab(21, { panelId: 'panel-a', sessionId: 'session-a' });
 
-  const pending = app.voiceInput({ tabId: 21, panelId: 'panel-a', steps: [{ op: 'click', x: 10, y: 10 }, { op: 'text', text: 'must not type' }] });
+  const pending = app.voiceInput({ tabId: 21, panelId: 'panel-a', token, steps: [{ op: 'click', x: 10, y: 10 }, { op: 'text', text: 'must not type' }] });
   claims.revokePanel('panel-a');
   open();
   const result = await pending;
@@ -62,9 +62,9 @@ test('a claim that was given back while the input was waiting does not click or 
 test('a claim that is still held lets the input through', async () => {
   const calls = [];
   const app = worker({ calls });
-  claims.claimTab(22, { panelId: 'panel-a', sessionId: 'session-a' });
+  const { token } = claims.claimTab(22, { panelId: 'panel-a', sessionId: 'session-a' });
 
-  const result = await app.voiceInput({ tabId: 22, panelId: 'panel-a', steps: [{ op: 'click', x: 10, y: 10 }, { op: 'text', text: 'hello' }] });
+  const result = await app.voiceInput({ tabId: 22, panelId: 'panel-a', token, steps: [{ op: 'click', x: 10, y: 10 }, { op: 'text', text: 'hello' }] });
 
   assert.equal(result.ok, true);
   assert.deepEqual(calls, ['click', 'text']);
@@ -73,11 +73,22 @@ test('a claim that is still held lets the input through', async () => {
 test('another panel cannot use a claim it does not hold', async () => {
   const calls = [];
   const app = worker({ calls });
-  claims.claimTab(23, { panelId: 'panel-a', sessionId: 'session-a' });
+  const { token } = claims.claimTab(23, { panelId: 'panel-a', sessionId: 'session-a' });
 
-  const result = await app.voiceInput({ tabId: 23, panelId: 'panel-b', steps: [{ op: 'click', x: 10, y: 10 }] });
+  const result = await app.voiceInput({ tabId: 23, panelId: 'panel-b', token, steps: [{ op: 'click', x: 10, y: 10 }] });
 
   assert.equal(result.ok, false);
+  assert.deepEqual(calls, []);
+});
+
+test('an input without the token of the lease may not act', async () => {
+  const calls = [];
+  const app = worker({ calls });
+  claims.claimTab(29, { panelId: 'panel-a', sessionId: 'session-a' });
+
+  const result = await app.voiceInput({ tabId: 29, panelId: 'panel-a', steps: [{ op: 'click', x: 10, y: 10 }] });
+
+  assert.equal(result.ok, false, 'a message that lost its token does nothing');
   assert.deepEqual(calls, []);
 });
 
@@ -250,13 +261,15 @@ test('a session that is working in a tab is refused, even in its own group', asy
 });
 
 /** The worker's claim, with the running sessions of the worker mocked. */
-function claimWorker({ runners = [], tab = { id: 40, groupId: -1, url: 'https://example.test/' } } = {}) {
+function claimWorker({ runners = [], tab = { id: 40, groupId: -1, url: 'https://example.test/' }, tabsGet = null, detach = null } = {}) {
   const context = vm.createContext({
     voiceClaims: claims,
     runners: new Map(runners.map((runner) => [runner.id, runner])),
-    chrome: { tabs: { get: async (id) => ({ ...tab, id }) } },
+    chrome: { tabs: { get: tabsGet ?? (async (id) => ({ ...tab, id })) } },
+    withVoiceBrowser: async (task) => task(),
+    voiceBrowser: { detachTab: detach ?? (async () => {}) },
   });
-  vm.runInContext(`${takenByOtherSource}\n${voiceClaimSource}`, context);
+  vm.runInContext(`${takenByOtherSource}\n${voiceClaimSource}\n${releaseSource}`, context);
   return context;
 }
 
@@ -298,4 +311,55 @@ test('a tab of a task that is not running is free', async () => {
   assert.equal(result.ok, true, 'the tab is free');
   assert.ok(result.token, 'the lease has a token');
   claims.releaseTab(40, { panelId: 'voice-panel', token: result.token });
+});
+
+test('a tab that a task takes while the claim is looked at again stays busy until the debugger is detached', async () => {
+  const runner = { ...runningSession('regular-session', 'Normal task', 40), running: false };
+  let lookups = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const app = claimWorker({
+    runners: [runner],
+    // The tab looks free at first, and a task works in it when the ownership
+    // is looked at again.
+    tabsGet: async (id) => {
+      lookups += 1;
+      if (lookups > 1) runner.running = true;
+      return { id, groupId: -1, url: 'https://example.test/' };
+    },
+    detach: async () => { await gate; },
+  });
+
+  const pending = app.voiceClaim({ tabId: 40, sessionId: 'voice-session', panelId: 'voice-panel' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(claims.claimOf(40)?.state, 'revoking', 'the authorization is gone at once');
+  assert.ok(claims.claimOf(40), 'the tab is still busy while the cleanup runs');
+  assert.equal(claims.claimTab(40, { panelId: 'voice-panel', sessionId: 'voice-panel' }).ok, false,
+    'nobody else may take the tab while it is cleaned up');
+
+  release();
+  const result = await pending;
+
+  assert.equal(result.ok, false, 'the claim is refused');
+  assert.equal(result.owner, 'Normal task', 'the task that took it is named');
+  assert.equal(claims.claimOf(40), null, 'the tab is free once the cleanup is over');
+});
+
+test('a tab that is gone fails the claim closed, and no lease is left behind', async () => {
+  let lookups = 0;
+  const app = claimWorker({
+    runners: [],
+    tabsGet: async (id) => {
+      lookups += 1;
+      if (lookups > 1) throw new Error('No tab with id: 40.');
+      return { id, groupId: -1, url: 'https://example.test/' };
+    },
+  });
+
+  const result = await app.voiceClaim({ tabId: 40, sessionId: 'voice-session', panelId: 'voice-panel' });
+
+  assert.equal(result.ok, false, 'a missing tab is not a claim');
+  assert.equal(result.errorKey, 'voice.sayTabGone');
+  assert.equal(claims.claimOf(40), null, 'no lease is left behind');
 });

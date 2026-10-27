@@ -20,7 +20,7 @@ const PAGE_ANSWERS = {
 /** The answer of the one page script that knows about secrets. */
 function pageAnswer(kind, arg) {
   if (kind === 'collect') return arg?.purpose === 'type' ? TYPE_FIELDS : CLICK_ELEMENTS;
-  if (kind === 'focused') return { editable: false, secret: false };
+  if (kind === 'focused') return { editable: false, secret: false, id: 'focused-1' };
   if (kind === 'locate') return { ok: true, x: 12, y: 24, rect: { left: 2, top: 14, width: 20, height: 20 }, secret: false };
   return { ok: true };
 }
@@ -726,6 +726,51 @@ test('a command that names a field does not type into the field that has the foc
   assert.equal(input[2][2].text, 'my address', 'the text is exactly the span that was chosen');
 });
 
+test('the label the element really has travels with the input, not the one the model reads', async () => {
+  const browser = mockBrowser({
+    inject: async (tabId, func, args = []) => {
+      browser.calls.push(['inject', tabId, func.name, args]);
+      if (func.name === 'pageProbe' && args[0] === 'collect') {
+        return [
+          { id: '7', kind: 'text input', label: '(unlabeled field)', identityLabel: '', href: null, inView: true, top: 0, left: 0, secret: false },
+        ];
+      }
+      if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
+      return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
+    },
+  });
+  const ask = scriptedAsk({ action: choice('type_text'), argument: firstSpan, element: choice('e0'), submit: { type: 'noul', noul: 0.2 } });
+
+  await runFastCommand({ ask, browser, command: 'type hello', approve: approves(true), secretTokens: ['password'], t });
+
+  const input = browser.calls.find((call) => call[0] === 'input');
+  assert.ok(input, 'the text was typed');
+  assert.equal(input[3].expected.label, '', 'the identity of the element is the label it really has');
+  assert.equal(input[3].expected.kind, 'text input');
+});
+
+test('the merged label of two links does not change the identity of the element', async () => {
+  const browser = mockBrowser({
+    inject: async (tabId, func, args = []) => {
+      browser.calls.push(['inject', tabId, func.name, args]);
+      if (func.name === 'pageProbe' && args[0] === 'collect') {
+        return [
+          { id: '8', kind: 'link', label: 'Detailed item title', identityLabel: 'Item', href: '/page?merged', inView: true, top: 0, left: 0, secret: false },
+        ];
+      }
+      if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
+      return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
+    },
+  });
+  const ask = scriptedAsk({ action: choice('click'), argument: firstSpan, element: choice('e0') });
+
+  await runFastCommand({ ask, browser, command: 'click Detailed item title', approve: approves(true), secretTokens: ['password'], t });
+
+  const input = browser.calls.find((call) => call[0] === 'input');
+  assert.ok(input, 'the link was clicked');
+  assert.equal(input[3].expected.label, 'Item', 'the identity keeps the label of the element that was collected');
+});
+
 test('a tab that is opened is claimed and bound before it is shown', async () => {
   const browser = mockBrowser();
   const ask = scriptedAsk({ action: choice('new_tab'), argument: firstSpan, site: choice('none') });
@@ -841,11 +886,11 @@ test('the text is written with the platform chord, not with a hard-coded one', a
   assert.doesNotMatch(JSON.stringify(input[2]), /Control\+A|Meta\+A/);
 });
 
-test('Enter is allowed when the body has the focus', async () => {
+test('Enter is allowed when the body has the focus, and it is tied to that body', async () => {
   const browser = mockBrowser({
     inject: async (tabId, func, args = []) => {
       browser.calls.push(['inject', tabId, func.name, args]);
-      if (func.name === 'pageProbe' && args[0] === 'focused') return { editable: false, secret: false, id: null };
+      if (func.name === 'pageProbe' && args[0] === 'focused') return { editable: false, secret: false, id: 'body-1' };
       if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
       return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
     },
@@ -856,8 +901,27 @@ test('Enter is allowed when the body has the focus', async () => {
 
   assert.equal(result.ok, true);
   const input = browser.calls.find((call) => call[0] === 'input');
-  assert.equal(input[3].element, null, 'the body is the approved focus');
+  assert.equal(input[3].element, 'body-1', 'the body that was approved travels with the input');
   assert.deepEqual(input[2], [{ op: 'key', key: 'Enter' }]);
+});
+
+test('Enter without an approved focus is refused, and nothing is sent', async () => {
+  const browser = mockBrowser({
+    inject: async (tabId, func, args = []) => {
+      browser.calls.push(['inject', tabId, func.name, args]);
+      // The page could not name the element that has the focus.
+      if (func.name === 'pageProbe' && args[0] === 'focused') return { editable: false, secret: false, id: null };
+      if (func.name === 'pageProbe') return pageAnswer(args[0], args[1]);
+      return (PAGE_ANSWERS[func.name] ?? (() => ({ ok: true })))(args);
+    },
+  });
+  const ask = scriptedAsk({ action: choice('press_enter'), argument: firstSpan });
+
+  const result = await runFastCommand({ ask, browser, command: 'press enter', approve: approves(true), secretTokens: ['password'], t });
+
+  assert.equal(result.ok, false, 'the Enter has no identity to check');
+  assert.equal(result.say, 'voice.pageFocusLost');
+  assert.equal(browser.calls.some((call) => call[0] === 'input'), false, 'nothing was sent');
 });
 
 test('closing the tab the command is on ends the chain, and no other tab is taken up', async () => {

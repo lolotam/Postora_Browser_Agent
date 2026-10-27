@@ -373,7 +373,9 @@ document.addEventListener('keydown', (event) => {
 /** Mock Jev for the safety page: it types into the field, or presses Enter, or clicks. */
 function scriptedSafetyJev() {
   const pick = (picked) => ({ type: 'choice', choice: picked, confidence: 0.95, probabilities: { [picked]: 0.97 } });
-  return (body) => {
+  // What the mock chose, so a test can see the argument it picked.
+  const chosen = [];
+  const jev = (body) => {
     const command = String(body.state?.spoken_command ?? '');
     const lower = command.toLowerCase();
     const action = lower.includes('type') ? 'type_text' : lower.includes('enter') ? 'press_enter' : 'click';
@@ -388,15 +390,20 @@ function scriptedSafetyJev() {
       let choice = 'none';
       if (name === 'action') choice = keys.includes(action) ? action : 'none';
       else if (name === 'argument') {
-        const span = command.replace(/^\\s*type\\s+/i, '').replace(/\\s+into\\s+.*$/i, '').trim();
+        // The text that is typed is the argument of the command: the words
+        // after the verb and before the field it goes into.
+        const span = command.replace(/^\s*type\s+/i, '').replace(/\s+into\s+.*$/i, '').trim();
         choice = Object.entries(question.criteria).find(([, value]) => value === `"${span}"`)?.[0] ?? 'none';
       } else if (name === 'element' && wanted) {
         choice = Object.entries(question.criteria).find(([, value]) => wanted.test(value))?.[0] ?? 'none';
       } else if (name !== 'site') choice = keys.find((key) => key !== 'none') ?? 'none';
+      chosen.push({ name, choice, value: question.criteria[choice] ?? null });
       answers[name] = pick(choice);
     }
     return { model: 'jev-mock', answers };
   };
+  jev.chosen = chosen;
+  return jev;
 }
 
 function startServer(handlers) {
@@ -1256,7 +1263,8 @@ async function runVoiceReplayScenario(context, extensionId) {
  * inherit the consent, and a command that was cancelled must not click.
  */
 async function runVoiceSafetyScenario(context, extensionId) {
-  const { server, counts, bodies, base } = await startServer({ jev: scriptedSafetyJev() });
+  const jev = scriptedSafetyJev();
+  const { server, counts, bodies, base } = await startServer({ jev });
   const panel = await context.newPage();
   const pageErrors = [];
   panel.on('pageerror', (err) => pageErrors.push(err.message));
@@ -1332,6 +1340,13 @@ async function runVoiceSafetyScenario(context, extensionId) {
     if (redirected.email !== 'untouched@example.test') failures.push('the text was typed although the focus had moved');
     if (!redirected.trusted) failures.push('the approved click was not real input');
     if (!(await lastState()).includes('err')) failures.push('the command was not reported as refused');
+    // The text of the command is the argument of the command: the mock picks
+    // the words that are typed, not the whole sentence.
+    const picked = jev.chosen.filter((entry) => entry.name === 'argument');
+    if (!picked.length) failures.push('the mock was never asked for the text to type');
+    else if (picked[0].value !== '"approved text"') {
+      failures.push(`the mock picked "${picked[0].value}" instead of the text to type`);
+    }
 
     // A twin that carries the same mark is not the element that was approved.
     await panel.click('#voiceBackBtn');
@@ -1368,6 +1383,21 @@ async function runVoiceSafetyScenario(context, extensionId) {
       }));
       failures.push(`the body Enter did not reach the page ("${entered}") — ${JSON.stringify(why)} ${JSON.stringify(page)}`);
     }
+
+    // A body Enter that was approved on another document: the page goes
+    // somewhere else while the question is open, and the consent does not
+    // travel with it.
+    await panel.click('#voiceBackBtn');
+    await target.goto(`${base}/safety?body`);
+    await target.evaluate(() => document.body.focus());
+    before = await entries();
+    await command('press enter');
+    await target.goto(`${base}/safety?elsewhere`);
+    await panel.click('#voiceApproval button.primary');
+    await finished(before);
+    const elsewhere = await target.textContent('#out');
+    if (elsewhere !== '') failures.push(`the body Enter reached another document ("${elsewhere}")`);
+    if (!(await lastState()).includes('err')) failures.push('the Enter on another document was not refused');
 
     // A command that is cancelled while the mouse is still moving must not
     // press the button.

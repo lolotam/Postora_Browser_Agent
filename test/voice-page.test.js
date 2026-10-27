@@ -239,14 +239,54 @@ test('the focus is checked against the element that was approved', () => {
   assert.equal(lost.ok, false, 'the focus went to another field');
   assert.equal(lost.errorKey, 'voice.pageFocusLost');
 
-  // The body may have the focus: Enter is a page action there as well.
-  const bodyFocus = probe([field, other], 'focus', { id: null }, { scope: world }).result;
-  assert.equal(bodyFocus.ok, false, 'the focus is on another field, not on the body');
+  // Without an identity nothing is approved: there is no fallback to
+  // whatever has the focus now.
+  const unknown = probe([field, other], 'focus', { id: null }, { scope: world }).result;
+  assert.equal(unknown.ok, false, 'the focus was not approved for anything');
+  assert.equal(unknown.errorKey, 'voice.pageFocusLost');
+});
 
-  // Now the body has the focus.
+test('the body is named like every other element, and it is approved as itself', () => {
+  const button = element({ tag: 'BUTTON', text: 'Go', purposes: ['click'] });
+  const world = scope([button]);
   world.doc.activeElement = world.doc.body;
-  const onBody = probe([field, other], 'focus', { id: null }, { scope: world }).result;
-  assert.equal(onBody.ok, true, 'the body may have the focus');
+
+  const focused = probe([button], 'focused', null, { scope: world }).result;
+  assert.ok(focused.id, 'the body is named, so an approved Enter is tied to it');
+  assert.equal(focused.editable, false);
+  assert.equal(focused.secret, false, 'the body is not a secret field');
+  assert.equal(focused.label, undefined, 'the body is never described: its text is the text of the page');
+
+  const onBody = probe([button], 'focus', { id: focused.id }, { scope: world }).result;
+  assert.equal(onBody.ok, true, 'the body that has the focus is the one that was approved');
+  assert.equal(onBody.body, true);
+});
+
+test('the body does not lend its approval to a field that has the focus now', () => {
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email' }, purposes: ['type'] });
+  const world = scope([field]);
+  world.doc.activeElement = world.doc.body;
+  const focused = probe([field], 'focused', null, { scope: world }).result;
+
+  // The focus moves to an ordinary field while the question is open.
+  world.doc.activeElement = field;
+  const moved = probe([field], 'focus', { id: focused.id }, { scope: world }).result;
+  assert.equal(moved.ok, false, 'a child of the body does not inherit the approval');
+  assert.equal(moved.errorKey, 'voice.pageFocusLost');
+});
+
+test('the body of another document is not the body that was approved', () => {
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'email' }, purposes: ['type'] });
+  const world = scope([field]);
+  world.doc.activeElement = world.doc.body;
+  const focused = probe([field], 'focused', null, { scope: world }).result;
+
+  // The page is replaced: the body that was approved is gone with it.
+  world.doc.body.isConnected = false;
+  world.doc.activeElement = null;
+  const gone = probe([field], 'focus', { id: focused.id }, { scope: world }).result;
+  assert.equal(gone.ok, false);
+  assert.equal(gone.errorKey, 'voice.pageGone');
 });
 
 test('a secret field that has the focus is left alone', () => {
@@ -283,4 +323,68 @@ test('a card expiry and a one-time code are secrets, an ordinary field is not', 
   assert.equal(result.length, 2, 'the expiry and the code are left out');
   assert.ok(result.some((field) => /quantity/i.test(field.label)));
   assert.ok(result.some((field) => /search/i.test(field.label)));
+});
+
+test('the expiry of a card in Arabic is a secret, and an ordinary field stays usable', () => {
+  const names = ['تاريخ الانتهاء', 'انتهاء الصلاحية', 'تاريخ انتهاء الصلاحية'];
+  for (const name of names) {
+    const field = element({ tag: 'INPUT', type: 'text', attrs: { 'aria-label': name }, purposes: ['type'] });
+    assert.equal(collect([field], 'type').length, 0, `"${name}" is left out of the page`);
+    assert.equal(isSecretField({ tag: 'INPUT', type: 'text', ariaLabel: name, label: name }), true,
+      `"${name}" is a secret in the module too`);
+  }
+  const quantity = element({ tag: 'INPUT', type: 'number', attrs: { id: 'quantity', name: 'quantity' }, purposes: ['type'] });
+  const search = element({ tag: 'INPUT', type: 'search', attrs: { id: 'search', name: 'search' }, purposes: ['type'] });
+  const email = element({ tag: 'INPUT', type: 'email', attrs: { id: 'email', name: 'email' }, purposes: ['type'] });
+  const result = collect([quantity, search, email], 'type');
+  assert.equal(result.length, 3, 'the ordinary fields stay usable');
+});
+
+test('a field that becomes a card expiry in Arabic is refused when the action is about to happen', () => {
+  const field = element({ tag: 'INPUT', type: 'text', attrs: { id: 'plain' }, purposes: ['type'] });
+  const world = scope([field]);
+  const collected = probe([field], 'collect', { purpose: 'type' }, { scope: world }).result;
+  assert.equal(collected.length, 1, 'the field was ordinary when it was collected');
+
+  field.attrs['aria-label'] = 'تاريخ الانتهاء';
+  const refused = probe([field], 'locate', { id: collected[0].id }, { scope: world }).result;
+  assert.equal(refused.ok, false);
+  assert.equal(refused.errorKey, 'voice.pageSecret');
+});
+
+test('the label a field really has is kept apart from the label the model reads', () => {
+  const plain = element({ tag: 'INPUT', type: 'text', attrs: { id: 'note' }, purposes: ['type'] });
+  const world = scope([plain]);
+  const collected = probe([plain], 'collect', { purpose: 'type' }, { scope: world }).result;
+
+  assert.equal(collected[0].label, '(unlabeled field)', 'the model reads a fallback');
+  assert.equal(collected[0].identityLabel, '', 'the element keeps the label it really has');
+
+  const spot = probe([plain], 'resolve', { id: collected[0].id, expected: { kind: 'text input', label: '' } }, { scope: world }).result;
+  assert.equal(spot.ok, true, 'an empty label is a label too');
+
+  // The label of the element drifts: the consent does not follow it.
+  plain.attrs['aria-label'] = 'Your note';
+  const drifted = probe([plain], 'resolve', { id: collected[0].id, expected: { kind: 'text input', label: '' } }, { scope: world }).result;
+  assert.equal(drifted.ok, false, 'a label that drifted is refused');
+});
+
+test('two links with the same address keep the identity of the element that was collected', () => {
+  const first = element({ tag: 'A', text: 'Item', attrs: { href: '/page?merged' }, purposes: ['click'] });
+  const second = element({ tag: 'A', text: 'Detailed item title', attrs: { href: '/page?merged' }, purposes: ['click'] });
+  const world = scope([first, second]);
+  const collected = probe([first, second], 'collect', { purpose: 'click' }, { scope: world }).result;
+
+  assert.equal(collected.length, 1, 'the two links are one candidate');
+  assert.equal(collected[0].label, 'Detailed item title', 'the model reads the longer label');
+  assert.equal(collected[0].identityLabel, 'Item', 'the identity keeps the label of the element');
+
+  const spot = probe([first, second], 'resolve', { id: collected[0].id, expected: { kind: 'link', label: 'Item' } }, { scope: world }).result;
+  assert.equal(spot.ok, true, 'the element that was collected is the one that is clicked');
+
+  // The label of that element drifts: the consent does not follow the label.
+  first.innerText = 'Something else';
+  first.childNodes[0].textContent = 'Something else';
+  const drifted = probe([first, second], 'resolve', { id: collected[0].id, expected: { kind: 'link', label: 'Item' } }, { scope: world }).result;
+  assert.equal(drifted.ok, false, 'a label that drifted is refused');
 });

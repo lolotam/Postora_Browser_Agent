@@ -28,7 +28,8 @@
  * `kind` says what to look at:
  *   - 'collect' with `{ purpose: 'click' | 'type' }` lists the elements of the
  *     page, with the label the model may read;
- *   - 'focused' says what has the focus, and names it;
+ *   - 'focused' says what has the focus, and names it (the body is named
+ *     too, and never described: its text is the text of the page);
  *   - 'locate' with `{ id }` (or without one, for the focused element) says
  *     where an element is and whether it still holds a secret;
  *   - 'resolve' with `{ id, expected }` says whether the element the user
@@ -159,7 +160,12 @@ export function pageProbe(kind, arg, rule) {
 
   if (kind === 'focused') {
     const el = document.activeElement;
-    if (!el || el === document.body) return { editable: false, secret: false, id: null };
+    if (!el) return { editable: false, secret: false, id: null };
+    // The body is an element like every other one: it is registered too, so
+    // an approved Enter is tied to the body it was approved on and not to
+    // whatever has the focus later. It is never described: its text is the
+    // text of the page, and the page does not belong to the model.
+    if (el === document.body) return { editable: false, secret: false, id: mark(el, 0) };
     const editable = isEditable(el) || (el.tagName === 'INPUT' &&
       !['checkbox', 'radio', 'submit', 'button', 'image', 'file', 'range', 'color', 'hidden'].includes(el.type));
     // The label is the safe one: the text of an editable field is never used,
@@ -168,7 +174,7 @@ export function pageProbe(kind, arg, rule) {
     // The element that has the focus is named, so the worker may check later
     // that the same element still has it.
     let id = null;
-    if (registry() && el !== document.body) id = mark(el, 0);
+    if (registry()) id = mark(el, 0);
     return { editable, secret: isSecret(el, label), id, label };
   }
 
@@ -203,7 +209,9 @@ export function pageProbe(kind, arg, rule) {
     if (expected) {
       const kindName = kindOf(el);
       if (expected.kind && kindName !== expected.kind) return { ok: false, errorKey: 'voice.pageGone' };
-      if (expected.label && clean(expected.label) !== label) return { ok: false, errorKey: 'voice.pageGone' };
+      // The label that is compared is the one the element really had when it
+      // was collected: an empty label is a label too.
+      if (expected.label != null && clean(expected.label) !== label) return { ok: false, errorKey: 'voice.pageGone' };
     }
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();
@@ -230,14 +238,18 @@ export function pageProbe(kind, arg, rule) {
   // not hold a secret.
   if (kind === 'focus') {
     const active = document.activeElement;
-    if (!arg?.id) {
-      // The body had the focus: it still may have it.
-      if (active && active !== document.body) return { ok: false, errorKey: 'voice.pageFocusLost' };
-      return { ok: true, body: true };
-    }
+    // The focus is approved for one element. Without its identity nothing is
+    // approved: there is no fallback to whatever has the focus now.
+    if (!arg?.id) return { ok: false, errorKey: 'voice.pageFocusLost' };
     const el = collected(arg.id);
     if (!el) return { ok: false, errorKey: 'voice.pageGone' };
     if (el.isConnected === false) return { ok: false, errorKey: 'voice.pageGone' };
+    // The body is approved as the body it was: a child that has the focus
+    // now is another element, and it does not inherit the approval.
+    if (el.tagName === 'BODY') {
+      if (active !== el) return { ok: false, errorKey: 'voice.pageFocusLost' };
+      return { ok: true, body: true };
+    }
     if (!active || (active !== el && !(typeof el.contains === 'function' && el.contains(active)))) {
       return { ok: false, errorKey: 'voice.pageFocusLost' };
     }
@@ -276,6 +288,8 @@ export function pageProbe(kind, arg, rule) {
     const key = href ? 'h:' + href : null;
     if (key && seen.has(key)) {
       const prev = seen.get(key);
+      // Only the label the model reads becomes the longer one: the identity
+      // of the element that was collected keeps its own label.
       if (label.length > prev.label.length) prev.label = label;
       prev.inView = prev.inView || inView;
       continue;
@@ -285,6 +299,10 @@ export function pageProbe(kind, arg, rule) {
       id,
       kind: kindOf(el),
       label: label || '(unlabeled field)',
+      // The label the element really has. The label above is what the model
+      // reads: it may be a fallback or a merged one, and it never changes the
+      // identity of the element that was collected.
+      identityLabel: label,
       href,
       inView,
       top: Math.round(r.top + window.scrollY),

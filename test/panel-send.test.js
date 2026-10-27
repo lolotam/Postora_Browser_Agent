@@ -12,6 +12,7 @@ const voiceMessage = source.slice(source.indexOf('function sendVoiceMessage('), 
 const voiceCommand = source.slice(source.indexOf('async function runVoiceCommand('), source.indexOf('\n/** The fast layer runs the command itself'));
 const fastCommand = source.slice(source.indexOf('async function runFastVoiceCommand('), source.indexOf("\n/** The name of a step, in the panel"));
 const questionSource = source.slice(source.indexOf('function showPendingQuestion('), source.indexOf('\nfunction setRunning('));
+const chatSource = source.slice(source.indexOf('function closeVoice('), source.indexOf('\n// ---------- the commands ----------'));
 const finishTaskSource = source.slice(source.indexOf('function finishVoiceTask('), source.indexOf('\nfunction cancelVoiceTask('));
 const connectSource = source.slice(source.indexOf('function connect('), source.indexOf('\n// Picking the session'));
 
@@ -20,7 +21,8 @@ function panel({ postMessage = () => {}, picking = null } = {}) {
   const context = vm.createContext({
     Promise, DOMException,
     picking, sessionId: 'original', port: { postMessage },
-    attachments: [], settings: {}, ui: { running: false, question: null, questionId: 0 },
+    attachments: [], settings: {}, ui: { running: false, question: null, questionId: 0, answering: null },
+    voiceViewToken: 0, voiceController: null, voiceApproval: null,
     $: (id) => {
       if (!elements.has(id)) elements.set(id, { hidden: false, textContent: '', value: '' });
       return elements.get(id);
@@ -28,7 +30,7 @@ function panel({ postMessage = () => {}, picking = null } = {}) {
     t: (key) => key, renderFiles() {}, connect() {}, showTabSession: async () => {},
     packFiles: (text) => ({ task: text, display: text, images: [] }),
   });
-  vm.runInContext(`${send}\n${composer}\n${questionSource}`, context);
+  vm.runInContext(`${send}\n${composer}\n${questionSource}\n${chatSource}`, context);
   return context;
 }
 
@@ -65,15 +67,16 @@ test('a voice submission cannot cross into a newly selected session', async () =
 });
 
 /** The panel's own voice command, with the port and the settings mocked. */
-function voicePanel({ question = null, engine = 'postora' } = {}) {
+function voicePanel({ question = null, engine = 'postora', running = false } = {}) {
   const posted = [];
   const elements = new Map();
   const context = vm.createContext({
     Promise, DOMException,
-    ui: { running: false, question, questionId: question ? 1 : 0 },
+    ui: { running, question, questionId: question ? 1 : 0, answering: null },
     settings: { voiceEngine: engine },
     sessionId: 'session-a',
     voiceTask: null,
+    voiceViewToken: 0, voiceController: null, voiceApproval: null,
     t: (key) => key,
     voiceTarget: async () => ({ id: 5, windowId: 1, url: 'https://example.test/', title: 'Example' }),
     runFastVoiceCommand: async () => {},
@@ -83,7 +86,7 @@ function voicePanel({ question = null, engine = 'postora' } = {}) {
       return elements.get(id);
     },
   });
-  vm.runInContext(`${voiceMessage}\n${voiceCommand}\n${questionSource}\n${finishTaskSource}`, context);
+  vm.runInContext(`${voiceMessage}\n${voiceCommand}\n${questionSource}\n${finishTaskSource}\n${chatSource}`, context);
   return { context, posted };
 }
 
@@ -123,6 +126,62 @@ test('a voice command answers the question that is waiting, and the question sta
     display: 'the first one',
     images: [],
   }], 'the answer carries the voice text and nothing else');
+});
+
+test('a voice answer completed after cancellation does not publish late success or change screens', async () => {
+  const { context } = voicePanel({ question: 'Which one do you mean?', running: true });
+  let delivered;
+  context.send = () => new Promise((resolve) => { delivered = resolve; });
+  const updates = [];
+  context.showChat = () => updates.push('screen');
+  const abort = new AbortController();
+  const pending = context.runVoiceCommand('the first one', {
+    signal: abort.signal,
+    entry: { setErr: () => updates.push('error'), setOk: () => updates.push('success') },
+  });
+  abort.abort();
+  delivered();
+  await pending;
+  assert.deepEqual(updates, [], 'a delivered answer does not resurrect a cancelled command');
+});
+
+test('a voice command answers a question that waits while the task is still running', async () => {
+  const errors = [];
+  const ok = [];
+  const { context, posted } = voicePanel({ question: 'Which one do you mean?', running: true });
+  await context.runVoiceCommand('the first one', {
+    signal: new AbortController().signal,
+    entry: { setErr: (text) => errors.push(text), setOk: (text) => ok.push(text), addNote() {} },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(posted)), [{
+    type: 'answer',
+    text: 'the first one',
+    display: 'the first one',
+    images: [],
+  }], 'the answer goes to the question that waits');
+  assert.deepEqual(errors, [], 'the answer is not refused as busy');
+  assert.equal(context.voiceTask, null, 'no fresh task is started for an answer');
+});
+
+test('a voice answer hands the screen back to the chat, where the task and its report are', async () => {
+  const { context } = voicePanel({ question: 'Which one do you mean?', running: true });
+  await context.runVoiceCommand('the first one', { signal: new AbortController().signal, entry });
+
+  assert.equal(context.$('voiceView').hidden, true, 'the voice screen is left');
+  assert.equal(context.$('chatView').hidden, false, 'the chat is shown');
+});
+
+test('a voice command is refused while the task works and no question waits', async () => {
+  const errors = [];
+  const { context, posted } = voicePanel({ running: true });
+  await context.runVoiceCommand('scroll down', {
+    signal: new AbortController().signal,
+    entry: { setErr: (text) => errors.push(text), setOk() {}, addNote() {} },
+  });
+
+  assert.deepEqual(errors, ['voice.busy'], 'the command is refused while the session is busy');
+  assert.deepEqual(posted, [], 'nothing was sent');
 });
 
 test('a voice command that was cancelled never reaches the port', async () => {
@@ -241,6 +300,71 @@ test('a question that was answered in the composer is cleared after the answer w
   assert.equal(app.ui.question, null, 'the question is cleared once the answer went out');
 });
 
+test('a question is answered once: a second answer is refused and the draft is kept', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const sent = [];
+  const app = panel({ postMessage: (message) => { sent.push(message); return gate; } });
+  app.ui.question = 'Which one do you mean?';
+  app.ui.questionId = 1;
+  app.$('input').value = 'the first one';
+
+  // The answer of the voice is on its way, and the user types the same answer.
+  const spoken = app.sendVoiceMessage('the first one');
+  const typed = await app.submitComposer('the first one');
+
+  assert.equal(typed, false, 'the second answer to the same question is refused');
+  assert.equal(sent.length, 1, 'only one answer went out');
+  assert.equal(app.$('input').value, 'the first one', 'the draft of the user is left alone');
+
+  release();
+  assert.equal(await spoken, true);
+});
+
+test('a question whose answer could not be sent may be answered again', async () => {
+  const sent = [];
+  let fail = true;
+  const app = panel({
+    postMessage: (message) => {
+      sent.push(message);
+      if (fail) {
+        fail = false;
+        throw new Error('port disconnected');
+      }
+      return Promise.resolve();
+    },
+  });
+  app.ui.question = 'Which one do you mean?';
+  app.ui.questionId = 1;
+
+  await assert.rejects(app.sendVoiceMessage('the first one'), /port disconnected/);
+  assert.equal(app.ui.question, 'Which one do you mean?', 'the question still waits for an answer');
+
+  const again = await app.sendVoiceMessage('the second try');
+  assert.equal(again, true, 'the question may be answered again');
+  assert.equal(sent.length, 2);
+});
+
+test('a newer question may be answered while the answer of the older one is on its way', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const sent = [];
+  const app = panel({ postMessage: (message) => { sent.push(message); return gate; } });
+  app.ui.question = 'Which one do you mean?';
+  app.ui.questionId = 1;
+
+  const older = app.sendVoiceMessage('the first one');
+  // A newer question arrives while the answer is still on its way.
+  app.ui.question = 'And now, which one?';
+  app.ui.questionId = 2;
+  const newer = app.sendVoiceMessage('the second one');
+
+  assert.equal(sent.length, 2, 'the newer question has its own answer');
+  release();
+  await older;
+  assert.equal(await newer, true);
+});
+
 /** The fast command of the panel, with the browser and the provider mocked. */
 function fastPanel({ fail = null, result = { ok: true, say: 'voice.success' } } = {}) {
   const errors = [];
@@ -276,11 +400,22 @@ test('a cancelled fast command writes nothing into the screen', async () => {
   const errors = [];
   const app = fastPanel({ fail: new DOMException('The operation was aborted.', 'AbortError') });
   const controller = new AbortController();
+  controller.abort();
 
   await app.context.runFastVoiceCommand('scroll down', { signal: controller.signal, entry: fastEntry(errors) });
 
   assert.deepEqual(errors, [], 'the raw error is not written into the screen');
   assert.deepEqual(app.spoken, [], 'nothing is spoken after the cancellation');
+});
+
+test('a fast command that failed with an abort it did not ask for says so', async () => {
+  const errors = [];
+  const app = fastPanel({ fail: new DOMException('The operation was aborted.', 'AbortError') });
+
+  await app.context.runFastVoiceCommand('scroll down', { signal: new AbortController().signal, entry: fastEntry(errors) });
+
+  assert.deepEqual(errors, ['The operation was aborted.'], 'an abort that this command did not ask for is a failure');
+  assert.deepEqual(app.spoken, [], 'nothing is spoken for a failed command');
 });
 
 test('a fast command that was cancelled while it ran writes nothing into the screen', async () => {

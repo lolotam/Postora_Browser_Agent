@@ -45,7 +45,7 @@ class FakeRecognition {
   }
 }
 
-function setup({ handsFree = true, speakReplies = false, panel = true, prefs, failMic = false } = {}) {
+function setup({ handsFree = true, speakReplies = false, panel = true, prefs, failMic = false, failCommand = null } = {}) {
   const created = [];
   const commands = [];
   const states = [];
@@ -82,6 +82,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     onTranscript: (text, options) => transcripts.push({ text, ...options }),
     onCommand: async (text, { signal }) => {
       commands.push({ text, signal });
+      if (failCommand) throw failCommand;
       await new Promise((resolve) => { release = resolve; });
     },
     onLog: (command) => {
@@ -368,6 +369,17 @@ test('a command that is cancelled stops the one that is running', async () => {
   app.created[0].hear('first');
   app.controller.cancelCommand();
   assert.equal(app.commands[0].signal.aborted, true);
+});
+
+test('a command that failed with an abort it did not ask for is marked as failed', async () => {
+  const app = setup({ handsFree: true, failCommand: new DOMException('The operation was aborted.', 'AbortError') });
+  await app.controller.open();
+  app.created[0].hear('first');
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(app.logs[0].status?.state, 'err', 'the failure is shown instead of nothing');
+  assert.equal(app.logs[0].status?.text, 'The operation was aborted.');
+  assert.equal(app.controller.busy, false, 'the screen is free again');
 });
 
 test('closing the screen stops the microphone and the command', async () => {

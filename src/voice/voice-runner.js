@@ -75,7 +75,7 @@ export async function runFastCommand({ ask, browser, command, emit = () => {}, a
       // and nothing is changed.
       return { ok: false, say: t('voice.sayOwnerUnknown') };
     }
-    if (!held?.ok) return { ok: false, say: t('voice.sayTabTaken', { owner: held?.owner || '' }) };
+    if (!held?.ok) return { ok: false, say: claimRefused(held, t) };
 
     const { steps } = await splitCommand(ask, command, { signal });
     let last = null;
@@ -108,6 +108,14 @@ export async function runFastCommand({ ask, browser, command, emit = () => {}, a
     await releaseAll();
     signal?.removeEventListener('abort', revoke);
   }
+}
+
+/**
+ * Why a claim was refused: the worker may name the reason itself, and it does
+ * when the tab it was asked for is gone.
+ */
+function claimRefused(held, t) {
+  return t(held?.errorKey ?? 'voice.sayTabTaken', { owner: held?.owner || '' });
 }
 
 /** What the decision client needs to know about the browser: the tab, and the other tabs by title. */
@@ -179,7 +187,7 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
       return failed(t('voice.sayOwnerUnknown'));
     }
     if (signal?.aborted) return cancelled;
-    if (!held?.ok) return failed(t('voice.sayTabTaken', { owner: held?.owner || '' }));
+    if (!held?.ok) return failed(claimRefused(held, t));
     return { ok: true };
   };
 
@@ -191,7 +199,12 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
   };
 
   /** What the worker checks the element against, so a twin is not the same field. */
-  const identity = (element) => ({ kind: element?.kind ?? null, label: element?.label ?? null });
+  const identity = (element) => ({
+    kind: element?.kind ?? null,
+    // The label the element really had when it was collected: the label the
+    // model reads may be a fallback ("an unnamed field") or a merged one.
+    label: element?.identityLabel ?? element?.label ?? null,
+  });
 
   /** Closes a tab that was opened but never shown, so it does not stay behind. */
   const discardTab = async (tabId) => {
@@ -251,7 +264,7 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         let shown = false;
         try {
           const held = await claim(created.id);
-          if (!held?.ok) return failed(t('voice.sayTabTaken', { owner: held?.owner || '' }));
+          if (!held?.ok) return failed(claimRefused(held, t));
           const bound = await browser.bindSession(created.id);
           if (!bound.ok) return failed(t('voice.sayOwnerUnknown'));
           if (signal?.aborted) return cancelled;
@@ -366,6 +379,10 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
       case 'press_enter': {
         const focused = await browser.inject(target.id, page.pageProbe, ['focused', null, rule], { signal });
         if (focused?.secret) return failed(t('voice.saySecretField'));
+        // The focus is approved for one element: the body is approved as the
+        // body it was, and anything else has no identity to check. Without one
+        // the Enter is refused: it would go to whatever has the focus now.
+        if (!focused?.id) return failed(t('voice.pageFocusLost'));
         if (!await confirm({ action: 'press_enter', label: t('voice.sayFocusedField') })) return cancelled;
         const free = await guard(target.id);
         if (!free.ok) return free;
@@ -374,7 +391,7 @@ async function runStep({ ask, browser, ctx, target, command, emit, approve, sign
         // the page may have moved it to a field that holds a secret. The body
         // may have the focus too: Enter is a page action there as well.
         const res = await browser.input(target.id, [{ op: 'key', key: 'Enter' }], {
-          element: focused?.id ?? null,
+          element: focused.id,
           expected: null,
           rule,
         });

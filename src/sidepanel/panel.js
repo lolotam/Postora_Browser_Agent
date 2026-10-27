@@ -24,7 +24,9 @@ const $ = (id) => document.getElementById(id);
 
 // The question that waits for an answer, and its number: a question that
 // arrives while another one is being answered is a different question.
-const ui = { thread: null, pending: [], running: false, question: null, questionId: 0, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
+// `answering` is the number of the question whose answer is on its way: the
+// question is answered once, and a second answer to it is refused.
+const ui = { thread: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -225,6 +227,11 @@ function onEvent(event) {
       // hidden behind the voice screen.
       showChat();
       setQuestion(event.question);
+      // The task waits for the answer, but the command that started it is
+      // over: the screen is free again, so the answer may be given by voice,
+      // and no new task is started for it. The entry of the command keeps
+      // the events of the task.
+      settleVoiceCommand();
       break;
     case 'final': {
       ui.liveText?.remove();
@@ -640,6 +647,15 @@ function clearAnsweredQuestion(questionId) {
   return true;
 }
 
+/**
+ * The answer to a question went out (or failed): the question may be
+ * answered again. Only the answer that is on its way is released, so a newer
+ * question keeps its own.
+ */
+function releaseAnswer(questionId) {
+  if (ui.answering === questionId) ui.answering = null;
+}
+
 function setRunning(running) {
   ui.running = running;
   if (!running) closeThread();
@@ -724,17 +740,22 @@ function submitComposer(text, { tabId, signal, expectedSessionId } = {}) {
     $('hint').textContent = t('composer.fileNone');
     return Promise.resolve(false);
   }
+  // The question that is answered is remembered by its number: it is only
+  // cleared when the answer really went out, and only when it is still the
+  // question that waits.
+  const questionId = ui.questionId;
+  const answering = Boolean(ui.question);
+  // One question is answered once: while the answer is on its way, another
+  // answer to the same question is refused, and the draft of the user is left
+  // alone. The guard is taken before anything is cleared or sent.
+  if (answering && ui.answering === questionId) return Promise.resolve(false);
+  if (answering) ui.answering = questionId;
   attachments = [];
   renderFiles();
   $('input').value = '';
   const message = { text: packed.task, display: packed.display, images: packed.images };
   const options = { signal, expectedSessionId };
   let sent;
-  // The question that is answered is remembered by its number: it is only
-  // cleared when the answer really went out, and only when it is still the
-  // question that waits.
-  const questionId = ui.questionId;
-  const answering = Boolean(ui.question);
   if (ui.question) {
     sent = send({ type: 'answer', ...message }, options);
   } else if (ui.running) {
@@ -745,7 +766,13 @@ function submitComposer(text, { tabId, signal, expectedSessionId } = {}) {
   }
   return sent.then(() => {
     if (answering) clearAnsweredQuestion(questionId);
+    releaseAnswer(questionId);
     return true;
+  }, (err) => {
+    // The answer did not go out: the question stays, and it may be answered
+    // again.
+    releaseAnswer(questionId);
+    throw err;
   });
 }
 
@@ -767,6 +794,10 @@ function sendVoiceMessage(text, { tabId, signal, expectedSessionId } = {}) {
   // question that waits.
   const questionId = ui.questionId;
   const answering = Boolean(ui.question);
+  // The same guard as the composer: one question is answered once, and the
+  // answer of the voice and the answer of the keyboard do not both go out.
+  if (answering && ui.answering === questionId) return Promise.resolve(false);
+  if (answering) ui.answering = questionId;
   if (ui.question) {
     sent = send({ type: 'answer', ...message }, options);
   } else if (ui.running) {
@@ -777,7 +808,11 @@ function sendVoiceMessage(text, { tabId, signal, expectedSessionId } = {}) {
   }
   return sent.then(() => {
     if (answering) clearAnsweredQuestion(questionId);
+    releaseAnswer(questionId);
     return true;
+  }, (err) => {
+    releaseAnswer(questionId);
+    throw err;
   });
 }
 
@@ -1180,6 +1215,16 @@ function finishVoiceTask() {
   task.resolve?.();
 }
 
+/**
+ * The command that is running asks a question: the task waits for the answer,
+ * but the command itself is over. The screen is free again, so the answer may
+ * be given by voice. The entry keeps the events of the task, so the task is
+ * still shown where it belongs.
+ */
+function settleVoiceCommand() {
+  voiceTask?.resolve?.();
+}
+
 function cancelVoiceTask(message) {
   const task = voiceTask;
   if (!task) return;
@@ -1191,9 +1236,34 @@ function cancelVoiceTask(message) {
 /** Runs one spoken command on the engine the user chose. */
 async function runVoiceCommand(text, { signal, entry }) {
   if (signal.aborted) return;
-  // Fast-only and the worker must not act concurrently in this same session.
-  if (ui.running) {
+  // A question that waits for an answer may be answered by voice while the
+  // task is still working: the answer belongs to that question, not to a new
+  // command. Every other command is refused while the session is busy.
+  const answering = Boolean(ui.question);
+  if (ui.running && !answering) {
     entry.setErr(t('voice.busy'));
+    return;
+  }
+  if (answering) {
+    // The answer goes to the question that waits. No fresh task is started
+    // for it: the task that asked is still running, and it is the one that
+    // continues when the answer arrives.
+    try {
+      const sent = await sendVoiceMessage(text, { signal, expectedSessionId: sessionId });
+      if (signal.aborted) return;
+      if (!sent) entry.setErr(t('voice.failed'));
+      else {
+        // The answer belongs to the task in the chat, and so does its
+        // report: the panel hands the screen back to the chat.
+        showChat();
+        entry.setOk(t('voice.success'));
+      }
+    } catch (err) {
+      // Only a cancellation of this command is silent: every other failure is
+      // a failure the user has to see.
+      if (signal.aborted) return;
+      entry.setErr(String(err?.message ?? err));
+    }
     return;
   }
   if ((settings?.voiceEngine ?? 'postora') === 'fast_only') {
@@ -1219,17 +1289,36 @@ async function runVoiceCommand(text, { signal, entry }) {
         // A command that was cancelled says so; the screen is closed and
         // nothing of it may be written into it. The task is finished anyway,
         // or the command would keep the screen busy for ever.
-        if (signal.aborted || err?.name === 'AbortError') {
+        if (signal.aborted) {
           if (voiceTask === task) finishVoiceTask();
           return;
         }
-        // The task never left the panel: the command must not stay open.
-        entry.setErr(String(err?.message ?? err));
-        if (voiceTask === task) finishVoiceTask();
+        if (voiceTask === task) {
+          // The task never left the panel: the command must not stay open,
+          // and the failure is shown. An abort that this command did not ask
+          // for is a failure too: a provider or a browser that timed out.
+          entry.setErr(String(err?.message ?? err));
+          finishVoiceTask();
+          return;
+        }
+        // The command was stopped for another reason (the session was left,
+        // the screen was closed): its entry keeps what it says, and the
+        // command must not keep the screen busy.
+        task.resolve?.();
       });
-    }).catch(() => {
-      entry.setErr(t('voice.failed'));
-      if (voiceTask === task) finishVoiceTask();
+    }).catch((err) => {
+      // A command that was cancelled is not a failure of the page: nothing of
+      // it may be written into the screen.
+      if (signal.aborted) {
+        if (voiceTask === task) finishVoiceTask();
+        return;
+      }
+      if (voiceTask === task) {
+        entry.setErr(err?.message ? String(err.message) : t('voice.failed'));
+        finishVoiceTask();
+        return;
+      }
+      task.resolve?.();
     });
   });
 }
@@ -1265,8 +1354,10 @@ async function runFastVoiceCommand(text, { signal, entry }) {
     });
   } catch (err) {
     // A command that was cancelled is not a failure of the page: the screen
-    // may be closed already, and nothing of it may be written into it.
-    if (signal.aborted || err?.name === 'AbortError') return;
+    // may be closed already, and nothing of it may be written into it. An
+    // abort that this command did not ask for is a failure of the provider or
+    // of the browser, and it is shown.
+    if (signal.aborted) return;
     entry.setErr(String(err?.message ?? err));
     return;
   }

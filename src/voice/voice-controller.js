@@ -249,8 +249,9 @@ export function createVoiceController({
       await onCommand(command, { signal: abort.signal, entry });
     } catch (err) {
       // A command that was cancelled says so; anything else is a failure the
-      // user has to see.
-      if (!abort.signal.aborted && err?.name !== 'AbortError') entry?.setErr?.(String(err?.message ?? err));
+      // user has to see. An abort that this command did not ask for is a
+      // failure too: a provider or a browser that timed out.
+      if (!abort.signal.aborted) entry?.setErr?.(String(err?.message ?? err));
     } finally {
       busy = false;
       running = null;

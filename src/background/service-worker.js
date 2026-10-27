@@ -315,9 +315,18 @@ async function voiceClaim({ tabId, panelId, sessionId }) {
   // ownership is looked at again. A session that took the tab in the
   // meantime keeps it, and the lease goes back.
   const fresh = await chrome.tabs.get(tabId).catch(() => null);
-  const owner2 = fresh ? (isTakenByOther(sessionId, fresh) || sessionWorkingIn(sessionId, fresh)) : null;
+  if (!fresh) {
+    // The tab is gone: the claim fails closed, and the lease is given back
+    // the same way it is given back after a command.
+    await releaseVoiceClaim(tabId, panelId, lease.token);
+    return { ok: false, errorKey: 'voice.sayTabGone', owner: '' };
+  }
+  const owner2 = isTakenByOther(sessionId, fresh) || sessionWorkingIn(sessionId, fresh);
   if (owner2) {
-    voiceClaims.releaseTab(tabId, { panelId, token: lease.token });
+    // The lease goes back in two steps: the authorization goes first, and the
+    // tab stays busy until the input that may still be running has drained
+    // and the debugger is detached.
+    await releaseVoiceClaim(tabId, panelId, lease.token);
     return { ok: false, owner: owner2 };
   }
   return lease;

@@ -42,13 +42,17 @@ export function claimOf(tabId) {
  * True when the lease on the tab is the one that is named, and it may still be
  * used: a lease whose authorization was withdrawn is busy, but it is not
  * authorized any more.
+ *
+ * The lease is used only by the panel that holds it, and only under the token
+ * that names it. A request without a token or without a panel is refused: the
+ * lease is never used by whoever asks.
  */
 export function isAuthorized(tabId, { panelId = null, token = null } = {}) {
   const held = leases.get(tabId);
   if (!held) return false;
   if (held.state !== 'active') return false;
-  if (token != null && held.token !== token) return false;
-  if (panelId != null && held.panelId !== panelId) return false;
+  if (!panelId || held.panelId !== panelId) return false;
+  if (!token || held.token !== token) return false;
   return true;
 }
 
@@ -135,12 +139,16 @@ export function releaseReservation(tabId, token) {
 /**
  * Withdraws the authorization of a lease: no further input may be sent, but
  * the tab stays busy until the cleanup is over.
+ *
+ * Only the panel that holds the lease, and only under the token that names
+ * it, may withdraw it. A request without them is refused, so a message that
+ * lost its token cannot take the authorization of a lease away.
  */
 export function revokeTab(tabId, { panelId = null, token = null } = {}) {
   const held = leases.get(tabId);
   if (!held) return null;
-  if (panelId != null && held.panelId !== panelId) return null;
-  if (token != null && held.token !== token) return null;
+  if (!panelId || held.panelId !== panelId) return null;
+  if (!token || held.token !== token) return null;
   if (held.state !== 'active') return held;
   held.state = 'revoking';
   return held;
@@ -149,6 +157,9 @@ export function revokeTab(tabId, { panelId = null, token = null } = {}) {
 /**
  * Withdraws the authorization of every lease of a panel at once. The tabs stay
  * busy; each one is given back when its own cleanup is over.
+ *
+ * This is the cleanup of a panel that goes away: it names the panel and needs
+ * no token, because it does not free anything by itself.
  */
 export function revokePanel(panelId) {
   const revoked = [];
@@ -164,12 +175,15 @@ export function revokePanel(panelId) {
  * Gives a lease back: the tab is free again. Only the lease that is named may
  * do it, so a cleanup that arrives late cannot free a tab that another lease
  * holds by now.
+ *
+ * The token and the panel that hold the lease are both required: a request
+ * without them frees nothing.
  */
 export function releaseTab(tabId, { panelId = null, token = null } = {}) {
   const held = leases.get(tabId);
   if (!held) return false;
-  if (token != null && held.token !== token) return false;
-  if (panelId != null && held.panelId !== panelId) return false;
+  if (!panelId || held.panelId !== panelId) return false;
+  if (!token || held.token !== token) return false;
   leases.delete(tabId);
   return true;
 }

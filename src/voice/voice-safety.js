@@ -58,6 +58,9 @@ export const SECRET_FRAGMENTS = [
   // the card number.
   'كلمةالمرور', 'كلمةالسر', 'رمزالتحقق', 'رمزالتأكيد', 'رمزالأمان', 'رمزالامان',
   'رقمالبطاقة', 'الرمزالسري', 'كودالتحقق', 'رمزالدخول',
+  // The expiry of a card in Arabic: "تاريخ الانتهاء", "انتهاء الصلاحية" and
+  // "تاريخ انتهاء الصلاحية" are the three spellings of the same name.
+  'تاريخالانتهاء', 'انتهاءالصلاحية', 'تاريخانتهاءالصلاحية',
 ];
 
 /** True for an autocomplete token that marks a field as holding a secret. */

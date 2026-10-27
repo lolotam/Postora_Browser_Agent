@@ -131,3 +131,44 @@ test('the panel that goes away may not release a lease of another panel', () => 
   revokePanel('panel-x');
   assert.ok(claimOf(230), 'the lease of the other panel is untouched');
 });
+
+test('a lease is used only by the panel that holds it and only under its token', () => {
+  const { token } = claimTab(240, { panelId: 'panel-a', sessionId: 'session-a' });
+
+  assert.equal(isAuthorized(240, { panelId: 'panel-a', token }), true, 'the holder may use it');
+  assert.equal(isAuthorized(240, { panelId: 'panel-a' }), false, 'a request without a token may not');
+  assert.equal(isAuthorized(240, { token }), false, 'a request without a panel may not');
+  assert.equal(isAuthorized(240, {}), false, 'a request without either may not');
+  assert.equal(isAuthorized(240, { panelId: 'panel-b', token }), false, 'another panel may not');
+});
+
+test('a lease is withdrawn and given back only under its token and its panel', () => {
+  const { token } = claimTab(241, { panelId: 'panel-a', sessionId: 'session-a' });
+
+  assert.equal(revokeTab(241, { panelId: 'panel-a' }), null, 'a request without a token withdraws nothing');
+  assert.equal(revokeTab(241, { token }), null, 'a request without a panel withdraws nothing');
+  assert.equal(revokeTab(241, { panelId: 'panel-b', token }), null, 'another panel withdraws nothing');
+  assert.equal(claimOf(241)?.state, 'active', 'the lease is still authorized');
+
+  assert.equal(releaseTab(241, { panelId: 'panel-a' }), false, 'a request without a token frees nothing');
+  assert.equal(releaseTab(241, { token }), false, 'a request without a panel frees nothing');
+  assert.equal(releaseTab(241, { panelId: 'panel-b', token }), false, 'another panel frees nothing');
+  assert.ok(claimOf(241), 'the lease is still held');
+
+  assert.equal(revokeTab(241, { panelId: 'panel-a', token }).state, 'revoking', 'the holder may withdraw it');
+  assert.equal(releaseTab(241, { panelId: 'panel-a', token }), true, 'the holder may give it back');
+  assert.equal(claimOf(241), null);
+});
+
+test('a cleanup that arrives late cannot free a replacement, even with the panel that held it', () => {
+  const first = claimTab(242, { panelId: 'panel-a', sessionId: 'session-a' });
+  assert.equal(releaseTab(242, { panelId: 'panel-a', token: first.token }), true);
+
+  const second = claimTab(242, { panelId: 'panel-a', sessionId: 'session-a' });
+  assert.notEqual(second.token, first.token, 'the new lease has its own token');
+
+  assert.equal(releaseTab(242, { panelId: 'panel-a', token: first.token }), false, 'the old token frees nothing');
+  assert.equal(revokeTab(242, { panelId: 'panel-a', token: first.token }), null, 'the old token withdraws nothing');
+  assert.ok(claimOf(242), 'the new lease still holds the tab');
+  assert.equal(isAuthorized(242, { panelId: 'panel-a', token: second.token }), true);
+});
