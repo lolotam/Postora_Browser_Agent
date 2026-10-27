@@ -227,6 +227,36 @@ async function main() {
     check(await page.evaluate(() => window.qa.deleted === 0 && window.qa.sent === 0), 'neither original nor covering action ran');
     await page.locator('#qa-cover').evaluate((node) => node.remove());
 
+    // Locate must bind the real tied option even when a different control
+    // already covers it, rather than recapturing the topmost point later.
+    await page.evaluate(() => {
+      const widget = document.createElement('div');
+      widget.id = 'qa-suggestions';
+      widget.innerHTML = '<input id="qa-city" role="combobox" aria-label="City" aria-controls="qa-options"><div id="qa-options" role="listbox"><div role="option">Delhi</div></div>';
+      document.body.prepend(widget);
+      const cover = document.createElement('button');
+      cover.id = 'qa-option-cover';
+      Object.assign(cover.style, { position: 'fixed', inset: '0', zIndex: '2147483647' });
+      cover.addEventListener('click', () => { window.qa.deleted += 1; });
+      document.body.append(cover);
+    });
+    const coveredOption = await panel.evaluate(async () => {
+      const { browser } = globalThis.__qa;
+      const snap = await browser.snapshot();
+      const index = Number(/^\[(\d+)\]/.exec(snap.elements.find((entry) => /"City"/.test(entry)))[1]);
+      const target = await browser.captureTarget({ kind: 'element', index });
+      const spot = await browser.suggestions(index, 'Delhi', 'locate', { target, guard: () => true });
+      const valid = await browser.validateTarget(spot.target);
+      let blocked = false;
+      try { await browser.clickAt(spot.x, spot.y, { target: spot.target, guard: () => true, wait: false }); }
+      catch { blocked = true; }
+      return { tag: spot.target.element.tag, valid: valid.ok, blocked };
+    });
+    check(coveredOption.tag === 'div' && !coveredOption.valid && coveredOption.blocked, 'option identity never becomes the control covering it before capture');
+    check(await page.evaluate(() => window.qa.deleted === 0), 'covering option action never ran');
+    await page.locator('#qa-option-cover').evaluate((node) => node.remove());
+    await page.locator('#qa-suggestions').evaluate((node) => node.remove());
+
     // 7. The focus that was approved is not the focus that is there now: the
     // text does not follow the focus into another field.
     await page.goto(`${fixtureUrl}?redirectFocus`);

@@ -419,6 +419,7 @@ export class BrowserController {
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const result = await this.inject(suggestionAction, [index, wanted, mode, SECRET_RULE, target ?? null], { tabId: tab.id, guard });
     if (result?.error) throw new Error(result.error);
+    if (result?.target) result.target.tabId = tab.id;
     return result;
   }
 

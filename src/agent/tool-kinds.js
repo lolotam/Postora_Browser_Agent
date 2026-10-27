@@ -6,14 +6,19 @@
 //   bookkeeping short results that never need trimming (note)
 //   notes       the whole notebook; only the latest copy is kept in full
 //   done        the final report
-
+//
+// A read of one selected value is a reader: its result is the value, not a
+// page state that a later snapshot replaces. It says nothing about what this
+// session may do: that is the authority's business, not this file's.
 export const TOOL_KINDS = {
   read_page: 'observe',
+  read_field: 'reader',
   navigate: 'observe',
   web_search: 'observe',
   click: 'observe',
   click_at: 'observe',
   type_text: 'observe',
+  insert_text: 'observe',
   press_key: 'observe',
   select_option: 'observe',
   hover: 'observe',

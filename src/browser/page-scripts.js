@@ -708,7 +708,22 @@ export function suggestionAction(index, wanted, mode, rule, target) {
     const option = matches[0];
     option.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
     const r = option.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2, rect: { left: r.left, top: r.top, width: r.width, height: r.height }, text: label(option) };
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    // Bind the actual tied option here, before returning to the worker. A
+    // later point capture could accidentally name a covering control instead.
+    const registry = globalThis.__postoraTargetElements ??= new Map();
+    const bits = globalThis.crypto.getRandomValues(new Uint32Array(2));
+    const token = `option-${registry.size + 1}-${bits[0]}-${bits[1]}`;
+    registry.set(token, option);
+    const optionTarget = {
+      scope: 'element', kind: 'point', tabId: target?.tabId ?? null,
+      url: location.href, documentId: String(performance.timeOrigin), capturedAt: Date.now(),
+      element: { kind: 'point', token, index: null, x, y, tag: option.tagName.toLowerCase(),
+        editable: false, secret: false, focused: document.activeElement === option,
+        body: false, label: label(option).slice(0, 80) },
+    };
+    return { x, y, rect: { left: r.left, top: r.top, width: r.width, height: r.height }, text: label(option), target: optionTarget };
   }
   if (mode === 'verify') {
     // A plain autocomplete shows the choice as the field's value once its list closed;
