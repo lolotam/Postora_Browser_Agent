@@ -7,6 +7,7 @@ import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 import { escapeAttr } from './model-picker.js';
 import { createModelDialog } from './model-dialog.js';
 import { createSettingsNav } from './settings-nav.js';
+import { createSettingsSaver, settingsEdits } from './settings-save.js';
 import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
@@ -2385,14 +2386,13 @@ $('uiLanguage').addEventListener('change', async () => {
  * the failure is shown where settings errors are readable.
  */
 async function applyAndSaveLanguage(language, savedPreference = language) {
-  const previous = { language: currentLanguage(), preference: settings?.uiLanguage ?? 'auto' };
-  applyLanguage(language);
   try {
-    settings = await request('save-settings', { settings: { ...settings, uiLanguage: savedPreference } });
+    await saveSettings((current) => ({ ...current, uiLanguage: savedPreference }));
+    applyLanguage(language);
     $('uiLanguage').value = settings.uiLanguage;
   } catch (err) {
-    applyLanguage(previous.language);
-    $('uiLanguage').value = previous.preference;
+    applyLanguage(resolveLanguage(settings.uiLanguage, chrome.i18n.getUILanguage()));
+    $('uiLanguage').value = settings.uiLanguage;
     // The failure has to be readable: where the language is configured.
     toggleSettings(true, 'language');
     showSettingsError(err.message);
@@ -2471,6 +2471,11 @@ function syncHeaderContext() {
 }
 
 const keyStore = createKeyStore();
+const saveSettings = createSettingsSaver({
+  getSettings: () => settings,
+  onSaved: (saved) => { settings = saved; },
+  save: (next) => request('save-settings', { settings: next }),
+});
 const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
 const fallbackForm = createProviderForm($('fallbackProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
 keyStore.register($('fastApiKey'), () => $('fastProvider').value);
@@ -2915,6 +2920,7 @@ $('fastFallbackProvider').addEventListener('change', () => {
 async function loadFastModels(showErrors = false) {
   const config = readFastForm();
   const load = ++loads.fast;
+  fastModels = [];
   if (!config.enabled || config.provider === 'typesafe') {
     fastListState.fast = { loading: false, error: '' };
     modelDialog.update();
@@ -2931,7 +2937,7 @@ async function loadFastModels(showErrors = false) {
     showFastStatus('', '');
   } catch (err) {
     if (load !== loads.fast) return;
-    fastListState.fast = { loading: false, error: showErrors ? err.message : '' };
+    fastListState.fast = { loading: false, error: showErrors ? err.message : t('model.fallback') };
     if (showErrors) showFastStatus('fail', `✗ ${err.message}`);
   }
   modelDialog.update();
@@ -2940,6 +2946,7 @@ async function loadFastModels(showErrors = false) {
 async function loadFastFallbackModels(showErrors = false) {
   const config = readFastFallback();
   const load = ++loads.fastFallback;
+  fastFallbackModels = [];
   if (!$('fastEnabled').checked || !config.enabled || config.provider === 'typesafe') {
     fastListState.fastFallback = { loading: false, error: '' };
     modelDialog.update();
@@ -2955,7 +2962,7 @@ async function loadFastFallbackModels(showErrors = false) {
     syncFastFallback();
   } catch (err) {
     if (load !== loads.fastFallback) return;
-    fastListState.fastFallback = { loading: false, error: showErrors ? err.message : '' };
+    fastListState.fastFallback = { loading: false, error: showErrors ? err.message : t('model.fallback') };
     if (showErrors) showFastStatus('fail', `✗ ${err.message}`);
   }
   modelDialog.update();
@@ -2969,7 +2976,7 @@ async function testFast(config) {
 
 /** state: 'ok' (green), 'fail' (red) or '' (neutral); model-list errors use it too. */
 const showFastStatus = bindTestButton({ button: $('fastTestBtn'), result: $('fastTestResult'), scope: $('fastFields'), run: () => testFast(readFastForm()) });
-bindTestButton({ button: $('fastFallbackTestBtn'), result: $('fastFallbackTestResult'), scope: $('fastFallbackFields'), run: () => testFast(readFastFallback()) });
+const showFastFallbackStatus = bindTestButton({ button: $('fastFallbackTestBtn'), result: $('fastFallbackTestResult'), scope: $('fastFallbackFields'), run: () => testFast(readFastFallback()) });
 
 $('exportBtn').addEventListener('click', async () => {
   try {
@@ -3103,12 +3110,18 @@ function renderModelFields() {
  * saves only this — the model and the effort that goes with it — never the
  * draft the user may have left unsaved on a settings page.
  */
-function quickModelSettings(id, effort) {
-  const next = structuredClone(settings);
+function quickModelSettings(current, id, effort) {
+  const next = structuredClone(current);
   const slot = currentProviderSettings(next);
   slot.model = id;
   slot.effort = effort;
   return next;
+}
+
+/** A queued pick belongs to the connection whose catalog the user saw. */
+function modelConnectionKey(value) {
+  const { model, effort, ...connection } = currentProviderSettings(value);
+  return JSON.stringify({ provider: value.provider, connection });
 }
 
 /**
@@ -3118,6 +3131,7 @@ function quickModelSettings(id, effort) {
  * exactly as the user left it — still unsaved, still marked dirty.
  */
 async function saveQuickModel(id, effort) {
+  const owner = modelConnectionKey(settings);
   const draft = mainForm.read();
   const draftSlot = currentProviderSettings(draft);
   const savedSlot = currentProviderSettings();
@@ -3125,7 +3139,7 @@ async function saveQuickModel(id, effort) {
     && (draft.provider !== 'claude' || draft.claude.auth === settings.claude.auth)
     && (draft.provider !== 'compatible' || (draft.compatible.preset === settings.compatible.preset && draft.compatible.baseUrl === settings.compatible.baseUrl));
   const syncDraft = sameConnection && draftSlot.model === savedSlot.model && draftSlot.effort === savedSlot.effort;
-  const next = quickModelSettings(id, effort);
+  const next = quickModelSettings(settings, id, effort);
   const problem = settingsProblem(next);
   if (problem) {
     toggleSettings(true, problemPage(problem));
@@ -3133,8 +3147,10 @@ async function saveQuickModel(id, effort) {
     return;
   }
   try {
-    settings = await request('save-settings', { settings: next });
-    if (syncDraft) mainForm.chooseModel(id, effort);
+    await saveSettings((current) => modelConnectionKey(current) !== owner || currentProviderSettings(current).model === id
+      ? current : quickModelSettings(current, id, effort));
+    if (modelConnectionKey(settings) === owner && currentProviderSettings().model === id
+      && syncDraft && JSON.stringify(mainForm.read()) === JSON.stringify(draft)) mainForm.chooseModel(id, currentProviderSettings().effort);
     updateChip();
     renderSettingsSummaries();
   } catch (err) {
@@ -3169,6 +3185,7 @@ function quickModelsFor() {
 async function loadQuickModels(showErrors = false) {
   if (!settings) return;
   const load = ++quickLoad;
+  quickModels = [];
   quickLoading = true;
   quickError = '';
   modelDialog.update();
@@ -3245,7 +3262,10 @@ const MODEL_SLOTS = {
     manualOnly: () => $('fastProvider').value === 'typesafe',
     loading: () => fastListState.fast.loading,
     error: () => fastListState.fast.error,
-    apply: (id) => { $('fastModel').value = id; },
+    apply: (id) => {
+      if ($('fastModel').value !== id) showFastStatus('', '');
+      $('fastModel').value = id;
+    },
     refresh: () => loadFastModels(true),
     after: () => {
       markDirty();
@@ -3260,7 +3280,10 @@ const MODEL_SLOTS = {
     manualOnly: () => $('fastFallbackProvider').value === 'typesafe',
     loading: () => fastListState.fastFallback.loading,
     error: () => fastListState.fastFallback.error,
-    apply: (id) => { $('fastFallbackModel').value = id; },
+    apply: (id) => {
+      if ($('fastFallbackModel').value !== id) showFastFallbackStatus('', '');
+      $('fastFallbackModel').value = id;
+    },
     refresh: () => loadFastFallbackModels(true),
     after: () => {
       markDirty();
@@ -3571,8 +3594,9 @@ $('saveBtn').addEventListener('click', async () => {
     return;
   }
   $('saveBtn').disabled = true;
+  const edits = settingsEdits(settings, next);
   try {
-    settings = await request('save-settings', { settings: next });
+    await saveSettings(edits);
     fillForm();
     updateChip();
     toggleSettings(false);
@@ -3593,7 +3617,7 @@ function updateChip() {
   const text = p.model ? `${p.model}${p.effort ? ` · ${p.effort}` : ''}` : t('model.none');
   const control = $('modelQuickLabel');
   control.textContent = text;
-  $('modelQuickBtn').title = p.model ? `${label} · ${text}${p.effort ? ` · ${p.effort}` : ''}${fastTag}` : t('model.none');
+  $('modelQuickBtn').title = p.model ? `${label} · ${text}${fastTag}` : t('model.none');
   $('modelQuickBtn').setAttribute('aria-label', $('modelQuickBtn').title);
   renderModelFields();
 }

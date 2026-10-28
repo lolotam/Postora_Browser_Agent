@@ -8,6 +8,12 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
   let slowRequested;
   const slowArrival = new Promise((resolve) => { slowRequested = resolve; });
   const server = http.createServer((req, res) => {
+    if (req.url.endsWith('/chat/completions')) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }] })}\n\n`);
+      res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+      return;
+    }
     const respond = () => {
       if (res.destroyed) return;
       if (req.url.startsWith('/fail/')) {
@@ -25,6 +31,15 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   const panel = await context.newPage();
+  await panel.addInitScript(() => {
+    class Recognition {
+      start() { window.__focusedRecognition = this; }
+      stop() { window.__focusedMicStops = (window.__focusedMicStops ?? 0) + 1; this.onend?.(); }
+      abort() { this.stop(); }
+    }
+    window.SpeechRecognition = window.webkitSpeechRecognition = Recognition;
+    Object.defineProperty(navigator, 'permissions', { configurable: true, value: { query: async () => ({ state: 'granted' }) } });
+  });
   const errors = [];
   panel.on('pageerror', (error) => errors.push(error.message));
   let patchedWorker;
@@ -37,7 +52,7 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
       await chrome.storage.local.set({ settings: mergeSettings(settings) });
     }, { ...slot, fallback: { ...slot, enabled: false }, fast: { enabled: false }, maxSteps: 40, uiLanguage: 'en', ...overrides });
     await panel.reload();
-    await panel.waitForFunction(() => document.getElementById('modelQuickLabel')?.textContent === 'mock-current');
+    await panel.waitForFunction(() => document.getElementById('modelQuickLabel')?.textContent.startsWith('mock-current'));
     await panel.waitForFunction(() => document.getElementById('sessionTitle')?.textContent.trim());
   }
   async function page(section) {
@@ -74,6 +89,44 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.keyboard.press('Escape');
     assert.equal(await panel.evaluate(() => document.activeElement.id), 'overflowBtn');
 
+    // Opening Voice settings must stop/hide voice and leave exactly one
+    // contextual header. This exercises the existing closeVoice transition.
+    await chat();
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    await panel.click('#voiceMicBtn');
+    await panel.waitForFunction(() => Boolean(window.__focusedRecognition));
+    await panel.click('#voiceSettingsBtn');
+    assert.equal(await panel.isVisible('#page-voice'), true);
+    assert.equal(await panel.isVisible('#voiceView'), false);
+    assert.equal(await panel.isVisible('#chatView'), false);
+    assert.equal(await panel.isVisible('#voiceBarContext'), false);
+    assert.equal(await panel.isVisible('#settingsBarContext'), true);
+    assert.ok(await panel.evaluate(() => window.__focusedMicStops > 0), 'leaving voice stops recognition');
+    await panel.click('#cancelSettingsBtn');
+    assert.equal(await panel.isVisible('#chatView'), true);
+
+    // A no-op selection preserves a deliberate effort, both in saved quick
+    // settings and in a provider draft. Empty search Enter commits nothing.
+    await reset({ compatible: { ...slot.compatible, effort: 'high' } });
+    assert.equal((await panel.getAttribute('#modelQuickBtn', 'aria-label')).split('high').length - 1, 1);
+    await panel.click('#modelQuickBtn');
+    await panel.waitForSelector('#modelDialogList [data-value="mock-current"]', { state: 'visible' });
+    await panel.press('#modelDialogSearch', 'Enter');
+    assert.equal(await panel.isVisible('#modelDialog'), true);
+    await panel.click('#modelDialogList [data-value="mock-current"]');
+    assert.equal((await saved()).compatible.effort, 'high');
+    await page('Models');
+    await panel.click('#settingsRowMain');
+    await choose('#modelBtnMain', 'mock-current');
+    assert.equal(await panel.inputValue('#effort'), 'high');
+    await panel.click('#mainProvider [data-field="test"]');
+    await panel.waitForSelector('#mainProvider [data-field="test"][data-state="ok"]');
+    await choose('#modelBtnMain', 'mock-alternative');
+    assert.equal(await panel.textContent('#mainProvider [data-field="testResult"]'), '');
+    await panel.click('#cancelSettingsBtn');
+    await reset();
+
     await page('Behavior');
     await panel.fill('#maxSteps', '99');
     await panel.click('#closeSettingsBtn');
@@ -100,6 +153,22 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.click('#settingsRowMain');
     assert.equal(await panel.textContent('#modelMainLabel'), 'mock-alternative', 'later form Save cannot resurrect the old model');
     await panel.click('#cancelSettingsBtn');
+
+    // A failed catalog for newly SAVED endpoint B cannot expose endpoint A's
+    // previously loaded quick catalog as selectable options.
+    await reset();
+    await panel.click('#modelQuickBtn');
+    await panel.waitForSelector('#modelDialogList [data-value="mock-alternative"]', { state: 'visible' });
+    await panel.click('#modelDialogClose');
+    await page('Models');
+    await panel.click('#settingsRowMain');
+    await panel.fill('#baseUrl', `${base}/fail/v1`);
+    await panel.click('#saveBtn');
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
+    await panel.click('#modelQuickBtn');
+    await panel.waitForSelector('#modelDialogStatus.error');
+    assert.equal(await panel.locator('#modelDialogList [data-value="mock-alternative"]').count(), 0);
+    await panel.click('#modelDialogClose');
 
     // Different endpoints still share provider='compatible'. The quick catalog
     // must use the saved endpoint, never the unsaved form's catalog.
@@ -152,6 +221,16 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     assert.equal(settings.fallback.compatible.model, 'mock-alternative');
     assert.equal(settings.fast.model, 'fast-manual');
     assert.equal(settings.fast.fallback.model, 'backup-manual');
+    assert.equal(settings.keys.typesafe, 'SYNTHETIC-FAST-KEY');
+    await page('Fast');
+    await panel.click('#fastFields .key-clear');
+    await panel.uncheck('#fastEnabled');
+    await panel.click('#saveBtn');
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
+    settings = await saved();
+    assert.equal(settings.keys.typesafe, undefined, 'explicit Sign out must remove the shared key');
+    assert.equal(settings.fast.apiKey, '');
+    assert.equal(settings.fast.fallback.apiKey, '');
 
     // A delayed list updates an already open dialog; a failed refresh remains
     // readable there. Escape closes only the dialog, not the provider page.
@@ -173,8 +252,43 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.click('#modelDialogRefresh');
     await panel.waitForSelector('#modelDialogStatus.error');
     assert.match(await panel.textContent('#modelDialogStatus'), /HTTP 503/);
+    assert.equal(await panel.locator('#modelDialogList [data-value="mock-alternative"]').count(), 0);
     await panel.click('#modelDialogClose');
     await panel.click('#cancelSettingsBtn');
+
+    // Hold the first real save request, then queue quick model, interface
+    // language and form saves. None may overwrite the other's saved fields.
+    await reset();
+    await panel.evaluate(() => {
+      const original = chrome.runtime.sendMessage.bind(chrome.runtime);
+      window.__focusedOriginalSend = original;
+      let held = false;
+      chrome.runtime.sendMessage = (message, ...args) => {
+        if (message.type !== 'save-settings' || held) return original(message, ...args);
+        held = true;
+        return new Promise((resolve, reject) => {
+          window.__focusedReleaseSave = () => original(message, ...args).then(resolve, reject);
+        });
+      };
+    });
+    await choose('#modelQuickBtn', 'mock-alternative');
+    await panel.waitForFunction(() => typeof window.__focusedReleaseSave === 'function');
+    await panel.click('#overflowBtn');
+    await panel.click('#langBtn');
+    await page('Behavior');
+    await panel.fill('#maxSteps', '77');
+    await panel.click('#saveBtn');
+    await panel.evaluate(() => window.__focusedReleaseSave());
+    await panel.waitForFunction(async () => {
+      const { settings } = await chrome.storage.local.get('settings');
+      return settings.compatible.model === 'mock-alternative' && settings.uiLanguage === 'ar' && settings.maxSteps === 77;
+    });
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
+    await panel.evaluate(() => {
+      chrome.runtime.sendMessage = window.__focusedOriginalSend;
+      delete window.__focusedOriginalSend;
+      delete window.__focusedReleaseSave;
+    });
 
     // Storage rejection must preserve the saved model and unsaved form, with
     // an actionable error instead of an unhandled promise rejection.
@@ -213,6 +327,10 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await patchedWorker?.evaluate(() => {
       if (globalThis.__focusedStorageSet) chrome.storage.local.set = globalThis.__focusedStorageSet;
       delete globalThis.__focusedStorageSet;
+    }).catch(() => {});
+    await panel.evaluate(() => {
+      window.__focusedReleaseSave?.();
+      if (window.__focusedOriginalSend) chrome.runtime.sendMessage = window.__focusedOriginalSend;
     }).catch(() => {});
     releaseSlow();
     await panel.close();

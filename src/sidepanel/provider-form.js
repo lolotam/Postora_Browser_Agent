@@ -125,6 +125,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     const draft = read();
     // Numbered before any wait, so a slower earlier load (or a fill since) never wins.
     const load = ++latestLoad;
+    models = [];
     listLoading = true;
     listError = '';
     onModels?.();
@@ -152,7 +153,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     } catch (err) {
       if (load !== latestLoad) return;
       listLoading = false;
-      if (showErrors) listError = err.message;
+      listError = showErrors ? err.message : t('model.fallback');
       f('modelInfo').textContent = showErrors ? err.message : t('model.fallback');
       onModels?.();
     }
@@ -162,9 +163,11 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
    * The dialog picked a model: the id input stays the one canonical state, and
    * the efforts follow the model the provider named.
    */
-  function chooseModel(id, effort = models.find((m) => m.id === id)?.defaultEffort ?? '') {
+  function chooseModel(id, effort = id === f('modelInput').value.trim() ? f('effort').value : models.find((m) => m.id === id)?.defaultEffort ?? '') {
+    const changed = id !== f('modelInput').value.trim();
     f('modelInput').value = id;
     renderEfforts(effort);
+    if (changed) showTestStatus('', '');
     // A model id that is not in the list is asked about again, so the efforts
     // Anthropic's own table gives it arrive.
     if (f('provider').value === 'claude') loadModels();
@@ -209,7 +212,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   f('refresh')?.addEventListener('click', () => loadModels(true));
   keyStore.register(f('apiKey'), () => f('preset').value);
   if (f('claudeApiKey')) keyStore.register(f('claudeApiKey'), () => ANTHROPIC_GROUP);
-  bindTestButton({
+  const showTestStatus = bindTestButton({
     button: f('test'),
     result: f('testResult'),
     scope: root,

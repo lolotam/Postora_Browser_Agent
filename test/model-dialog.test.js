@@ -175,6 +175,15 @@ test('Enter with no matching result changes nothing at all', () => {
   assert.equal(elements.dialog.closeCount, 0, 'and the dialog stays open');
 });
 
+test('Enter with an empty query and no explicit cursor does not change the model', () => {
+  const { elements, dialog } = fakeDialog();
+  const picks = [];
+  dialog.open({ title: () => 'Model', get: () => ({ current: 'deepseek-v3', models: MODELS }), onPick: (id) => picks.push(id) });
+  elements.search.dispatch('keydown', { key: 'Enter' });
+  assert.deepEqual(picks, []);
+  assert.equal(elements.dialog.closeCount, 0);
+});
+
 test('arrow keys announce the cursor, and Enter then picks that row', () => {
   const { elements, dialog } = fakeDialog();
   const picks = [];

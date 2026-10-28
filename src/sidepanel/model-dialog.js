@@ -159,7 +159,9 @@ export function createModelDialog(elements) {
         pickRow([...list.querySelectorAll('.model-option')][activeIndex]);
         return;
       }
-      const [first] = filterModels(snapshot().models, search.value.trim(), null);
+      const query = search.value.trim();
+      if (!query) return;
+      const [first] = filterModels(snapshot().models, query, null);
       if (first) pickRow({ dataset: { value: first.id } });
     }
   });

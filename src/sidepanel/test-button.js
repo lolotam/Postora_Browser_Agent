@@ -27,5 +27,8 @@ export function bindTestButton({ button, result, scope, run }) {
       if (mine === generation) show('fail', `✗ ${err.message}`);
     }
   });
-  return show;
+  return (state, text) => {
+    generation += 1; // a programmatic field edit also invalidates an in-flight test
+    show(state, text);
+  };
 }

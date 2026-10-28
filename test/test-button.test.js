@@ -18,8 +18,8 @@ function setup() {
   const result = element();
   const scope = element();
   const pending = [];
-  bindTestButton({ button, result, scope, run: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
-  return { button, result, scope, pending };
+  const show = bindTestButton({ button, result, scope, run: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
+  return { button, result, scope, pending, show };
 }
 
 test('a finished test shows its result', async () => {
@@ -51,4 +51,14 @@ test('only the newest of overlapping tests paints its result', async () => {
   await first;
   assert.equal(result.textContent, '✗ 401 bad key');
   assert.equal(button.dataset.state, 'fail');
+});
+
+test('programmatic model changes clear and invalidate an in-flight test', async () => {
+  const { button, result, pending, show } = setup();
+  const click = button.fire('click');
+  show('', '');
+  pending[0].resolve('old model tested');
+  await click;
+  assert.equal(result.textContent, '');
+  assert.equal(button.dataset.state, '');
 });
