@@ -1,5 +1,8 @@
 /* Depth comes from surface steps and 1px borders, never shadows. The accent is
-   reserved for the send action, fast (⚡) steps and the running indicator. */
+   reserved for the send action, fast (⚡) steps and the running indicator.
+   The layout is one conversation-first workspace: a quiet header, the chat,
+   and settings one focused page at a time. Ordinary controls are rectangular;
+   only the microphone is a circle. */
 :root {
   --bg: #ffffff;
   --surface: #f9f9f9;
@@ -8,15 +11,17 @@
   --border-strong: #d4d4d4;
   --text: #282828;
   --text-2: #5d5d5d;
-  --muted: #8a8f98;
+  --muted: #646a73;
   --accent: #4ff7d1;
   --on-accent: #000000;
-  --accent-text: #0b8f78;
+  --accent-text: #087c68;
+  --accent-soft: #e9faf5;
   --danger: #d93636;
+  --on-danger: #ffffff;
   --danger-bg: #fdecec;
   --success: #15803d;
   --success-bg: #e9f8ef;
-  --warn: #b26a00;
+  --warn: #995900;
   --warn-bg: #fff6e5;
   --radius-card: 8px;
   --radius-control: 6px;
@@ -35,7 +40,9 @@
     --text-2: #d0d6e0;
     --muted: #8a8f98;
     --accent-text: #4ff7d1;
+    --accent-soft: #12362e;
     --danger: #ff6b6b;
+    --on-danger: #08090a;
     --danger-bg: #2a1414;
     --success: #4ade80;
     --success-bg: #0f2a1a;
@@ -63,22 +70,28 @@ a { color: var(--accent-text); }
 code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* Text that is only for the reader, never for the layout: the access mode's
+   status line, the label of a control the icon already names. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
 button {
   border: 1px solid var(--border-strong);
   background: var(--surface);
-  border-radius: 9999px;
-  padding: 5px 14px;
+  border-radius: var(--radius-control);
+  padding: 5px 12px;
   cursor: pointer;
   transition: background-color .12s, border-color .12s;
 }
 button:hover { background: var(--surface-2); }
 button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 560; }
 button.primary:hover { filter: brightness(0.95); }
-button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+button.danger { background: var(--danger); color: var(--on-danger); border-color: var(--danger); }
 button.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
 button.ghost:hover { background: var(--surface-2); color: var(--text); }
-button.icon, button.round { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex: none; }
-button.round { width: 32px; height: 32px; }
+button.icon { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex: none; border-radius: var(--radius-control); }
 button.lang { padding: 3px 9px; font-size: 12px; font-weight: 560; border-color: var(--border-strong); }
 
 input, select, textarea {
@@ -93,27 +106,42 @@ input:hover, select:hover, textarea:hover { border-color: var(--muted); }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent-text); }
 
 /* ---------- header ---------- */
-.bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-.brand { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; }
+.bar { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); flex: none; }
+.brand, .bar-context { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; }
 .brand strong { font-weight: 560; white-space: nowrap; }
+/* The header IS the focused page's header in settings and voice: back, title,
+   and the draft mark, with the session cluster hidden meanwhile. */
+.settings-title { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-dirty {
+  flex: none; font-size: 10.5px; color: var(--warn); background: var(--warn-bg);
+  border: 1px solid var(--warn); border-radius: var(--radius-control); padding: 1px 7px;
+}
+.voice-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 560;
+  border-radius: var(--radius-control);
+  flex: none;
+}
+html[dir="rtl"] .icon-back {
+  transform: scaleX(-1);
+}
 .logo { border-radius: 6px; flex: none; }
 @media (prefers-color-scheme: dark) { .logo, .empty-logo { outline: 1px solid var(--border-strong); outline-offset: -1px; } }
-.chip {
-  margin-inline-start: auto; font-size: 10.5px; color: var(--text-2); background: var(--surface);
-  border: 1px solid var(--border); border-radius: 9999px; padding: 2px 9px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 46%;
-}
 .actions { display: flex; gap: 2px; align-items: center; flex: none; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); flex: none; }
 .dot.running { background: var(--accent); animation: pulse 1s ease-in-out infinite alternate; }
 @keyframes pulse { to { opacity: .35; } }
 
 /* Session switcher: the title opens a searchable list under the header. */
-.session-btn { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 150px; border: none; background: transparent; padding: 3px 6px; font-weight: 560; }
+.session-btn { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 170px; border: none; background: transparent; padding: 3px 6px; font-weight: 560; }
 .session-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-btn svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
-.session-menu { position: absolute; inset-inline: 8px; top: 46px; z-index: 10; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius-card); padding: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 60vh; }
-#sessionSearch { border-radius: 9999px; padding-inline: 12px; }
+.session-menu { position: absolute; inset-inline: 8px; top: 46px; z-index: 10; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius-card); padding: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 60vh; box-shadow: 0 8px 24px rgba(0,0,0,.14); }
+#sessionSearch { border-radius: var(--radius-control); padding-inline: 12px; }
 #sessionList { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .session-item { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: var(--radius-control); }
 .session-item.active { background: var(--surface-2); }
@@ -122,6 +150,19 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .session-item button.icon:hover { opacity: 1; }
 .session-rename { flex: 1; padding: 4px 6px; }
 body { position: relative; }
+
+/* The overflow menu: the account, the interface language and feedback, as
+   plain labeled rows. */
+.overflow-menu { gap: 2px; padding: 6px; inset-inline: auto; inline-size: 220px; inset-inline-end: 8px; }
+.menu-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: start;
+  border: none; background: transparent; padding: 7px 8px; border-radius: var(--radius-control);
+  color: var(--text); font-weight: 400;
+}
+.menu-row:hover { background: var(--surface-2); }
+.menu-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-row svg { flex: none; color: var(--text-2); }
+.menu-tag { color: var(--muted); font-weight: 560; }
 
 /* Feedback box and the rating card after a task. */
 .feedback-menu { gap: 8px; }
@@ -144,7 +185,7 @@ body { position: relative; }
 .msg.rate-card { border: 1px solid var(--border); border-radius: var(--radius-card); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 
 /* Failure notices stay until dismissed, so the user knows a backup is working. */
-.notices { display: flex; flex-direction: column; gap: 4px; padding: 0 10px; }
+.notices { display: flex; flex-direction: column; gap: 4px; padding: 0 10px; flex: none; }
 .notices:not(:empty) { padding-top: 6px; }
 .notice { display: flex; gap: 6px; align-items: flex-start; font-size: 11.5px; line-height: 1.45; border: 1px solid; border-radius: var(--radius-card); padding: 5px 4px 5px 9px; }
 .notice span { flex: 1; padding-top: 2px; }
@@ -224,7 +265,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .step.turn .name { color: var(--muted); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .totals { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
 
-#composer { padding: 8px 10px 10px; }
+#composer { padding: 0 10px 8px; flex: none; }
 /* Messages sent while the agent works, waiting to be read. */
 .pending { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .pending li { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px dashed var(--border-strong); border-radius: 8px; font-size: 12px; background: var(--surface-2); }
@@ -238,29 +279,53 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .file-chips button { border: 0; background: none; padding: 0 4px; cursor: pointer; color: var(--muted); }
 .composer-box.dropping { border-color: var(--accent-text); }
 .msg.user.steer::after { content: attr(data-tag); display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+/* The composer: what the user writes on top, the tools it needs underneath. */
 .composer-box {
-  display: flex; align-items: flex-end; gap: 6px; border: 1px solid var(--border-strong);
-  border-radius: 12px; padding: 6px; background: var(--bg); transition: border-color .12s;
+  display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border-strong);
+  border-radius: 12px; padding: 4px 6px 6px; background: var(--bg); transition: border-color .12s;
 }
 .composer-box:focus-within { border-color: var(--accent-text); }
-.composer-box textarea { border: none; padding: 5px 6px; resize: none; background: transparent; }
+.composer-box textarea { border: none; padding: 6px 6px 2px; resize: none; background: transparent; }
 .composer-box textarea:focus { outline: none; }
 /* dir="auto" sizes direction from typed text; while empty, follow the interface so the placeholder reads right. */
 .composer-box textarea:placeholder-shown { unicode-bidi: normal; direction: inherit; }
-.hint { display: block; min-height: 16px; margin-top: 4px; padding-inline: 4px; font-size: 11.5px; color: var(--muted); }
-
-/* ---------- access mode ---------- */
-/* One selection, the answer the worker gave, and the risk that answer carries.
-   The risk is a sentence, not only a colour: the panel says what Full access
-   allows, and it says it while the mode is on. */
-.access-bar { padding: 0 10px 4px; }
-.access-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
-.access-label { font-size: 11.5px; color: var(--text-2); flex: none; }
-.access-select {
-  flex: none; max-width: 60%; border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control); background: var(--surface); padding: 3px 6px; font-size: 12px;
+.composer-tools { display: flex; align-items: center; gap: 2px; }
+.tools-gap { flex: 1; }
+.tool {
+  width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  flex: none; border: none; background: transparent; color: var(--text-2); border-radius: var(--radius-control);
 }
-.access-state { font-size: 11.5px; color: var(--muted); flex: 1 1 130px; min-width: 0; }
+.tool:hover { background: var(--surface-2); color: var(--text); }
+.tool.primary { background: var(--accent); color: var(--on-accent); }
+.tool.primary:hover { filter: brightness(0.95); background: var(--accent); color: var(--on-accent); }
+.tool.danger { background: var(--danger); color: var(--on-danger); }
+.tool.danger:hover { filter: brightness(1.05); background: var(--danger); color: var(--on-danger); }
+.hint { display: block; min-height: 16px; margin-top: 4px; padding-inline: 4px; font-size: 11.5px; color: var(--muted); text-align: center; }
+
+/* ---------- the row the composer answers to ---------- */
+/* One compact row: the model doing the work, and the access mode of this
+   chat — the selection, the worker's own answer, and the risk it carries. */
+.access-bar { padding: 4px 10px 6px; flex: none; }
+.access-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.quick-control {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 58%;
+  border: 1px solid var(--border); background: transparent; border-radius: var(--radius-control);
+  padding: 4px 8px; font-size: 12px; color: var(--text);
+}
+.quick-control:hover { background: var(--surface); border-color: var(--border-strong); }
+.quick-control svg { width: 13px; height: 13px; flex: none; color: var(--text-2); }
+.quick-control .quick-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.access-control { position: relative; display: inline-flex; align-items: center; min-width: 0; flex: none; }
+.access-control > svg {
+  position: absolute; inset-inline-start: 8px; width: 13px; height: 13px;
+  color: var(--text-2); pointer-events: none;
+}
+.access-select {
+  width: auto; max-width: 200px; border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: transparent; padding: 4px 24px 4px 28px; font-size: 12px; appearance: none;
+}
+:root[dir="rtl"] .access-select { padding: 4px 28px 4px 24px; }
+.access-select:hover { border-color: var(--border-strong); }
 .access-risk {
   margin: 6px 0 0; padding: 5px 8px; font-size: 11.5px; line-height: 1.45;
   color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn);
@@ -287,31 +352,31 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 /* ---------- approvals ---------- */
 /* One card per action the worker asks about. It is drawn in one place, above
    the chat and the voice screen, so there is one authority for an action and
-   one answer for it. The card is the panel's own: thin borders, the system
-   font, a mint primary action and no new colours. */
-.approvals { padding: 0 10px; display: flex; flex-direction: column; gap: 6px; }
+   one answer for it. The region is bounded: many or long requests scroll here
+   instead of pushing the composer — and with it Stop — off the screen. */
+.approvals { padding: 0 10px; display: flex; flex-direction: column; gap: 6px; max-height: 42vh; overflow-y: auto; flex: none; }
 .approvals:empty { display: none; }
 .permission-request {
   border: 1px solid var(--accent);
   border-radius: var(--radius-card);
   background: var(--surface);
-  padding: 10px 12px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
-.permission-title { margin: 0; font-size: 12.5px; }
-.permission-action { margin: 0; font-size: 12.5px; color: var(--text); }
+.permission-title { margin: 0; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-text); font-weight: 600; }
+.permission-action { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .permission-site, .permission-target { margin: 0; font-size: 11.5px; color: var(--text-2); }
 /* A site and a target are words the page chose: they keep their own direction
    in an Arabic panel, and a long address never sticks out of the column. */
 .permission-action, .permission-site, .permission-target { unicode-bidi: plaintext; overflow-wrap: anywhere; }
 .permission-terminal { margin: 0; font-size: 11.5px; color: var(--warn); }
-.permission-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.permission-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .permission-actions button { padding: 4px 12px; font-size: 12px; }
 /* The action the panel already has: the mint send button. The refusal is the
-   quiet one next to it — a refusal is not an alarm. */
+    quiet one next to it — a refusal is not an alarm. */
 .permission-allow { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 560; }
 .permission-deny { color: var(--text-2); }
 .permission-status { margin: 0; font-size: 11.5px; color: var(--muted); }
@@ -319,13 +384,44 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .permission-actions button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ---------- settings ---------- */
-#settingsView { flex: 1; overflow-y: auto; padding: 12px 12px 0; }
-#settingsView h2 { margin: 2px 0 12px; font-size: 15px; }
+/* One focused page at a time: a searchable index of sections, then a
+   full-width page per section. The single header above carries the back
+   arrow and the page title, so no page stacks a second bar; a page is a flat
+   column of fields, and the only boxes left are single callouts. */
+#settingsView { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 12px 0 10px; }
+.settings-page { padding: 0 12px; display: flex; flex-direction: column; gap: 10px; }
+.settings-page h2 { margin: 2px 0 0; font-size: 15px; }
+.settings-page h2:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.section-desc { margin: 0; }
+.settings-page h3 { margin: 8px 0 0; font-size: 12.5px; color: var(--text-2); }
+#settingsIndex { gap: 0; }
+.search-field {
+  border: 1px solid var(--border-strong); background: var(--bg); border-radius: var(--radius-control);
+  display: flex; align-items: center; gap: 7px; padding: 7px 10px; margin: 0 0 10px;
+}
+.search-field svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.search-field input { width: 100%; min-width: 0; border: 0; background: none; padding: 0; }
+.search-field input:focus { outline: none; }
+.search-field:focus-within { border-color: var(--accent-text); }
+.settings-rows { display: flex; flex-direction: column; }
+.settings-row {
+  width: 100%; display: flex; align-items: center; gap: 11px; padding: 11px 2px; text-align: start;
+  border: none; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text);
+}
+.settings-rows > .settings-row:last-child { border-bottom: none; }
+.settings-row:hover { background: var(--surface); }
+.settings-row > svg:first-child { width: 17px; height: 17px; color: var(--text-2); flex: none; }
+.settings-row .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.settings-row strong { font-weight: 600; font-size: 12.5px; }
+.settings-row small { font-size: 11px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-row .chev-forward { width: 14px; height: 14px; color: var(--muted); flex: none; }
+:root[dir="rtl"] .settings-row .chev-forward { transform: scaleX(-1); }
+.settings-note { margin: 14px 0 0; }
+.card { border: 1px solid var(--border); border-radius: var(--radius-card); padding: 12px; margin: 0 0 6px; display: flex; flex-direction: column; gap: 10px; }
 .card.recommended { border-color: var(--accent); }
 #useRecommended { white-space: nowrap; }
 .card.recommended .links { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; }
-button.link { background: none; border: 0; padding: 0; color: var(--accent-text); cursor: pointer; font: inherit; font-size: 12px; margin-bottom: 8px; }
-.card { border: 1px solid var(--border); border-radius: var(--radius-card); padding: 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 10px; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent-text); cursor: pointer; font: inherit; font-size: 12px; margin: 2px 0 6px; align-self: flex-start; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { font-weight: 560; font-size: 11.5px; color: var(--text-2); }
 /* A saved key: hidden, last characters visible, green, with a check. Sign out clears it. */
@@ -342,10 +438,23 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent-text)
 .check input { width: auto; margin-top: 4px; accent-color: var(--accent-text); }
 /* An on/off switch: the setting changes behaviour, not just a detail. */
 .switch { align-items: center; }
-.switch input { appearance: none; width: 32px; height: 18px; margin: 0; flex: none; border-radius: 9999px; background: var(--border-strong); position: relative; cursor: pointer; transition: background-color .15s; }
-.switch input::after { content: ''; position: absolute; top: 2px; inset-inline-start: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--bg); transition: inset-inline-start .15s; }
-.switch input:checked { background: var(--accent); }
-.switch input:checked::after { inset-inline-start: 16px; }
+.switch-row {
+  display: flex; align-items: center; gap: 11px; padding: 10px 2px;
+  border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.switch-row .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.switch-row strong { font-weight: 600; font-size: 12.5px; }
+.switch-row small { font-size: 11px; color: var(--text-2); }
+.switch input[role="switch"], .switch-row input[role="switch"] {
+  appearance: none; width: 32px; height: 18px; margin: 0; flex: none; border-radius: 9999px;
+  background: var(--border-strong); position: relative; cursor: pointer; transition: background-color .15s; border: none; padding: 0;
+}
+.switch input[role="switch"]::after, .switch-row input[role="switch"]::after {
+  content: ''; position: absolute; top: 2px; inset-inline-start: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--bg); transition: inset-inline-start .15s;
+}
+.switch input[role="switch"]:checked, .switch-row input[role="switch"]:checked { background: var(--accent); }
+.switch input[role="switch"]:checked::after, .switch-row input[role="switch"]:checked::after { inset-inline-start: 16px; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row.between { justify-content: space-between; }
 .row.end { justify-content: flex-end; }
@@ -359,20 +468,16 @@ details summary { cursor: pointer; color: var(--text-2); }
 details[open] { display: flex; flex-direction: column; gap: 6px; }
 .fields { display: flex; flex-direction: column; gap: 10px; }
 .grow { flex: 1; min-width: 0; }
-.model-search { border-radius: 9999px; padding-inline: 12px; }
-/* Settings tabs: the AI model and its backup in one, the fast layer in the other. */
-.tabs { display: flex; gap: 2px; padding: 2px; margin-bottom: 14px; background: var(--surface-2); border-radius: var(--radius-control); }
-.tabs [role="tab"] { flex: 1; border: 1px solid transparent; background: transparent; color: var(--text-2); font-weight: 560; padding: 6px 8px; }
-.tabs [role="tab"]:hover { background: var(--surface); color: var(--text); }
-.tabs [role="tab"][aria-selected="true"] { background: var(--bg); color: var(--text); border-color: var(--border-strong); }
-/* One frame per provider, titled on its border, so the main and backup slots read as separate groups. */
-.frame { border: 1px solid var(--border-strong); border-radius: var(--radius-card); padding: 6px 12px 12px; margin: 0 0 14px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-.frame > legend { display: flex; align-items: center; gap: 6px; padding: 0 6px; font-weight: 560; font-size: 12.5px; }
-.frame-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-2); flex: none; }
-.frame[data-kind="backup"] { border-style: dashed; }
-.frame[data-kind="backup"] .frame-dot { background: var(--warn); }
-.frame[data-kind="fast"] .frame-dot { background: var(--accent); }
-.inset { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+/* The model a field uses: one button, the shared dialog behind it. */
+.model-field { gap: 5px; }
+.model-button {
+  width: 100%; border: 1px solid var(--border-strong); background: var(--bg);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: start;
+  min-height: 34px; padding: 7px 10px; border-radius: var(--radius-control);
+}
+.model-button:hover { background: var(--surface); }
+.model-button .chev-down { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.model-button .model-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .test-btn { white-space: nowrap; flex: none; }
 .test-btn[data-state="ok"] { background: var(--success-bg); border-color: var(--success); color: var(--success); }
 .test-btn[data-state="fail"] { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
@@ -381,50 +486,82 @@ details[open] { display: flex; flex-direction: column; gap: 6px; }
 .test-result[data-state="fail"] { color: var(--danger); }
 #backupResult[data-state="ok"] { color: var(--success); }
 #backupResult[data-state="fail"] { color: var(--danger); }
-.sticky-actions { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 12px; border-top: 1px solid var(--border); }
+.inset { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+/* Save and Cancel follow the page; the status says what an edit means. */
+.settings-footer {
+  position: sticky; bottom: 0; background: var(--bg);
+  padding: 10px 12px 2px; border-top: 1px solid var(--border); margin-top: auto;
+}
+
+/* ---------- the model dialog ---------- */
+.model-dialog {
+  border: 1px solid var(--border-strong); border-radius: var(--radius-card);
+  background: var(--bg); color: var(--text); padding: 0;
+  width: min(420px, calc(100vw - 24px)); max-height: calc(100vh - 24px);
+  display: flex; flex-direction: column; gap: 0;
+}
+/* A closed dialog must stay out of the layout, even with a display of its own. */
+.model-dialog:not([open]) { display: none; }
+.model-dialog::backdrop { background: rgba(0, 0, 0, .32); }
+/* One compact header row: the search, with the close beside it. */
+.model-dialog-top {
+  display: flex; align-items: center; gap: 7px; padding: 9px 10px 7px;
+  border-bottom: 1px solid var(--border);
+}
+.model-search-field { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; }
+#modelDialogClose { margin-inline-start: auto; }
+.model-dialog-top svg:first-child { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.model-dialog-top input {
+  flex: 1; min-width: 0; border: 0; background: none; padding: 0;
+}
+.model-dialog-top input:focus { outline: none; }
+.model-dialog-top:focus-within { border-color: transparent; }
+.model-dialog-status { padding: 6px 12px 0; }
+.model-dialog-status.error { color: var(--danger); }
+#modelDialogList {
+  list-style: none; margin: 0; padding: 0 6px 6px; overflow-y: auto; flex: 1;
+  display: flex; flex-direction: column; gap: 1px; min-height: 0;
+}
+.model-option {
+  display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.model-option:hover, .model-option.active { background: var(--surface-2); }
+.model-option > svg:first-child { width: 15px; height: 15px; color: var(--text-2); flex: none; }
+.model-option .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.model-option strong { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-option small { font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-option .model-check { width: 14px; height: 14px; flex: none; color: var(--accent-text); visibility: hidden; }
+.model-option.chosen .model-check { visibility: visible; }
+.model-tag {
+  flex: none; font-size: 10px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0 5px;
+}
+.model-dialog-manual { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+.model-dialog-actions {
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+  padding: 7px 10px; border-top: 1px solid var(--border); flex: none;
+}
+.model-dialog-actions .ghost { padding: 7px 9px; font-size: 12px; text-align: start; }
+.model-dialog-hint { font-size: 10.5px; color: var(--muted); padding: 6px 9px 0; flex: none; }
+.model-search-field:focus-within { outline: 2px solid var(--accent-text); outline-offset: 4px; border-radius: 2px; }
 
 /* ---------- Voice Control View ---------- */
 .voice-view {
   flex: 1;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: 0;
   overflow-y: auto;
-  padding: 12px;
-  gap: 14px;
+  padding: 0 0 10px;
+  gap: 10px;
 }
-.voice-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+/* Engine, state and access mode, in one quiet line under the header. */
+.voice-meta {
+  display: flex; align-items: center; gap: 6px; padding: 10px 12px 0; flex-wrap: wrap;
 }
-.voice-topbar-center {
-  flex: 1 1 auto;
-  min-width: 0;
-  text-align: center;
-}
-.voice-back-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 560;
-  border-radius: var(--radius-control);
-  flex: none;
-}
-.voice-topbar-title {
-  display: block;
-  font-size: 13.5px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-html[dir="rtl"] .icon-back {
-  transform: scaleX(-1);
-}
+.meta-gap { flex: 1; }
+.voice-engine { font-size: 11.5px; color: var(--text-2); font-weight: 600; }
 .voice-pill {
   flex: none;
   font-size: 11px;
@@ -453,14 +590,8 @@ html[dir="rtl"] .icon-back {
 /* The access mode on the voice screen: the mode the worker confirmed for this
    chat, in the same words the chat uses. */
 .voice-access {
-  align-self: flex-start;
   font-size: 11px;
-  padding: 3px 10px;
-  border-radius: 9999px;
-  background: var(--surface-2);
-  color: var(--muted);
   font-weight: 600;
-  border: 1px solid var(--border);
 }
 .voice-access.risk {
   background: var(--warn-bg);
@@ -468,31 +599,27 @@ html[dir="rtl"] .icon-back {
   border-color: var(--warn);
 }
 
+/* The listening area is unboxed: the circle is the only shape on it. */
 .voice-hero {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  padding: 24px 14px 16px;
+  padding: 18px 14px 6px;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  position: relative;
 }
 .voice-mic-btn {
   width: 80px;
   height: 80px;
   border-radius: 50%;
-  border: 0;
+  border: 1px solid var(--border-strong);
   padding: 0;
   cursor: pointer;
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--surface);
+  color: var(--text);
   display: inline-grid;
   place-items: center;
   transition: transform .15s, background .2s;
   position: relative;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
 }
 .voice-mic-btn:hover {
   transform: scale(1.04);
@@ -513,7 +640,8 @@ html[dir="rtl"] .icon-back {
 }
 .voice-mic-btn.on {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
+  border-color: var(--danger);
   animation: voicePulse 1.6s infinite;
 }
 @keyframes voicePulse {
@@ -556,6 +684,7 @@ html[dir="rtl"] .icon-back {
 .voice-typed-form {
   display: flex;
   gap: 8px;
+  padding: 0 12px;
 }
 .voice-typed-form input {
   flex: 1;
@@ -568,6 +697,7 @@ html[dir="rtl"] .icon-back {
   flex-direction: column;
   gap: 8px;
   flex: 1;
+  padding: 6px 12px 0;
 }
 .voice-log-header {
   display: flex;
@@ -640,9 +770,11 @@ html[dir="rtl"] .icon-back {
   border-radius: var(--radius-card);
   background: var(--surface);
   padding: 10px 12px;
+  margin: 0 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: none;
 }
 .voice-approval[hidden] { display: none; }
 .voice-approve-detail {
@@ -654,6 +786,7 @@ html[dir="rtl"] .icon-back {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 /* A question of the agent that is still waiting for an answer. */
@@ -662,10 +795,12 @@ html[dir="rtl"] .icon-back {
   border-radius: var(--radius-card);
   background: var(--surface);
   padding: 10px 12px;
+  margin: 0 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   align-items: flex-start;
+  flex: none;
 }
 .voice-pending[hidden] { display: none; }
 .voice-pending strong {
@@ -676,4 +811,14 @@ html[dir="rtl"] .icon-back {
   font-size: 12.5px;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+/* Narrow panels: nothing sticks out of the column it is in. */
+@media (max-width: 359px) {
+  .session-btn { max-width: 110px; }
+  .quick-control { max-width: 100%; }
+  .voice-back-btn span { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot.running { animation: none; }
 }

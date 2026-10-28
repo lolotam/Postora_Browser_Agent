@@ -24,6 +24,7 @@ function panel({ postMessage = () => {}, picking = null } = {}) {
     picking, sessionId: 'original', port: { postMessage },
     attachments: [], settings: {}, ui: { running: false, question: null, questionId: 0, answering: null },
     voiceViewToken: 0, voiceController: null, voiceApproval: null,
+    syncHeaderContext() {}, placeApprovals() {},
     $: (id) => {
       if (!elements.has(id)) elements.set(id, { hidden: false, textContent: '', value: '' });
       return elements.get(id);
@@ -126,6 +127,7 @@ function voicePanel({ question = null, engine = 'postora', running = false } = {
     sessionId: 'session-a',
     voiceTask: null,
     voiceViewToken: 0, voiceController: null, voiceApproval: null,
+    syncHeaderContext() {}, placeApprovals() {},
     t: (key) => key,
     voiceTarget: async () => ({ id: 5, windowId: 1, url: 'https://example.test/', title: 'Example' }),
     runFastVoiceCommand: async () => {},

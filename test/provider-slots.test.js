@@ -144,6 +144,20 @@ test('the backup frame has no sign-in sections of its own', () => {
   assert.equal(form.read().provider, 'compatible');
 });
 
+test('reselecting the same model preserves effort; a changed model clears the old test result', () => {
+  const { root, el } = fakeRoot(MAIN_FIELDS);
+  const form = formFor(root);
+  form.fill(mergeSettings({ provider: 'compatible', compatible: { preset: 'custom', model: 'manual-model', effort: 'high' } }));
+  el('test').dataset.state = 'ok';
+  el('testResult').textContent = 'manual-model tested';
+  form.chooseModel('manual-model');
+  assert.equal(form.read().compatible.effort, 'high');
+  assert.equal(el('testResult').textContent, 'manual-model tested');
+  form.chooseModel('different-model');
+  assert.equal(el('testResult').textContent, '');
+  assert.equal(el('test').dataset.state, '');
+});
+
 test('every sign-in failure the worker can send has a message in every language', async () => {
   const { SIGN_IN_FAILURES } = await import('../src/background/account-login.js');
   const { ACCOUNT_ERROR_CODES } = await import('../src/providers/account-auth.js');
