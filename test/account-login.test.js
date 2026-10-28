@@ -61,6 +61,17 @@ test('Kimi cancellation prevents a device poll from storing a credential', async
   assert.equal(store['accountAuth.kimi'], undefined);
 });
 
+test('malformed Kimi token payloads never expose partial credentials in auth events or failure records', async () => {
+  stubFetch((url) => url.endsWith('/device_authorization')
+    ? Response.json({ device_code: 'PRIVATE-DEVICE', user_code: 'CODE', verification_uri: 'https://www.kimi.com/code/authorize', verification_uri_complete: 'https://www.kimi.com/code/authorize?user_code=CODE', interval: 1, expires_in: 60 })
+    : Response.json({ access_token: 'PRIVATE-PARTIAL-TOKEN' }));
+  await startAccountLogin('kimi', { post });
+  await settled('auth-error', 0, 5000);
+  assert.ok(!JSON.stringify(events).includes('PRIVATE-PARTIAL-TOKEN'));
+  assert.ok(!JSON.stringify(store).includes('PRIVATE-PARTIAL-TOKEN'));
+  assert.equal(events.find((event) => event.type === 'auth-error').message, 'The sign-in failed. Please try again.');
+});
+
 let calls;
 function stubFetch(handler) {
   calls = [];

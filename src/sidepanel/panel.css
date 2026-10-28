@@ -308,7 +308,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 /* One compact row: the model doing the work, and the access mode of this
    chat — the selection, the worker's own answer, and the risk it carries. */
 .access-bar { padding: 4px 10px 6px; flex: none; }
-.access-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.access-row { position: relative; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .quick-control {
   display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 58%;
   border: 1px solid var(--border); background: transparent; border-radius: var(--radius-control);
@@ -330,6 +330,15 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .access-select:hover { border-color: var(--border-strong); }
 .access-select.risk { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
 .access-control:has(.access-select.risk) > svg { color: var(--on-danger); }
+/* Native titles cover hover; sighted keyboard users can read the same warning
+   on focus without adding a persistent paragraph to the composer. */
+:root[data-access-keyboard="true"] .access-row:has(.access-select.risk:focus-visible) #accessRisk {
+  clip: auto; width: min(280px, calc(100vw - 32px)); height: auto;
+  margin: 0; padding: 8px; overflow: visible; white-space: normal;
+  inset-inline-end: 0; bottom: calc(100% + 6px); z-index: 20;
+  color: var(--text); background: var(--surface); border: 1px solid var(--danger);
+  border-radius: var(--radius-control); font-size: 11.5px; line-height: 1.45;
+}
 .access-error { margin: 6px 0 0; font-size: 11.5px; color: var(--danger); }
 
 /* The warning before Full access is asked for. A native dialog: the browser

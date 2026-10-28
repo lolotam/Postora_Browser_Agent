@@ -143,6 +143,14 @@ const accessUi = createAccessUi({
   getSessionId: () => sessionId,
 });
 
+// Native selects can match :focus-visible after pointer input too. Only show
+// the extra visual description for keyboard navigation; hover keeps its title.
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Tab') document.documentElement.dataset.accessKeyboard = 'true';
+  if (event.key === 'Escape') delete document.documentElement.dataset.accessKeyboard;
+});
+document.addEventListener('pointerdown', () => { delete document.documentElement.dataset.accessKeyboard; });
+
 /**
  * The mode is a request to the worker, about the chat the message names.
  *

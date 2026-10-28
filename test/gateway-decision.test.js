@@ -4,6 +4,7 @@ import { askGatewayDecision } from '../src/fast/gateway-decision-client.js';
 import { askChatJudge } from '../src/fast/chat-judge-client.js';
 import { askWithBackup, fastClientFor } from '../src/fast/clients.js';
 import { askJev } from '../src/fast/jev-client.js';
+import { fastHttpError, isFastAccessFailure } from '../src/fast/errors.js';
 
 const questions = {
   operation: { type: 'choice', instructions: 'Which operation?', criteria: { click: 'Click', scroll_down: 'Scroll' } },
@@ -139,4 +140,28 @@ describe('fast-layer backup', () => {
     assert.equal(seen.length, 1);
     assert.equal(notices.length, 0);
   });
+
+  test('a transient failure does not consume the later access-failure warning', async () => {
+    let calls = 0;
+    const notices = [];
+    const ask = askWithBackup({ primary: { provider: 'typesafe', model: 'jev' }, notify: (notice) => notices.push(notice),
+      clientFor: () => async () => { calls++; throw fastHttpError('Jev', calls === 1 ? 503 : 403, 'Model is unavailable'); } });
+    await assert.rejects(ask(request), /503/);
+    assert.deepEqual(notices, []);
+    await assert.rejects(ask(request), /403/);
+    await assert.rejects(ask(request), /403/);
+    assert.equal(calls, 2);
+    assert.equal(notices.length, 1);
+  });
+});
+
+test('HTTP status keeps unavailable-worded rate limits and server errors transient', () => {
+  for (const status of [408, 429, 500, 502, 503, 504]) {
+    const error = fastHttpError('Jev', status, 'Model access is disabled; model is unavailable');
+    assert.equal(error.unavailable, false);
+    assert.equal(isFastAccessFailure(error), false);
+    assert.equal(isFastAccessFailure(new Error(error.message)), false);
+  }
+  assert.equal(isFastAccessFailure(fastHttpError('Jev', 403, 'denied')), true);
+  assert.equal(isFastAccessFailure(fastHttpError('Jev', 400, 'Model access is disabled')), true);
 });

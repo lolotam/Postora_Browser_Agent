@@ -43,6 +43,9 @@ async function writeBackupFile(token, data, id) {
     await drive(token, `${UPLOAD}/${fileId}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
   } catch (err) {
     if (err.status === 404 && id) return writeBackupFile(token, data, null);
+    // Metadata creation already succeeded. Retain that ID if its first media
+    // upload fails, so retry updates it instead of leaving empty duplicates.
+    if (!id) err.backupFileId = fileId;
     throw err;
   }
   return fileId;
@@ -97,7 +100,7 @@ async function upload(getToken, force = false) {
     const fileId = await writeBackupFile(token, data, state.fileId ?? (await findBackupFile(token))?.id);
     return saveState({ fileId, at: Date.now(), hash, error: null });
   } catch (err) {
-    return saveState({ ...state, error: err.message });
+    return saveState({ ...state, ...(err.backupFileId ? { fileId: err.backupFileId } : {}), error: err.message });
   }
 }
 

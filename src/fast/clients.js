@@ -40,7 +40,7 @@ export function askWithBackup({ primary, backup, notify, clientFor = fastClientF
       if (signal?.aborted || err?.name === 'AbortError') throw err;
       failures = isFastAccessFailure(err) ? PRIMARY_FAILURES_BEFORE_SKIP : failures + 1;
       if (isFastAccessFailure(err)) unavailable = err;
-      if (!warned) {
+      if (!warned && (askBackup || isFastAccessFailure(err))) {
         warned = true;
         notify?.({ level: 'warning', kind: askBackup ? 'fast-switched' : 'fast-unavailable', from: `${primary.provider} · ${primary.model}`,
           ...(backup ? { to: `${backup.provider} · ${backup.model}` } : {}), ...describeFailure(err) });

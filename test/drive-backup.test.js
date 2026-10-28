@@ -12,7 +12,7 @@ globalThis.chrome = {
   },
 };
 
-const { afterGoogleSignIn, backUpToDrive, driveBackupState, isFreshSetup, restoreFromDrive } = await import('../src/lib/drive-backup.js');
+const { afterGoogleSignIn, backUpToDrive, driveBackupState, findBackupFile, isFreshSetup, restoreFromDrive } = await import('../src/lib/drive-backup.js');
 const { mergeSettings } = await import('../src/lib/settings.js');
 
 const getToken = async () => 'ya29.token';
@@ -162,6 +162,43 @@ test('a forced unchanged backup recreates a deleted remote file', async () => {
   assert.equal(result.error, null);
   assert.equal(drive.content.settings.compatible.model, 'openai/gpt-5');
   assert.deepEqual(calls, ['PATCH /upload/drive/v3/files/file1', 'POST /drive/v3/files', 'PATCH /upload/drive/v3/files/file1']);
+});
+
+test('a failed replacement upload retains its distinct file ID and retries without an empty duplicate', async () => {
+  local.settings = setUp;
+  const files = new Map();
+  let nextId = 0;
+  let failUpload = false;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(url);
+    if (!init.method) return Response.json({ files: [...files.keys()].map((id) => ({ id })) });
+    if (init.method === 'POST') {
+      const id = `file${++nextId}`;
+      files.set(id, null);
+      return Response.json({ id });
+    }
+    const id = u.pathname.split('/').at(-1);
+    if (!files.has(id)) return new Response('{}', { status: 404 });
+    if (failUpload) return Response.json({ error: { message: 'temporary upload failure' } }, { status: 503 });
+    files.set(id, JSON.parse(init.body));
+    return Response.json({ id });
+  };
+  const original = await backUpToDrive({ getToken });
+  assert.equal(original.fileId, 'file1');
+  files.clear();
+  failUpload = true;
+  const failed = await backUpToDrive({ getToken, force: true });
+  assert.equal(failed.fileId, 'file2');
+  assert.equal(failed.at, original.at);
+  assert.match(failed.error, /temporary upload failure/);
+  failUpload = false;
+  const recovered = await backUpToDrive({ getToken, force: true });
+  assert.equal(recovered.fileId, 'file2');
+  assert.equal(recovered.error, null);
+  assert.equal(nextId, 2, 'no third file is created on retry');
+  assert.equal(files.size, 1);
+  assert.equal(files.get('file2').settings.compatible.model, 'openai/gpt-5');
+  assert.equal((await findBackupFile('ya29.token')).id, 'file2');
 });
 
 test('a named provider model prevents automatic restore over this computer\'s setup', () => {

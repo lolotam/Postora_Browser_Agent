@@ -396,6 +396,17 @@ export async function runAccessUiScenario(context, extensionId) {
     await acknowledgeAndConfirm(panel);
     const compact = await layout(panel);
     if (compact.riskInline || !compact.fullDanger || compact.tooltip !== compact.riskText) failures.push('the Full control is not a compact danger control with a risk tooltip');
+    await panel.focus('#accessSelect');
+    await panel.keyboard.press('Tab');
+    await panel.keyboard.press('Shift+Tab');
+    const keyboardRisk = await panel.evaluate(() => {
+      const risk = document.getElementById('accessRisk');
+      const box = risk.getBoundingClientRect();
+      return { focused: document.activeElement?.id, width: box.width, height: box.height, left: box.left, right: box.right, viewport: innerWidth };
+    });
+    if (keyboardRisk.focused !== 'accessSelect' || keyboardRisk.width <= 1 || keyboardRisk.height <= 1
+      || keyboardRisk.left < 0 || keyboardRisk.right > keyboardRisk.viewport + 1) failures.push('the risk is not readable within the panel on keyboard focus');
+    await panel.click('#input');
     await panel.hover('#accessSelect');
     await shot(panel, 'access-full-320-light.png');
 

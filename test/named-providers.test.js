@@ -5,6 +5,7 @@ import { createModelSession, modelSessionKey } from '../src/agent/model-session.
 import { listGeminiModels } from '../src/providers/named-api.js';
 import { KimiSession, listKimiModels } from '../src/providers/kimi.js';
 import { getValidCredential, setAccountFlows, signOut } from '../src/providers/account-auth.js';
+import { kimiCodingOAuth } from '../src/vendor/pi-oauth.js';
 
 const store = {};
 globalThis.chrome = { storage: { local: {
@@ -139,4 +140,17 @@ test('confirmed Kimi refresh rejection expires credentials; transient refresh fa
   await signOut('kimi');
   await assert.rejects(listKimiModels({ auth: 'account' }), /not connected/);
   assert.equal(calls.length, 0);
+});
+
+test('the real Kimi refresh receives a timeout signal even when its caller provides none', async () => {
+  store['accountAuth.kimi'] = { generation: 1, credential: { ...credential(), expires: 1 } };
+  setAccountFlows({ kimiCodingOAuth });
+  handler = (_url, options) => {
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(options.redirect, 'error');
+    return Response.json({ access_token: 'ROTATED-REAL-FLOW', refresh_token: 'ROTATED-REFRESH', expires_in: 3600 });
+  };
+  assert.equal((await getValidCredential('kimi')).access, 'ROTATED-REAL-FLOW');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://auth.kimi.com/api/oauth/token');
 });
