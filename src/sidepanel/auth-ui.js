@@ -94,11 +94,11 @@ export function withLoginEvent(state, event) {
  * What the backup frame shows: the note that it uses the sign-in above, or the
  * sign-in of its own provider, when the main frame does not show that one.
  */
-export function backupAuthView({ main, backup, claudeAuth = 'account' }) {
+export function backupAuthView({ main, backup, claudeAuth = 'account', kimiAuth = 'apiKey', mainKimiAuth = 'account' }) {
   const account = ACCOUNT_PROVIDERS.includes(backup);
   // A Claude slot that pays with an API key needs no sign-in at all.
-  const needsSignIn = account && !(backup === 'claude' && claudeAuth === 'apiKey');
-  const shared = needsSignIn && backup === main;
+  const needsSignIn = account && !(backup === 'claude' && claudeAuth === 'apiKey') && !(backup === 'kimi' && kimiAuth !== 'account');
+  const shared = needsSignIn && backup === main && !(main === 'kimi' && mainKimiAuth !== 'account');
   return { note: shared, signIn: needsSignIn && !shared ? backup : null };
 }
 

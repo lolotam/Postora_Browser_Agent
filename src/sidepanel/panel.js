@@ -59,6 +59,7 @@ setLanguage(resolveLanguage('auto', chrome.i18n.getUILanguage()));
 let port = null;
 let sessionId = null;
 let sessionList = [];
+let sessionListRefresh = 0;
 // The worker was gone and the panel is connected again: its sign-in state may
 // have been lost with it.
 let reconnected = false;
@@ -141,6 +142,14 @@ const accessUi = createAccessUi({
   request: (message) => requestAccess(message),
   getSessionId: () => sessionId,
 });
+
+// Native selects can match :focus-visible after pointer input too. Only show
+// the extra visual description for keyboard navigation; hover keeps its title.
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Tab') document.documentElement.dataset.accessKeyboard = 'true';
+  if (event.key === 'Escape') delete document.documentElement.dataset.accessKeyboard;
+});
+document.addEventListener('pointerdown', () => { delete document.documentElement.dataset.accessKeyboard; });
 
 /**
  * The mode is a request to the worker, about the chat the message names.
@@ -896,7 +905,7 @@ function clearMessages() {
   renderNotices();
 }
 
-const NOTICE_TEXT = { switched: 'notice.switched', 'both-failed': 'notice.bothFailed', 'fast-switched': 'notice.fastSwitched', retrying: 'notice.retrying' };
+const NOTICE_TEXT = { switched: 'notice.switched', 'both-failed': 'notice.bothFailed', 'fast-switched': 'notice.fastSwitched', 'fast-unavailable': 'notice.fastUnavailable', retrying: 'notice.retrying' };
 
 /** Newest first; the full provider error is in the tooltip. */
 function renderNotices() {
@@ -1684,7 +1693,8 @@ async function runFastVoiceCommand(text, { signal, entry }) {
   }
   // The same provider-aware client the fast layer uses: the configured
   // provider, model, endpoint and key, with the configured backup.
-  const ask = createFastAsk(fast, (notice) => entry.addNote(`${notice.from} → ${notice.to}`));
+  const ask = createFastAsk(fast, (notice) => entry.addNote(notice.kind === 'fast-unavailable'
+    ? t('notice.fastUnavailable', notice) : `${notice.from} → ${notice.to}`));
   const browser = createChromeBrowser({ sessionId, target: voiceTarget, panelId: voicePanelId });
   let result;
   try {
@@ -1948,9 +1958,24 @@ async function openSession(id) {
 }
 
 async function refreshSessions() {
-  sessionList = await request('sessions-list');
-  renderSessionTitle();
-  if (!$('sessionMenu').hidden) renderSessionList();
+  const refresh = ++sessionListRefresh;
+  try {
+    const next = await request('sessions-list');
+    if (refresh !== sessionListRefresh) return false;
+    sessionList = next;
+    $('sessionListStatus').hidden = true;
+    renderSessionTitle();
+    if (!$('sessionMenu').hidden) renderSessionList();
+    return true;
+  } catch {
+    // A worker can disappear while this observational read is in flight.
+    // Keep the last list and an explicit recovery path; never retry a write.
+    if (refresh === sessionListRefresh) {
+      $('sessionListStatus').textContent = t('session.refreshFailed');
+      $('sessionListStatus').hidden = false;
+    }
+    return false;
+  }
 }
 
 function sessionLabel(meta) {
@@ -2144,6 +2169,12 @@ function renderAccount() {
 // outside-click dismissal knows not to fight the click that opened it.
 let accountInvoker = null;
 
+/** One account status surface, with semantic colors and text for every outcome. */
+function setAccountStatus(text, tone = '') {
+  $('accountStatus').textContent = text;
+  $('accountStatus').dataset.tone = tone;
+}
+
 function toggleAccountMenu() {
   const opening = $('accountMenu').hidden;
   if (opening) accountInvoker = document.activeElement === $('accountBtn') ? $('overflowBtn') : document.activeElement;
@@ -2151,7 +2182,7 @@ function toggleAccountMenu() {
   closeOverflowMenu();
   $('feedbackMenu').hidden = true;
   $('accountMenu').hidden = !opening;
-  $('accountStatus').textContent = '';
+  setAccountStatus('');
   if (opening) $('accountMenu').querySelector(account ? '#driveBackupBtn' : '#googleSignInBtn').focus();
 }
 
@@ -2164,18 +2195,18 @@ function closeAccountMenu() {
 $('accountBtn').addEventListener('click', toggleAccountMenu);
 $('accountRowBtn').addEventListener('click', toggleAccountMenu);
 $('googleSignInBtn').addEventListener('click', async () => {
-  $('accountStatus').textContent = t('account.signingIn');
+  setAccountStatus(t('account.signingIn'));
   try {
     account = await signInWithGoogle();
     renderAccount();
-    $('accountStatus').textContent = t('drive.working');
+    setAccountStatus(t('drive.working'));
     const { restored, available } = await request('drive-after-sign-in');
     if (restored) await showRestoredSettings(restored);
-    if (restored) $('accountStatus').textContent = t('drive.restored');
-    else if (available) $('accountStatus').textContent = t('drive.available', { time: `⁨${new Date(available).toLocaleString(currentLanguage())}⁩` });
-    else $('accountStatus').textContent = '';
+    if (restored) setAccountStatus(t('drive.restored'), 'success');
+    else if (available) setAccountStatus(t('drive.available', { time: `⁨${new Date(available).toLocaleString(currentLanguage())}⁩` }));
+    else setAccountStatus('');
   } catch (err) {
-    $('accountStatus').textContent = `✗ ${err.message}`;
+    setAccountStatus(`✗ ${err.message}`, 'error');
   }
 });
 $('driveBackupBtn').addEventListener('click', () => driveAction(() => request('drive-backup-now')));
@@ -2183,17 +2214,21 @@ $('driveRestoreBtn').addEventListener('click', () => {
   if (!window.confirm(t('drive.confirmRestore'))) return;
   driveAction(async () => {
     await showRestoredSettings(await request('drive-restore'));
-    $('accountStatus').textContent = t('drive.restored');
+    setAccountStatus(t('drive.restored'), 'success');
   });
 });
 
 async function driveAction(run) {
-  $('accountStatus').textContent = t('drive.working');
+  setAccountStatus(t('drive.working'));
   try {
-    await run();
-    if ($('accountStatus').textContent === t('drive.working')) $('accountStatus').textContent = '';
+    const result = await run();
+    // Automatic backups return a stored error instead of throwing. A manual
+    // click must report that failure, never turn an old timestamp into success.
+    if (result?.error) throw new Error(result.error);
+    if (result?.at) setAccountStatus(`✓ ${t('drive.saved', { time: `⁨${new Date(result.at).toLocaleString(currentLanguage())}⁩` })}`, 'success');
+    else if ($('accountStatus').textContent === t('drive.working')) setAccountStatus('');
   } catch (err) {
-    $('accountStatus').textContent = `✗ ${err.message}`;
+    setAccountStatus(`✗ ${err.message}`, 'error');
   }
 }
 
@@ -3137,6 +3172,7 @@ async function saveQuickModel(id, effort) {
   const savedSlot = currentProviderSettings();
   const sameConnection = draft.provider === settings.provider
     && (draft.provider !== 'claude' || draft.claude.auth === settings.claude.auth)
+    && (draft.provider !== 'kimi' || draft.kimi.auth === settings.kimi.auth)
     && (draft.provider !== 'compatible' || (draft.compatible.preset === settings.compatible.preset && draft.compatible.baseUrl === settings.compatible.baseUrl));
   const syncDraft = sameConnection && draftSlot.model === savedSlot.model && draftSlot.effort === savedSlot.effort;
   const next = quickModelSettings(settings, id, effort);
@@ -3165,7 +3201,7 @@ async function saveQuickModel(id, effort) {
 function problemPage(problem) {
   if (problem.startsWith('err.fast')) return 'fast';
   if (problem === 'err.pickReplyLanguage') return 'language';
-  if (problem === 'err.fallbackModel' || problem === 'err.fallbackAnthropicKey') return 'provider-backup';
+  if (['err.fallbackModel', 'err.fallbackAnthropicKey', 'err.fallbackGeminiKey', 'err.fallbackKimiKey'].includes(problem)) return 'provider-backup';
   return 'provider-main';
 }
 
@@ -3337,7 +3373,7 @@ $('modelBtnFastBackup').addEventListener('click', () => openModelSlot('fastBacku
  */
 function authRoot(provider) {
   const main = $('mainProvider').querySelector(`[data-provider="${provider}"]`);
-  if (main && mainForm.provider() === provider) return main;
+  if (main && mainForm.provider() === provider && (provider !== 'kimi' || mainForm.kimi().auth === 'account')) return main;
   const backup = $('fallbackProvider').querySelector('[data-field="fallbackAuth"]');
   if (backup && backup.dataset.provider === provider) return backup;
   return null;
@@ -3463,6 +3499,8 @@ function syncAuthFrames() {
     main: mainForm.provider(),
     backup: fallbackForm.provider(),
     claudeAuth: fallbackForm.claude().auth,
+    kimiAuth: fallbackForm.kimi().auth,
+    mainKimiAuth: mainForm.kimi().auth,
   });
   const note = $('fallbackProvider').querySelector('[data-field="accountNote"]');
   if (note) note.hidden = !view.note;

@@ -7,7 +7,7 @@ import { t } from './i18n.js';
 import { escapeAttr } from './model-picker.js';
 import { bindTestButton } from './test-button.js';
 import { ANTHROPIC_GROUP } from '../lib/keys.js';
-import { ACCOUNT_PROVIDERS, slotSettings as slotOf } from '../lib/settings.js';
+import { ACCOUNT_PROVIDERS, kimiEfforts, slotSettings as slotOf } from '../lib/settings.js';
 
 const TRANSLATED_EFFORTS = { '': 'effort.default', off: 'effort.off', on: 'effort.on' };
 // The efforts a model list does not name. MiniMax cannot stop thinking, so it
@@ -19,6 +19,7 @@ const FALLBACK_EFFORTS = {
   glm: ['on', 'off'],
   none: [],
   gemini: ['minimal', 'low', 'medium', 'high'],
+  kimi: ['low', 'high', 'max'],
   minimax: ['low', 'medium', 'high', 'xhigh', 'max'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   grok: ['low', 'medium', 'high', 'xhigh'],
@@ -50,6 +51,8 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       chatgpt: { ...s.chatgpt },
       claude: { ...s.claude },
       grok: { ...s.grok },
+      gemini: { ...s.gemini },
+      kimi: { ...s.kimi },
       compatible: { ...s.compatible },
     };
     f('preset').innerHTML = Object.entries(getPresets()).map(([id, p]) => `<option value="${id}">${escapeAttr(p.label)}</option>`).join('');
@@ -61,6 +64,14 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     customKey = preset === 'custom' ? s.compatible.apiKey : '';
     keyStore.refresh?.(f('apiKey'));
     if (f('claudeAuth')) f('claudeAuth').value = s.claude.auth;
+    if (f('kimiAuth')) f('kimiAuth').value = s.kimi.auth;
+    for (const [field, provider, config] of [['geminiApiKey', 'gemini', s.gemini], ['kimiApiKey', 'moonshot', s.kimi]]) {
+      const input = f(field);
+      if (!input) continue;
+      keyStore.show(input, provider);
+      if (!input.value) input.value = config.apiKey ?? '';
+      keyStore.refresh?.(input);
+    }
     // The Anthropic key is one key for the whole app, so the shared one wins.
     if (f('claudeApiKey')) {
       keyStore.show(f('claudeApiKey'), ANTHROPIC_GROUP);
@@ -78,6 +89,8 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     next.provider = f('provider').value;
     Object.assign(next.compatible, compatibleFields());
     Object.assign(next.claude, claudeFields());
+    Object.assign(next.gemini, geminiFields());
+    Object.assign(next.kimi, kimiFields());
     const slot = slotOf(next);
     slot.model = f('modelInput').value.trim();
     slot.effort = f('effort').value;
@@ -86,6 +99,8 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
 
   const compatibleFields = () => ({ preset: f('preset').value, baseUrl: f('baseUrl').value.trim(), apiKey: f('apiKey').value.trim() });
   const claudeFields = () => ({ auth: f('claudeAuth')?.value ?? 'account', apiKey: f('claudeApiKey')?.value.trim() ?? '' });
+  const geminiFields = () => ({ apiKey: f('geminiApiKey')?.value.trim() ?? saved.gemini.apiKey ?? '' });
+  const kimiFields = () => ({ auth: f('kimiAuth')?.value ?? saved.kimi.auth ?? 'apiKey', apiKey: f('kimiApiKey')?.value.trim() ?? saved.kimi.apiKey ?? '' });
 
   function syncSections() {
     const provider = f('provider').value;
@@ -93,12 +108,17 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     hide('claudeSection', provider !== 'claude');
     hide('grokSection', provider !== 'grok');
     hide('compatibleSection', provider !== 'compatible');
+    hide('geminiSection', provider !== 'gemini');
+    hide('kimiSection', provider !== 'kimi');
+    hide('kimiAccount', kimiFields().auth !== 'account');
+    hide('kimiKeyField', kimiFields().auth === 'account');
   }
 
   /** The efforts of the chosen model, or the ones its provider takes. */
   function renderEfforts(selected) {
     const model = models.find((m) => m.id === f('modelInput').value.trim());
-    const levels = model?.efforts?.length ? model.efforts : FALLBACK_EFFORTS[effortStyle()];
+    const levels = effortStyle() === 'kimi' ? kimiEfforts(f('modelInput').value.trim(), kimiFields().auth)
+      : model?.efforts?.length ? model.efforts : FALLBACK_EFFORTS[effortStyle()];
     const options = ['', ...levels];
     f('effort').innerHTML = options.map((e) => `<option value="${escapeAttr(e)}">${escapeAttr(TRANSLATED_EFFORTS[e] ? t(TRANSLATED_EFFORTS[e]) : e)}${model?.defaultEffort === e ? t('effort.defaultMark') : ''}</option>`).join('');
     f('effort').value = options.includes(selected) ? selected : '';
@@ -107,7 +127,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   /** The thinking style of the chosen provider: its own, or the preset's. */
   function effortStyle() {
     const provider = f('provider').value;
-    if (provider === 'chatgpt' || provider === 'claude' || provider === 'grok') return provider;
+    if (['chatgpt', 'claude', 'grok', 'gemini', 'kimi'].includes(provider)) return provider;
     return getPresets()[f('preset').value]?.thinkingStyle ?? 'reasoning_effort';
   }
 
@@ -116,6 +136,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     if (ACCOUNT_PROVIDERS.includes(draft.provider)) {
       // A Claude slot that pays with an API key needs no sign-in.
       if (draft.provider === 'claude' && draft.claude.auth === 'apiKey') return false;
+      if (draft.provider === 'kimi' && draft.kimi.auth !== 'account') return false;
       return true;
     }
     return false;
@@ -180,6 +201,8 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     leaving.effort = f('effort').value;
     Object.assign(saved.compatible, compatibleFields());
     Object.assign(saved.claude, claudeFields());
+    Object.assign(saved.gemini, geminiFields());
+    Object.assign(saved.kimi, kimiFields());
     saved.provider = f('provider').value;
     f('modelInput').value = slotOf(saved).model;
     models = [];
@@ -209,9 +232,21 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     loadModels();
     onChange?.(saved.provider);
   });
+  f('kimiAuth')?.addEventListener('change', () => {
+    // The products have different catalogs/IDs. Do not carry a Moonshot model
+    // into the subscription (or the reverse) merely because auth changed.
+    f('modelInput').value = '';
+    models = [];
+    syncSections();
+    renderEfforts('');
+    loadModels();
+    onChange?.(saved.provider);
+  });
   f('refresh')?.addEventListener('click', () => loadModels(true));
   keyStore.register(f('apiKey'), () => f('preset').value);
   if (f('claudeApiKey')) keyStore.register(f('claudeApiKey'), () => ANTHROPIC_GROUP);
+  if (f('geminiApiKey')) keyStore.register(f('geminiApiKey'), () => 'gemini');
+  if (f('kimiApiKey')) keyStore.register(f('kimiApiKey'), () => 'moonshot');
   const showTestStatus = bindTestButton({
     button: f('test'),
     result: f('testResult'),
@@ -235,6 +270,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     chooseModel,
     /** How the Claude slot connects: its account or an Anthropic key. */
     claude: () => claudeFields(),
+    kimi: () => kimiFields(),
     rerender() {
       renderEfforts(f('effort').value);
     },

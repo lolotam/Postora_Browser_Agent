@@ -4,10 +4,23 @@ import { keyGroup, shareKeys } from './keys.js';
 import { STORE_BUILD } from './build.js';
 
 /** The providers that sign in with an account, in the order they are listed. */
-export const ACCOUNT_PROVIDERS = ['chatgpt', 'claude', 'grok'];
+export const ACCOUNT_PROVIDERS = ['chatgpt', 'claude', 'grok', 'kimi'];
 
 /** The name each account provider is shown under. */
-export const PROVIDER_LABELS = { chatgpt: 'ChatGPT', claude: 'Claude', grok: 'Grok' };
+export const PROVIDER_LABELS = { chatgpt: 'ChatGPT', claude: 'Claude', grok: 'Grok', gemini: 'Google Gemini', kimi: 'Kimi' };
+
+// Fixed first-party endpoints. Account tokens never go to the separately billed
+// Moonshot API, nor are .com account tokens silently sent to another region.
+export const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+export const MOONSHOT_API_URL = 'https://api.moonshot.ai/v1';
+export const KIMI_CODE_URL = 'https://api.kimi.com/coding/v1';
+
+/** K3 effort levels are not a valid parameter for the older Moonshot K2 APIs. */
+export function kimiEfforts(model, auth = 'apiKey') {
+  const supported = /^kimi-k3(?:[.-]|$)/i.test(model)
+    || (auth === 'account' && (/^k3(?:[.-]|$)/i.test(model) || model === 'kimi-for-coding'));
+  return supported ? ['low', 'high', 'max'] : [];
+}
 
 // Main model and backup providers (both use this list). thinkingStyle 'none' sends
 // no reasoning parameter, for APIs whose models reject reasoning_effort; 'gemini'
@@ -98,6 +111,8 @@ export const DEFAULT_SETTINGS = {
   claude: { auth: 'account', apiKey: '', model: '', effort: '' },
   // The Grok slot signs in with a Grok account; an xAI key goes through the preset.
   grok: { model: '', effort: '' },
+  gemini: { apiKey: '', model: '', effort: '' },
+  kimi: { auth: 'apiKey', apiKey: '', model: '', effort: '' },
   compatible: { preset: 'xai', baseUrl: COMPATIBLE_PRESETS.xai.baseUrl, apiKey: '', model: COMPATIBLE_PRESETS.xai.model, effort: '' },
   fast: {
     enabled: false, mode: 'auto', provider: 'typesafe', baseUrl: 'https://api.typesafe.ai', apiKey: '', model: 'jev-latest', minProb: 0.6, riskyMax: 0.3,
@@ -110,6 +125,8 @@ export const DEFAULT_SETTINGS = {
     chatgpt: { model: '', effort: '' },
     claude: { auth: 'account', apiKey: '', model: '', effort: '' },
     grok: { model: '', effort: '' },
+    gemini: { apiKey: '', model: '', effort: '' },
+    kimi: { auth: 'apiKey', apiKey: '', model: '', effort: '' },
     compatible: { preset: 'openrouter', baseUrl: COMPATIBLE_PRESETS.openrouter.baseUrl, apiKey: '', model: '', effort: '' },
   },
   maxSteps: 40,
@@ -144,6 +161,8 @@ export function slotSettings(settings) {
   if (settings.provider === 'chatgpt') return settings.chatgpt;
   if (settings.provider === 'claude') return settings.claude;
   if (settings.provider === 'grok') return settings.grok;
+  if (settings.provider === 'gemini') return settings.gemini;
+  if (settings.provider === 'kimi') return settings.kimi;
   return settings.compatible;
 }
 
@@ -152,7 +171,7 @@ export function slotSettings(settings) {
  * own, every other provider goes through the OpenAI-compatible list.
  */
 export function modelListRoute(settings) {
-  return ACCOUNT_PROVIDERS.includes(settings.provider) ? settings.provider : 'compatible';
+  return settings.provider === 'gemini' || ACCOUNT_PROVIDERS.includes(settings.provider) ? settings.provider : 'compatible';
 }
 
 /**
@@ -163,9 +182,13 @@ export function modelListRoute(settings) {
 export function settingsProblem(settings) {
   if (!slotSettings(settings).model) return 'err.pickModel';
   if (needsAnthropicKey(settings)) return 'err.anthropicKey';
+  if (settings.provider === 'gemini' && !settings.gemini?.apiKey?.trim()) return 'err.geminiKey';
+  if (settings.provider === 'kimi' && settings.kimi?.auth !== 'account' && !settings.kimi?.apiKey?.trim()) return 'err.kimiKey';
   if (settings.replyLanguage.enabled && !settings.replyLanguage.language) return 'err.pickReplyLanguage';
   if (settings.fallback.enabled && !slotSettings(settings.fallback).model) return 'err.fallbackModel';
   if (settings.fallback.enabled && needsAnthropicKey(settings.fallback)) return 'err.fallbackAnthropicKey';
+  if (settings.fallback.enabled && settings.fallback.provider === 'gemini' && !settings.fallback.gemini?.apiKey?.trim()) return 'err.fallbackGeminiKey';
+  if (settings.fallback.enabled && settings.fallback.provider === 'kimi' && settings.fallback.kimi?.auth !== 'account' && !settings.fallback.kimi?.apiKey?.trim()) return 'err.fallbackKimiKey';
   if (settings.fast.enabled && !settings.fast.apiKey) return 'err.fastKey';
   if (settings.fast.enabled && !settings.fast.baseUrl) return 'err.fastUrl';
   if (settings.fast.enabled && settings.fast.fallback.enabled && !settings.fast.fallback.apiKey) return 'err.fastFallbackKey';
@@ -195,6 +218,8 @@ export function mergeSettings(stored = {}) {
     chatgpt: { ...DEFAULT_SETTINGS.chatgpt, ...(stored.chatgpt ?? {}) },
     claude: { ...DEFAULT_SETTINGS.claude, ...(stored.claude ?? {}) },
     grok: { ...DEFAULT_SETTINGS.grok, ...(stored.grok ?? {}) },
+    gemini: { ...DEFAULT_SETTINGS.gemini, ...(stored.gemini ?? {}) },
+    kimi: { ...DEFAULT_SETTINGS.kimi, ...(stored.kimi ?? {}) },
     compatible: { ...DEFAULT_SETTINGS.compatible, ...(stored.compatible ?? {}) },
     fast: {
       ...DEFAULT_SETTINGS.fast,
@@ -208,6 +233,8 @@ export function mergeSettings(stored = {}) {
       chatgpt: { ...DEFAULT_SETTINGS.fallback.chatgpt, ...(stored.fallback?.chatgpt ?? {}) },
       claude: { ...DEFAULT_SETTINGS.fallback.claude, ...(stored.fallback?.claude ?? {}) },
       grok: { ...DEFAULT_SETTINGS.fallback.grok, ...(stored.fallback?.grok ?? {}) },
+      gemini: { ...DEFAULT_SETTINGS.fallback.gemini, ...(stored.fallback?.gemini ?? {}) },
+      kimi: { ...DEFAULT_SETTINGS.fallback.kimi, ...(stored.fallback?.kimi ?? {}) },
       compatible: { ...DEFAULT_SETTINGS.fallback.compatible, ...(stored.fallback?.compatible ?? {}) },
     },
     keys: { ...(stored.keys ?? {}) },

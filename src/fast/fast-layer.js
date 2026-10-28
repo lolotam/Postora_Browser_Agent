@@ -5,6 +5,7 @@
 
 import { askJev } from './jev-client.js';
 import { formatSnapshot } from '../agent/tools.js';
+import { isFastAccessFailure } from './errors.js';
 
 export const DEFAULT_GATE = {
   minProb: 0.6, // probability of the chosen option
@@ -205,8 +206,8 @@ export function createFastLayer({ config, browser, execute, task, ask = askJev }
         ({ answers, usage } = await ask({ ...config, ...request, signal }));
         failures = 0;
       } catch (err) {
-        if (signal?.aborted) throw err;
-        failures += 1;
+        if (signal?.aborted || err?.name === 'AbortError') throw err;
+        failures = isFastAccessFailure(err) ? 3 : failures + 1;
         return { kind: 'escalate', reason: `Fast layer unavailable: ${err.message}`, snapshot, hints: '' };
       }
 

@@ -17,13 +17,14 @@ const NON_CHAT_TYPES = new Set(['embedding', 'image', 'video', 'reranking', 'spe
 // Gemini and NVIDIA list embedding and rerank models without a type field.
 const NON_CHAT_ID = /embed|rerank/i;
 
-export async function listCompatibleModels(baseUrl, apiKey) {
+export async function listCompatibleModels(baseUrl, apiKey, { anonymousFallback = true, signal, redirect = 'follow' } = {}) {
   const url = `${trimSlash(baseUrl)}/models`;
-  let res = await fetch(url, { credentials: 'omit', headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+  const options = { credentials: 'omit', signal, redirect };
+  let res = await fetch(url, { ...options, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
   // Vercel and OpenRouter publish their lists but reject an invalid key, so a
   // typo or a key not entered yet must not hide the list.
-  if (apiKey && (res.status === 401 || res.status === 403)) res = await fetch(url, { credentials: 'omit', headers: {} });
-  if (!res.ok) throw new Error(`Could not load models (HTTP ${res.status}). Type the model id manually.`);
+  if (anonymousFallback && apiKey && (res.status === 401 || res.status === 403)) res = await fetch(url, { ...options, headers: {} });
+  if (!res.ok) throw Object.assign(new Error(`Could not load models (HTTP ${res.status}). Type the model id manually.`), { status: res.status });
   const body = await res.json();
   return (body.data ?? body.models ?? [])
     .map((m) => ({ ...m, id: String(m.id ?? m.name).replace(/^models\//, '') })) // Gemini may prefix ids with "models/"
@@ -55,7 +56,8 @@ const MINIMAX_EFFORTS = { minimal: 'low', low: 'low', medium: 'medium', high: 'h
 const MERGED_DETAIL_TYPES = new Set(['reasoning.text', 'reasoning.summary']);
 
 export class CompatibleSession {
-  constructor({ baseUrl, apiKey, model, effort, thinkingStyle, systemPrompt, tools, sessionId = crypto.randomUUID(), notify = null, textToolCalls = false, usage = false }) {
+  constructor({ baseUrl, apiKey, model, effort, thinkingStyle, systemPrompt, tools, sessionId = crypto.randomUUID(), notify = null, textToolCalls = false, usage = false, strictRedirects = false }) {
+    this.strictRedirects = strictRedirects;
     this.notify = notify;
     this.usage = usage; // ask for token usage in the stream (presets known to accept it)
     this.retryWaitMs = 0;
@@ -183,7 +185,7 @@ export class CompatibleSession {
       ...(result.rawToolCalls.length ? { tool_calls: result.rawToolCalls } : {}),
       // The thinking travels back in the field it came in, so the next turn of
       // a tool call keeps it.
-      ...(minimax ? storedReasoning(result) : {}),
+      ...(minimax || this.thinkingStyle === 'kimi' ? storedReasoning(result) : {}),
     });
     return { text: answer, toolCalls: result.toolCalls, usage: result.usage, retryWaitMs: this.retryWaitMs };
   }
@@ -196,6 +198,7 @@ export class CompatibleSession {
         res = await fetchModel(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           credentials: 'omit',
+          ...(this.strictRedirects ? { redirect: 'error' } : {}),
           signal,
           headers: {
             'Content-Type': 'application/json',

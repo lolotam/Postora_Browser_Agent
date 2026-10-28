@@ -5,12 +5,13 @@ import { FallbackSession, emptyLog, handoffMessage } from './fallback-session.js
 import { buildSystemPrompt } from './prompt.js';
 import { toolDefinitions } from './tools.js';
 import { createFastAsk } from '../fast/clients.js';
-import { COMPATIBLE_PRESETS, effectiveSettings } from '../lib/settings.js';
+import { COMPATIBLE_PRESETS, GEMINI_API_URL, effectiveSettings } from '../lib/settings.js';
 import { normalizeMode } from '../permissions/policy.js';
 import { AnthropicSession } from '../providers/anthropic.js';
 import { ChatgptSession } from '../providers/chatgpt.js';
 import { CompatibleSession } from '../providers/openai-compatible.js';
 import { GrokAccountSession } from '../providers/responses.js';
+import { KimiSession } from '../providers/kimi.js';
 
 export { createFastAsk };
 
@@ -38,6 +39,15 @@ function createProviderSession(slot, settings, conversationId, notify = null, ac
     if (!slot.grok.model) throw new Error('Choose a Grok model in settings first.');
     return new GrokAccountSession({ ...slot.grok, systemPrompt, tools, notify });
   }
+  if (slot.provider === 'gemini') {
+    if (!slot.gemini.model || !slot.gemini.apiKey?.trim()) throw new Error('Choose a Gemini model and API key in settings first.');
+    return new CompatibleSession({ ...slot.gemini, baseUrl: GEMINI_API_URL, thinkingStyle: 'gemini',
+      systemPrompt, tools, sessionId: conversationId, notify, usage: true, strictRedirects: true });
+  }
+  if (slot.provider === 'kimi') {
+    if (!slot.kimi.model) throw new Error('Choose a Kimi model in settings first.');
+    return new KimiSession({ ...slot.kimi, systemPrompt, tools, sessionId: conversationId, notify });
+  }
   const c = slot.compatible;
   if (!c.model) throw new Error('Choose a model in settings first.');
   const preset = COMPATIBLE_PRESETS[c.preset] ?? COMPATIBLE_PRESETS.custom;
@@ -62,6 +72,8 @@ function slotLabel(slot) {
   if (slot.provider === 'chatgpt') return `ChatGPT · ${slot.chatgpt.model}`;
   if (slot.provider === 'claude') return `Claude · ${slot.claude.model}`;
   if (slot.provider === 'grok') return `Grok · ${slot.grok.model}`;
+  if (slot.provider === 'gemini') return `Gemini · ${slot.gemini.model}`;
+  if (slot.provider === 'kimi') return `Kimi ${slot.kimi.auth === 'account' ? 'Code' : 'API'} · ${slot.kimi.model}`;
   return `${COMPATIBLE_PRESETS[slot.compatible.preset]?.label ?? 'API'} · ${slot.compatible.model}`;
 }
 
@@ -99,5 +111,5 @@ export function createModelSession(settings, { notify, seed = null, conversation
  * can never be anything else.
  */
 export function modelSessionKey(settings, { accessState } = {}) {
-  return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage, normalizeMode(accessState?.mode)]);
+  return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.gemini, settings.kimi, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage, normalizeMode(accessState?.mode)]);
 }

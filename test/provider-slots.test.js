@@ -31,8 +31,9 @@ function fakeElement() {
 // The fields each frame really has. A query for a field the frame does not
 // have finds nothing, so the form cannot lean on one that is not there.
 const MODEL_FIELDS = ['modelSearch', 'modelSelect', 'modelInput', 'modelInfo', 'refresh', 'effort', 'test', 'testResult'];
-const MAIN_FIELDS = ['provider', 'preset', 'baseUrl', 'apiKey', 'chatgptSection', 'claudeSection', 'grokSection', 'compatibleSection', 'claudeAuth', 'claudeApiKey', ...MODEL_FIELDS];
-const BACKUP_FIELDS = ['provider', 'preset', 'baseUrl', 'apiKey', 'accountNote', 'fallbackAuth', 'claudeSection', 'compatibleSection', 'claudeAuth', 'claudeApiKey', ...MODEL_FIELDS];
+const NAMED_FIELDS = ['geminiSection', 'geminiApiKey', 'kimiSection', 'kimiAuth', 'kimiApiKey', 'kimiKeyField', 'kimiAccount'];
+const MAIN_FIELDS = ['provider', 'preset', 'baseUrl', 'apiKey', 'chatgptSection', 'claudeSection', 'grokSection', 'compatibleSection', 'claudeAuth', 'claudeApiKey', ...MODEL_FIELDS, ...NAMED_FIELDS];
+const BACKUP_FIELDS = ['provider', 'preset', 'baseUrl', 'apiKey', 'accountNote', 'fallbackAuth', 'claudeSection', 'compatibleSection', 'claudeAuth', 'claudeApiKey', ...MODEL_FIELDS, ...NAMED_FIELDS];
 
 /** A form root: its fields are found by data-field, and only the ones it has. */
 function fakeRoot(fields) {
@@ -50,7 +51,7 @@ function fakeRoot(fields) {
 }
 
 const formFor = (root) => createProviderForm(root, {
-  request: async () => ({}),
+  request: async (type) => type === 'list-models' ? [] : ({}),
   getPresets: () => COMPATIBLE_PRESETS,
   keyStore: createKeyStore(),
 });
@@ -156,6 +157,26 @@ test('reselecting the same model preserves effort; a changed model clears the ol
   form.chooseModel('different-model');
   assert.equal(el('testResult').textContent, '');
   assert.equal(el('test').dataset.state, '');
+});
+
+test('Gemini and Kimi provider fields keep separate keys and switch account mode explicitly', () => {
+  const { root, el } = fakeRoot(MAIN_FIELDS);
+  const form = formFor(root);
+  form.fill(mergeSettings({ provider: 'gemini', gemini: { apiKey: 'GOOGLE-KEY', model: 'gemini-test', effort: 'medium' }, kimi: { apiKey: 'MOONSHOT-KEY', model: 'kimi-test' } }));
+  assert.equal(el('geminiSection').hidden, false);
+  assert.equal(el('kimiSection').hidden, true);
+  assert.equal(form.read().gemini.effort, 'medium');
+  el('provider').value = 'kimi';
+  el('provider').dispatch('change');
+  assert.equal(form.read().kimi.apiKey, 'MOONSHOT-KEY');
+  assert.equal(el('modelInput').value, 'kimi-test');
+  assert.equal(el('kimiAccount').hidden, true);
+  el('kimiAuth').value = 'account';
+  el('kimiAuth').dispatch('change');
+  assert.equal(el('kimiAccount').hidden, false);
+  assert.equal(el('kimiKeyField').hidden, true);
+  assert.equal(el('modelInput').value, '', 'different products must not inherit each other\'s model');
+  assert.equal(form.read().gemini.apiKey, 'GOOGLE-KEY');
 });
 
 test('every sign-in failure the worker can send has a message in every language', async () => {

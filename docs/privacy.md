@@ -12,7 +12,7 @@ The extension has no server of its own. The developer does not receive your task
 |---|---|---|
 | Your tasks and the agent's replies | Every task | Stored on your computer; sent to the AI provider you chose |
 | Content of the pages the agent works on: address, title, visible text, the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
-| API keys and account sign-in tokens (ChatGPT, Claude, Grok) you enter | When you save settings | Stored on your computer; each key/token is sent only to its own provider |
+| API keys and account sign-in tokens (ChatGPT, Claude, Grok, Kimi Code) you enter | When you save settings or finish sign-in | Stored on your computer; each key/token is sent only to its own provider |
 | Settings | When you save them | Stored on your computer |
 | Speech and its transcript | Only after voice listening is enabled | Chrome's Web Speech recognition service processes speech; the resulting command is sent to your selected execution provider |
 | Google account name, email address and profile picture | Only if you sign in with Google (optional) | Stored on your computer; the picture is shown in the header |
@@ -23,7 +23,9 @@ The extension does not collect analytics or telemetry, does not show ads, and do
 
 ## AI providers
 
-To work, the extension sends your task and the content of the pages it is working on to the AI provider **you** select in settings. The available providers are OpenAI (API key or ChatGPT account), Anthropic Claude (Anthropic API key or Claude account), xAI Grok (xAI API key or Grok account), Google Gemini, DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai, MiniMax (pay-as-you-go or Coding Plan), and any compatible address you enter yourself. For the optional fast layer, they are TypeSafe, Vercel AI Gateway, OpenCode and OpenRouter. If you turn on a backup provider, it receives the same data when the main provider fails.
+To work, the extension sends your task and the content of the pages it is working on to the AI provider **you** select in settings. The available providers are OpenAI (API key or ChatGPT account), Anthropic Claude (Anthropic API key or Claude account), xAI Grok (xAI API key or Grok account), Google Gemini (API key), Kimi (Moonshot API key or eligible Kimi Code subscription), DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai, MiniMax (pay-as-you-go or Coding Plan), and any compatible address you enter yourself. For the optional fast layer, they are TypeSafe, Vercel AI Gateway, OpenCode and OpenRouter. If you turn on a backup provider, it receives the same data when the main provider fails.
+
+Named Gemini requests go directly to `generativelanguage.googleapis.com`. Kimi API-key requests use the international Moonshot service at `api.moonshot.ai`; subscription sign-in uses `auth.kimi.com` and subscription inference uses `api.kimi.com`. These credentials are not interchangeable, and the extension does not read consumer-site cookies or reuse Kimi chat sessions.
 
 What each provider does with that data is governed by its own privacy policy and your agreement with it. Do not give the agent tasks on pages whose content you are not willing to share with your provider.
 

@@ -2,6 +2,7 @@ import { askChatJudge } from './chat-judge-client.js';
 import { askGatewayDecision } from './gateway-decision-client.js';
 import { askJev } from './jev-client.js';
 import { describeFailure } from '../lib/failure.js';
+import { isFastAccessFailure } from './errors.js';
 
 const PRIMARY_FAILURES_BEFORE_SKIP = 3;
 // Providers that serve Jev on TypeSafe's System One API (POST <base>/v1/systemone).
@@ -27,18 +28,25 @@ export function askWithBackup({ primary, backup, notify, clientFor = fastClientF
   const askBackup = backup ? clientFor(backup) : null;
   let failures = 0;
   let warned = false;
+  let unavailable = null;
 
   return async ({ state, questions, signal }) => {
+    signal?.throwIfAborted();
+    if (unavailable && !askBackup) throw unavailable;
     if (askBackup && failures >= PRIMARY_FAILURES_BEFORE_SKIP) return askBackup({ ...backup, state, questions, signal });
     try {
       return await askPrimary({ ...primary, state, questions, signal });
     } catch (err) {
-      if (!askBackup || err?.name === 'AbortError') throw err;
-      failures += 1;
-      if (!warned) {
+      if (signal?.aborted || err?.name === 'AbortError') throw err;
+      failures = isFastAccessFailure(err) ? PRIMARY_FAILURES_BEFORE_SKIP : failures + 1;
+      if (isFastAccessFailure(err)) unavailable = err;
+      if (!warned && (askBackup || isFastAccessFailure(err))) {
         warned = true;
-        notify({ level: 'warning', kind: 'fast-switched', from: `${primary.provider} · ${primary.model}`, to: `${backup.provider} · ${backup.model}`, ...describeFailure(err) });
+        notify?.({ level: 'warning', kind: askBackup ? 'fast-switched' : 'fast-unavailable', from: `${primary.provider} · ${primary.model}`,
+          ...(backup ? { to: `${backup.provider} · ${backup.model}` } : {}), ...describeFailure(err) });
       }
+      if (!askBackup) throw err;
+      signal?.throwIfAborted();
       return askBackup({ ...backup, state, questions, signal });
     }
   };
@@ -51,8 +59,6 @@ export function askWithBackup({ primary, backup, notify, clientFor = fastClientF
  * provider, the model, the endpoint and the key are never lost.
  */
 export function createFastAsk(fast, notify) {
-  const ask = fast?.fallback?.enabled && fast?.fallback?.apiKey
-    ? askWithBackup({ primary: fast, backup: fast.fallback, notify })
-    : fastClientFor(fast);
+  const ask = askWithBackup({ primary: fast, backup: fast?.fallback?.enabled && fast.fallback.apiKey ? fast.fallback : null, notify });
   return (request) => ask({ ...fast, ...request });
 }

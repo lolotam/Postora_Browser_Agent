@@ -19,8 +19,8 @@ const MODES = [ASK_FIRST, FULL_ACCESS];
 
 /**
  * What the control shows for the mode the worker confirmed. `risk` is the
- * persistent label that says what Full access allows; it is empty (and hidden)
- * in Ask first, so the risk is never carried by colour alone.
+ * hover/accessible description of what Full access allows; it is empty in
+ * Ask first. The visible Full access label and consent remain explicit.
  *
  * A mode the panel does not know is not shown as Ask first either: the view
  * is empty, so an unknown mode is never an automatic downgrade.
@@ -131,7 +131,11 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   /** Draws the mode the worker confirmed. Nothing else may change it. */
   function render() {
     const confirmed = view();
-    if (select) select.value = confirmed.selectValue;
+    if (select) {
+      select.value = confirmed.selectValue;
+      select.title = confirmed.risk || confirmed.status;
+      select.classList?.toggle('risk', confirmed.mode === FULL_ACCESS);
+    }
     if (state) state.textContent = confirmed.status;
     if (risk) {
       risk.textContent = confirmed.risk;

@@ -191,6 +191,7 @@ function onFlowEvent(attempt, event, { post, first }) {
 }
 
 function openAuthorization(attempt, event, { post, first }) {
+  if (attempt.provider === 'kimi' && !trustedKimiVerificationUrl(event.url)) throw new Error('Untrusted Kimi authorization URL');
   attempt.phase = 'authorizing';
   // The URL carries the PKCE verifier, so the worker opens it and the panel
   // never sees it.
@@ -200,6 +201,9 @@ function openAuthorization(attempt, event, { post, first }) {
 }
 
 function showDeviceCode(attempt, event, { post, first }) {
+  if (attempt.provider === 'kimi' && !trustedKimiVerificationUrl(event.verificationUri)) {
+    throw new Error('Untrusted Kimi verification URL');
+  }
   attempt.phase = 'authorizing';
   attempt.deviceCode = event.userCode;
   attempt.verificationUrl = event.verificationUri;
@@ -209,6 +213,15 @@ function showDeviceCode(attempt, event, { post, first }) {
     kind: 'device_code', userCode: event.userCode, verificationUrl: event.verificationUri,
   });
   first.resolve({ userCode: event.userCode, verificationUrl: event.verificationUri });
+}
+
+/** Only the documented Kimi account authority/site may receive a device code. */
+export function trustedKimiVerificationUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port
+      && ['auth.kimi.com', 'www.kimi.com', 'kimi.com'].includes(url.hostname);
+  } catch { return false; }
 }
 
 function openTab(url) {

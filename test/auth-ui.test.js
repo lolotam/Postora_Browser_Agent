@@ -76,6 +76,12 @@ test('the backup frame shares the sign-in above, or shows its own', () => {
   assert.deepEqual(backupAuthView({ main: 'chatgpt', backup: 'compatible' }), { note: false, signIn: null });
 });
 
+test('Kimi API and subscription modes do not share a hidden sign-in surface', () => {
+  assert.deepEqual(backupAuthView({ main: 'kimi', backup: 'kimi', kimiAuth: 'apiKey' }), { note: false, signIn: null });
+  assert.deepEqual(backupAuthView({ main: 'kimi', backup: 'kimi', kimiAuth: 'account', mainKimiAuth: 'apiKey' }), { note: false, signIn: 'kimi' });
+  assert.deepEqual(backupAuthView({ main: 'kimi', backup: 'kimi', kimiAuth: 'account', mainKimiAuth: 'account' }), { note: true, signIn: null });
+});
+
 test('the storage listener asks for every provider whose credential changed', () => {
   assert.deepEqual(changedProviders({ 'accountAuth.chatgpt': {}, 'accountAuth.grok': {} }), ['chatgpt', 'grok']);
   assert.deepEqual(changedProviders({ 'accountAuth.claude': {} }), ['claude']);

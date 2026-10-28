@@ -4,7 +4,7 @@
 // come back without a confidence, which the gate needs, so it is derived here.
 
 import { isProbability } from './chat-judge-client.js';
-import { providerMessage } from '../lib/failure.js';
+import { fastHttpError } from './errors.js';
 import { requestJson } from '../lib/json.js';
 
 const REQUEST_TIMEOUT_MS = 8000;
@@ -26,8 +26,7 @@ export async function askGatewayDecision({ baseUrl, apiKey, model, state, questi
     body: requestJson({ state, questions: toGatewayQuestions(questions) }),
   });
   if (!res.ok) {
-    const detail = providerMessage(await res.text().catch(() => ''));
-    throw new Error(`Fast layer request failed (HTTP ${res.status}): ${detail}`);
+    throw fastHttpError('Fast layer', res.status, await res.text().catch(() => ''));
   }
   const body = await res.json();
   return { answers: toJevAnswers(body.answers ?? {}), usage: body.usage ?? null, model: body.model ?? model };

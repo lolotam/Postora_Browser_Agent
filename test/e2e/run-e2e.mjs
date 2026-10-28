@@ -22,6 +22,10 @@ import { runAccessUiScenario } from './access-ui.mjs';
 import { runAccessRuntimeScenario } from './access-runtime.mjs';
 import { runVoiceAccessScenario } from './voice-access.mjs';
 import { runFocusedWorkspaceScenario } from './focused-workspace.mjs';
+import { runNamedProvidersScenario } from './named-providers.mjs';
+import { runSessionRefreshRestartScenario } from './session-refresh-restart.mjs';
+import { extensionWorker } from './extension-worker.mjs';
+import { runDriveBackupScenario } from './drive-backup.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -475,7 +479,9 @@ function startServer(handlers) {
           counts.jev += 1;
           bodies.push(raw);
           if (req.headers.authorization !== 'Bearer jev-key') throw new Error('missing Jev key');
-          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(handlers.jev(JSON.parse(raw))));
+          const answer = handlers.jev(JSON.parse(raw));
+          if (answer === 'disabled') res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { message: 'Upstream request failed: Model access is disabled' } }));
+          else res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(answer));
         } else {
           res.writeHead(404).end();
         }
@@ -497,13 +503,16 @@ function startServer(handlers) {
  * exercise browser actions need this, because the default is Ask first.
  */
 async function enableFullAccess(panel) {
+  // The panel is a real tab in E2E, unlike Chrome's visible side-panel surface.
+  // Foreground it so native-dialog scrolling/stability is not background-throttled.
+  await panel.bringToFront();
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await panel.selectOption('#accessSelect', 'full-access');
     const opened = await panel.waitForSelector('#accessWarning[open]', { timeout: 15000 }).then(() => true, () => false);
     if (!opened) continue;
     try {
-      await panel.check('#accessAcknowledge', { timeout: 3000 });
-      await panel.click('#accessConfirm', { timeout: 3000 });
+      await panel.check('#accessAcknowledge', { timeout: 15000 });
+      await panel.click('#accessConfirm', { timeout: 15000 });
     } catch (error) {
       // Initial tab/session synchronization may replace the trusted connection
       // after the dialog opened. Its consent must be discarded, not forced.
@@ -524,6 +533,14 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
   const panel = await context.newPage();
   const pageErrors = [];
   panel.on('pageerror', (err) => pageErrors.push(err.message));
+  await panel.addInitScript(() => {
+    window.__failedRequests = [];
+    const send = chrome.runtime.sendMessage.bind(chrome.runtime);
+    chrome.runtime.sendMessage = async (message, ...args) => {
+      try { return await send(message, ...args); }
+      catch (error) { window.__failedRequests.push({ type: message?.type, message: error.message }); throw error; }
+    };
+  });
   const setupFailures = [];
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
@@ -586,6 +603,7 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     if (needsFullAccess && !sendEarly) {
       const granted = await enableFullAccess(panel);
       if (!granted) setupFailures.push('the mode could not be raised through the consent UI');
+      await target.bringToFront();
     }
 
     if (sendEarly) {
@@ -630,7 +648,10 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     const pageResult = await target.textContent('#out');
     if (!report.includes(expectReport)) failures.push(`report missing "${expectReport}" (page shows "${pageResult}")`);
     if (steps.some((s) => s.includes('✗'))) failures.push('a tool step failed');
-    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    if (pageErrors.length) {
+      const requests = await panel.evaluate(() => window.__failedRequests);
+      failures.push(`${name} side panel errors: ${pageErrors.join(' | ')}; failed request types: ${JSON.stringify(requests)}`);
+    }
     const notices = await panel.$$eval('.notice.error', (rows) => rows.map((r) => r.innerText));
     if (notices.length) console.log(`notices: ${notices.join(' | ')}`);
     failures.push(...check({ counts, steps, report, notices, threads, duringResult, panel }));
@@ -704,20 +725,25 @@ async function runParallelScenario(context, extensionId) {
     await targetB.goto(`${base}/page?s=b`);
     pages.push(targetA, targetB);
 
-    await targetA.bringToFront();
+    await panelA.bringToFront();
     await panelA.fill('#input', 'Fill the form and report the result (session A)');
+    await targetA.bringToFront();
     await panelA.click('#sendBtn');
     // A has claimed tab A and now waits on its question, so it is running for as long as the test needs.
     await panelA.waitForSelector('.msg.ask', { timeout: 30000 });
     // While A runs, the other panel must list it (with its running dot) so another tab can open it.
+    await panelB.bringToFront();
     await panelB.click('#sessionBtn');
     const runningListedInB = await panelB.waitForSelector('.session-item .dot.running', { timeout: 5000 }).then(() => true, () => false);
     await panelB.click('#sessionBtn');
-    await targetB.bringToFront();
+    await panelB.bringToFront();
     await panelB.fill('#input', 'Fill the form and report the result (session B)');
+    await targetB.bringToFront();
     await panelB.click('#sendBtn');
     await panelB.waitForSelector('.step', { state: 'attached', timeout: 30000 }); // B has claimed tab B (its step may sit in a closed thread)
+    await panelA.bringToFront();
     await panelA.fill('#input', 'Yes, start');
+    await targetA.bringToFront();
     await panelA.click('#sendBtn');
 
     const [reportA, reportB] = await Promise.all([panelA, panelB].map(async (panel) => (await panel.waitForSelector('.msg.final', { timeout: 90000 })).innerText()));
@@ -1327,6 +1353,7 @@ async function runVoiceReplayScenario(context, extensionId) {
     // The default is Ask first, and the task below acts on the page: the mode
     // is raised the way a user raises it.
     if (!(await enableFullAccess(panel))) failures.push('the mode could not be raised through the consent UI');
+    await target.bringToFront();
 
     // A task that asks a question: the transcript keeps the question.
     await panel.fill('#input', 'Fill the form and report the result');
@@ -1401,7 +1428,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
   });
   const failures = [];
   let target = null;
-  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  const worker = extensionWorker(context, panel, extensionId);
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
@@ -1781,20 +1808,46 @@ async function main() {
     const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
     const extensionId = new URL(worker.url()).host;
 
+    const verify = async (scenario) => {
+      console.log(`\nSTART ${scenario.name}`);
+      try {
+        const failures = await scenario(context, extensionId);
+        for (const failure of failures) console.error(`${scenario.name}: ${failure}`);
+        return failures;
+      } catch (error) {
+        throw new Error(`${scenario.name}: ${error.stack ?? error.message}`, { cause: error });
+      }
+    };
+
     const failures = [
-      ...(await runSignInAfterRestartScenario(context, extensionId)),
-      ...(await runUiLayoutScenario(context, extensionId)),
-      ...(await runFocusedWorkspaceScenario(context, extensionId)),
-      ...(await runParallelScenario(context, extensionId)),
-      ...(await runVoiceScenario(context, extensionId)),
-      ...(await runVoiceTrustedScenario(context, extensionId)),
-      ...(await runVoiceSafetyScenario(context, extensionId)),
-      ...(await runVoiceSwitchScenario(context, extensionId)),
-      ...(await runVoiceWindowScenario(context, extensionId)),
-      ...(await runVoiceReplayScenario(context, extensionId)),
-      ...(await runAccessUiScenario(context, extensionId)),
-      ...(await runAccessRuntimeScenario(context, extensionId)),
-      ...(await runVoiceAccessScenario(context, extensionId)),
+      ...(await verify(runSignInAfterRestartScenario)),
+      ...(await verify(runSessionRefreshRestartScenario)),
+      ...(await verify(runUiLayoutScenario)),
+      ...(await verify(runFocusedWorkspaceScenario)),
+      ...(await verify(runNamedProvidersScenario)),
+      ...(await verify(runDriveBackupScenario)),
+      ...(await verify(runParallelScenario)),
+      ...(await verify(runVoiceScenario)),
+      ...(await verify(runVoiceTrustedScenario)),
+      ...(await verify(runVoiceSafetyScenario)),
+      ...(await verify(runVoiceSwitchScenario)),
+      ...(await verify(runVoiceWindowScenario)),
+      ...(await verify(runVoiceReplayScenario)),
+      ...(await verify(runAccessUiScenario)),
+      ...(await verify(runAccessRuntimeScenario)),
+      ...(await verify(runVoiceAccessScenario)),
+      ...(await runScenario(context, extensionId, {
+        name: 'fast-access-disabled',
+        task: 'Fill the form and report the result',
+        handlers: { llm: scriptedLlm(), jev: () => 'disabled' },
+        fast: (base) => ({ enabled: true, mode: 'auto', provider: 'opencode-zen', apiKey: 'jev-key', model: 'jev-1.13', baseUrl: base }),
+        during: async (panel) => (await panel.waitForSelector('#notices .notice.warning')).innerText(),
+        expectReport: 'Result: hello world / Blue',
+        check: ({ counts, duringResult }) => [
+          ...(counts.jev === 1 && counts.llm >= 7 ? [] : [`disabled Jev was not skipped while the main model continued: ${JSON.stringify(counts)}`]),
+          ...(/opencode-zen/.test(duringResult) && /unavailable/i.test(duringResult) ? [] : ['the Fast-layer access warning was not shown']),
+        ],
+      })),
       ...(await runScenario(context, extensionId, {
         name: 'llm',
         task: 'Fill the form and report the result',
@@ -1924,6 +1977,6 @@ async function runStandalone(script) {
 }
 
 main().catch((err) => {
-  console.error('E2E FAILED:', err.message);
+  console.error('E2E FAILED:', err.stack ?? err.message);
   process.exit(1);
 });
