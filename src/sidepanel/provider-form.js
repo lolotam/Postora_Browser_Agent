@@ -1,8 +1,10 @@
 // Provider, model and reasoning-effort fields for one model slot. The main model
 // and its backup use the same form; fields are found by data-field inside root.
+// The model itself is chosen in the shared dialog: this form keeps the id input
+// as the canonical state and the effort list that follows from it.
 
 import { t } from './i18n.js';
-import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
+import { escapeAttr } from './model-picker.js';
 import { bindTestButton } from './test-button.js';
 import { ANTHROPIC_GROUP } from '../lib/keys.js';
 import { ACCOUNT_PROVIDERS, slotSettings as slotOf } from '../lib/settings.js';
@@ -22,7 +24,7 @@ const FALLBACK_EFFORTS = {
   grok: ['low', 'medium', 'high', 'xhigh'],
 };
 
-export function createProviderForm(root, { request, getPresets, keyStore, onChange = null }) {
+export function createProviderForm(root, { request, getPresets, keyStore, onChange = null, onModels = null }) {
   const f = (name) => root.querySelector(`[data-field="${name}"]`);
   // Hides a field this form does not have: the backup frame has no sign-in
   // sections, only the note that the account is the one above.
@@ -31,12 +33,18 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   let saved = null;
   let models = [];
   let latestLoad = 0;
+  // What the last list request for this slot is doing, for the shared model
+  // dialog: a "loading" line, or the failure a refresh asked to see.
+  let listLoading = false;
+  let listError = '';
   // Custom endpoint keys are not shared, so the form keeps the last one typed.
   let preset = '';
   let customKey = '';
 
   function fill(s) {
     latestLoad += 1; // a model list still loading belongs to the values being replaced
+    listLoading = false;
+    listError = '';
     saved = {
       provider: s.provider,
       chatgpt: { ...s.chatgpt },
@@ -62,7 +70,6 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     f('modelInput').value = slotOf(s).model;
     models = [];
     syncSections();
-    renderModels();
     renderEfforts(slotOf(s).effort);
   }
 
@@ -86,10 +93,6 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     hide('claudeSection', provider !== 'claude');
     hide('grokSection', provider !== 'grok');
     hide('compatibleSection', provider !== 'compatible');
-  }
-
-  function renderModels() {
-    renderPicker(f('modelSelect'), f('modelInput'), models, f('modelSearch'));
   }
 
   /** The efforts of the chosen model, or the ones its provider takes. */
@@ -122,20 +125,49 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     const draft = read();
     // Numbered before any wait, so a slower earlier load (or a fill since) never wins.
     const load = ++latestLoad;
-    if (needsSignIn(draft) && !(await request('auth-status', { provider: draft.provider })).connected) return;
-    if (load !== latestLoad) return;
+    listLoading = true;
+    listError = '';
+    onModels?.();
     f('modelInfo').textContent = t('model.loading');
     try {
+      if (needsSignIn(draft)) {
+        const status = await request('auth-status', { provider: draft.provider });
+        if (load !== latestLoad) return;
+        if (!status.connected) {
+          models = [];
+          listLoading = false;
+          f('modelInfo').textContent = listError = t('auth.disconnected');
+          onModels?.();
+          return;
+        }
+      }
       const list = await request('list-models', { settings: draft });
       if (load !== latestLoad) return;
       models = list;
       if (!f('modelInput').value && models[0]) f('modelInput').value = models[0].id;
-      renderModels();
       renderEfforts(f('effort').value || (models.find((m) => m.id === f('modelInput').value)?.defaultEffort ?? ''));
       f('modelInfo').textContent = '';
+      listLoading = false;
+      onModels?.();
     } catch (err) {
-      if (load === latestLoad) f('modelInfo').textContent = showErrors ? err.message : t('model.fallback');
+      if (load !== latestLoad) return;
+      listLoading = false;
+      if (showErrors) listError = err.message;
+      f('modelInfo').textContent = showErrors ? err.message : t('model.fallback');
+      onModels?.();
     }
+  }
+
+  /**
+   * The dialog picked a model: the id input stays the one canonical state, and
+   * the efforts follow the model the provider named.
+   */
+  function chooseModel(id, effort = models.find((m) => m.id === id)?.defaultEffort ?? '') {
+    f('modelInput').value = id;
+    renderEfforts(effort);
+    // A model id that is not in the list is asked about again, so the efforts
+    // Anthropic's own table gives it arrive.
+    if (f('provider').value === 'claude') loadModels();
   }
 
   // Switching provider keeps each provider's own model instead of copying one into the other.
@@ -149,7 +181,6 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     f('modelInput').value = slotOf(saved).model;
     models = [];
     syncSections();
-    renderModels();
     renderEfforts(slotOf(saved).effort);
     loadModels();
     onChange?.(saved.provider);
@@ -162,17 +193,9 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     keyStore.show(f('apiKey'), preset, customKey);
     f('modelInput').value = defaults.model;
     models = [];
-    renderModels();
     renderEfforts('');
     loadModels();
   });
-  f('modelSelect').addEventListener('change', () => {
-    pickModel(f('modelSelect'), f('modelInput'));
-    renderEfforts(models.find((m) => m.id === f('modelSelect').value)?.defaultEffort ?? '');
-  });
-  f('modelInput').addEventListener('input', () => renderEfforts(f('effort').value));
-  // A model id typed by hand is not in the list, so the list is asked again for
-  // the efforts Anthropic's own table gives it.
   f('modelInput').addEventListener('change', () => {
     if (f('provider').value === 'claude') loadModels();
   });
@@ -183,7 +206,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     loadModels();
     onChange?.(saved.provider);
   });
-  f('refresh').addEventListener('click', () => loadModels(true));
+  f('refresh')?.addEventListener('click', () => loadModels(true));
   keyStore.register(f('apiKey'), () => f('preset').value);
   if (f('claudeApiKey')) keyStore.register(f('claudeApiKey'), () => ANTHROPIC_GROUP);
   bindTestButton({
@@ -195,7 +218,6 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       return t('provider.testOk', { model, ms, reply: reply || '—' });
     },
   });
-  bindSearch(f('modelSearch'), f('modelSelect'), () => models, renderModels);
 
   return {
     fill,
@@ -203,10 +225,14 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     loadModels,
     model: () => f('modelInput').value.trim(),
     provider: () => f('provider').value,
+    /** The list the provider serves, for the shared model dialog. */
+    list: () => models,
+    /** What this slot's list request is doing right now. */
+    status: () => ({ loading: listLoading, error: listError }),
+    chooseModel,
     /** How the Claude slot connects: its account or an Anthropic key. */
     claude: () => claudeFields(),
     rerender() {
-      renderModels();
       renderEfforts(f('effort').value);
     },
   };

@@ -210,6 +210,15 @@ async function openPanel(context, extensionId, base, { fast = false } = {}) {
     const connect = chrome.runtime.connect.bind(chrome.runtime);
     chrome.runtime.connect = (info) => {
       const port = connect(info);
+      // Observe confirmation on the current connection. The select already
+      // says Ask first before a new chat has finished connecting.
+      const connection = { name: info.name, connected: true, access: null };
+      window.__connection = connection;
+      port.onMessage.addListener((event) => {
+        const access = event.type === 'replay' ? event.access : event.type === 'access-state' ? event : null;
+        if (access) connection.access = access;
+      });
+      port.onDisconnect.addListener(() => { connection.connected = false; });
       const post = port.postMessage.bind(port);
       port.postMessage = (message) => { window.__posted.push(message); return post(message); };
       return port;
@@ -254,7 +263,7 @@ async function openPanel(context, extensionId, base, { fast = false } = {}) {
     },
   }), [base, fast]);
   await panel.reload();
-  await panel.waitForFunction(() => document.getElementById('accessSelect')?.value);
+  await waitForConfirmedChat(panel);
   return { panel, errors };
 }
 
@@ -297,6 +306,7 @@ const noCards = (panel) => panel.waitForFunction(() => document.querySelectorAll
  * panel's back.
  */
 async function enableFullAccess(panel) {
+  await waitForConfirmedChat(panel);
   await panel.selectOption('#accessSelect', 'full-access');
   await panel.waitForSelector('#accessWarning[open]', { timeout: 20000 });
   await panel.check('#accessAcknowledge');
@@ -304,12 +314,24 @@ async function enableFullAccess(panel) {
   await panel.waitForFunction(() => document.getElementById('accessSelect')?.value === 'full-access', { timeout: 20000 });
 }
 
+/** Wait for an actual worker snapshot, not the optimistic/default label. */
+async function waitForConfirmedChat(panel, previousSession = null) {
+  await panel.waitForFunction((previous) => {
+    const connection = window.__connection;
+    const access = connection?.access;
+    return connection?.connected && access?.sessionId && access.sessionId !== previous
+      && access.revision > 0 && document.getElementById('accessSelect')?.value === access.mode;
+  }, previousSession, { timeout: 20000 });
+}
+
 /** A new chat of the panel: the mode of a new chat is Ask first. */
 async function newChat(panel) {
   // The task of the chat before must be over: a session may not take the tab
   // of another one, and the task that is still running holds it.
   await panel.waitForFunction(() => document.getElementById('stopBtn')?.hidden === true, { timeout: 90000 });
+  const previous = await panel.evaluate(() => window.__connection?.access?.sessionId ?? null);
   await panel.click('#newChatBtn');
+  await waitForConfirmedChat(panel, previous);
   await panel.waitForFunction(() => document.getElementById('accessSelect')?.value === 'ask-first', { timeout: 20000 });
 }
 
@@ -683,6 +705,7 @@ async function cardLooksRightEverywhere(panel, target, failures) {
   await panel.fill('#input', 'MODE:stop-voice Type the message and report what happened');
   await panel.click('#sendBtn');
   await waitForCard(panel);
+  await panel.evaluate(() => { window.__sharedApprovals = document.getElementById('approvals'); });
   await panel.click('#voiceToggle');
   await panel.waitForSelector('#voiceView:not([hidden])');
   const shared = await panel.evaluate(() => {
@@ -692,12 +715,16 @@ async function cardLooksRightEverywhere(panel, target, failures) {
     const view = document.getElementById('voiceView');
     return {
       visible: box.width > 0 && box.height > 0,
-      outsideVoice: !view.contains(card),
+      sameRegion: document.getElementById('approvals') === window.__sharedApprovals,
+      regionCount: document.querySelectorAll('#approvals').length,
+      voiceDock: card.closest('#approvals')?.parentElement.id,
+      insideVoice: view.contains(card),
       outsideChat: !document.getElementById('chatView').contains(card),
     };
   });
   if (!shared.visible) failures.push('the card is not on the screen in the voice screen');
-  if (!shared.outsideVoice) failures.push('the voice screen has an approval of its own');
+  if (!shared.sameRegion || shared.regionCount !== 1) failures.push('voice duplicated or replaced the shared approval region');
+  if (!shared.insideVoice || shared.voiceDock !== 'approvalsVoiceDock') failures.push('the shared approval did not move to the voice dock');
   if (!shared.outsideChat) failures.push('the chat has an approval of its own');
 
   // A narrow column, in Arabic and in the dark theme: nothing sticks out.
@@ -712,6 +739,8 @@ async function cardLooksRightEverywhere(panel, target, failures) {
   if (narrow.cardRight > narrow.innerWidth + 1) failures.push('the card sticks out of a narrow column');
   await shot(panel, 'access-approval-320-light-en.png');
 
+  // The interface language lives in the overflow menu now.
+  await panel.click('#overflowBtn');
   await panel.click('#langBtn');
   await panel.waitForFunction(() => document.documentElement.dir === 'rtl');
   const arabic = await panel.evaluate(() => ({
@@ -734,10 +763,14 @@ async function cardLooksRightEverywhere(panel, target, failures) {
   }));
   if (dark.scrollWidth > dark.clientWidth + 1) failures.push('the panel overflows a narrow column in the dark theme');
   await panel.emulateMedia({ colorScheme: 'light' });
+  await panel.click('#overflowBtn');
   await panel.click('#langBtn');
   await panel.waitForFunction(() => document.documentElement.dir === 'ltr');
   await panel.click('#voiceBackBtn');
   await panel.waitForSelector('#voiceView', { state: 'hidden' });
+  const returned = await panel.evaluate(() => document.getElementById('approvals') === window.__sharedApprovals
+    && document.getElementById('approvals').parentElement.id === 'approvalsChatDock');
+  if (!returned) failures.push('leaving voice did not return the same approval region to chat');
   await panel.setViewportSize({ width: 400, height: 720 });
 }
 
@@ -773,7 +806,7 @@ export async function runAccessRuntimeScenario(context, extensionId) {
       },
     }), base);
     await panel.reload();
-    await panel.waitForFunction(() => document.getElementById('accessSelect')?.value);
+    await waitForConfirmedChat(panel);
     await fastLayerAsksToo(panel, target, failures);
 
     if (errors.length) failures.push(`side panel errors: ${errors.join(' | ')}`);

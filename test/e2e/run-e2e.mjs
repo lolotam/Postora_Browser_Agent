@@ -21,6 +21,7 @@ import { chromium } from 'playwright-core';
 import { runAccessUiScenario } from './access-ui.mjs';
 import { runAccessRuntimeScenario } from './access-runtime.mjs';
 import { runVoiceAccessScenario } from './voice-access.mjs';
+import { runFocusedWorkspaceScenario } from './focused-workspace.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -531,12 +532,29 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
       // Settings open by themselves only while no model is saved, which depends on scenario order.
       // The preset list is filled by init(), so this waits until the form is ready.
       await panel.waitForFunction(() => document.querySelectorAll('#preset option').length > 0);
+      // The focused-workspace settings: the button opens the index (the
+      // auto-open lands deeper, on the main provider), the models row opens
+      // the models overview, and the provider fields live on their page.
+      // The quick label is filled just before init() auto-opens, so waiting
+      // for it makes the startup state deterministic.
+      await panel.waitForFunction(() => (document.getElementById('modelQuickLabel')?.textContent ?? '') !== '');
       if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+      await panel.waitForSelector('#settingsView:not([hidden])');
+      for (let i = 0; i < 4 && await panel.isHidden('#settingsIndex'); i += 1) await panel.click('#closeSettingsBtn');
+      await panel.waitForSelector('#settingsIndex:not([hidden])');
+      await panel.click('#settingsRowModels');
+      await panel.waitForSelector('#page-models:not([hidden])');
+      await panel.click('#settingsRowMain');
       await panel.selectOption('#provider', 'compatible');
       await panel.selectOption('#preset', 'custom');
       await panel.fill('#baseUrl', `${base}/v1`);
-      await panel.click('#refreshModelsBtn');
-      await panel.waitForFunction(() => [...document.querySelectorAll('#modelSelect option')].some((o) => o.value === 'mock-model'));
+      // The model is chosen in the shared dialog; its refresh loads the list.
+      await panel.click('#modelBtnMain');
+      await panel.waitForSelector('#modelDialog[open]');
+      await panel.click('#modelDialogRefresh');
+      await panel.waitForFunction(() => [...document.querySelectorAll('#modelDialogList .model-option')].some((o) => o.dataset.value === 'mock-model'));
+      await panel.click('#modelDialogClose');
+      await panel.waitForSelector('#modelDialog', { state: 'hidden' });
     }
     await panel.evaluate(([baseUrl, fastConfig, fallback]) => chrome.storage.local.set({
       settings: {
@@ -600,7 +618,8 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     const report = await final.innerText();
     if (process.env.E2E_SCREENSHOTS) {
       await panel.setViewportSize({ width: 400, height: 720 });
-      await panel.screenshot({ path: path.join(process.env.E2E_SCREENSHOTS, `${name}-${process.env.E2E_COLOR_SCHEME ?? 'light'}.png`) });
+      await panel.bringToFront();
+      await panel.screenshot({ path: path.join(process.env.E2E_SCREENSHOTS, `${name}-${process.env.E2E_COLOR_SCHEME ?? 'light'}.png`), animations: 'disabled' });
     }
     // textContent: steps inside a closed thread are hidden, and innerText of hidden text is empty.
     const steps = await panel.$$eval('.step', (rows) => rows.map((r) => `${r.classList.contains('fast') ? '⚡' : ' '} ${r.textContent.replace(/\s+/g, ' ')}`));
@@ -742,12 +761,25 @@ async function runSignInAfterRestartScenario(context, extensionId) {
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.waitForFunction(() => document.querySelectorAll('#preset option').length > 0);
-    if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
     const cdp = await context.newCDPSession(panel);
     await cdp.send('ServiceWorker.enable');
     await cdp.send('ServiceWorker.stopAllWorkers');
     // The panel learns of the closed port a moment later, as runScenario's restart does.
     await panel.waitForTimeout(500);
+    // The focused-workspace settings: the provider fields live on their own
+    // page. The quick label is filled by init() just before it auto-opens the
+    // settings, so waiting for it makes the startup state deterministic.
+    await panel.waitForFunction(() => (document.getElementById('modelQuickLabel')?.textContent ?? '') !== '');
+    if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+    for (let i = 0; i < 4; i += 1) {
+      if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+      if (!(await panel.isHidden('#settingsIndex'))) break;
+      await panel.click('#closeSettingsBtn');
+    }
+    await panel.waitForSelector('#settingsIndex:not([hidden])');
+    await panel.click('#settingsRowModels');
+    await panel.waitForSelector('#page-models:not([hidden])');
+    await panel.click('#settingsRowMain');
     await panel.selectOption('#provider', 'chatgpt');
     await panel.click('#chatgptSection [data-auth="login"]');
     const message = await panel.waitForSelector('#chatgptSection [data-auth="message"]:not([hidden])', { timeout: 15000 })
@@ -829,6 +861,11 @@ async function runVoiceScenario(context, extensionId) {
     await target.bringToFront();
 
     const failures = [];
+
+    // The first session lookup lands shortly after the reload; it owns the
+    // screens (a session change closes the voice screen), so the layout below
+    // is only driven once it has settled.
+    await panel.waitForFunction(() => (document.getElementById('sessionTitle')?.textContent ?? '') !== '', { timeout: 15000 });
 
     // The composer microphone opens the voice screen.
     await panel.click('#voiceToggle');
@@ -922,6 +959,9 @@ async function runVoiceScenario(context, extensionId) {
     await panel.check('#voiceSpeak');
     await panel.bringToFront(); // a background tab is not reloaded in time
     await panel.reload();
+    // The session lookup lands again after the reload; let it settle before
+    // the screen is opened, or it closes the screen under the test.
+    await panel.waitForFunction(() => (document.getElementById('sessionTitle')?.textContent ?? '') !== '', { timeout: 15000 });
     await target.bringToFront(); // the panel is a page in a tab here; the user's tab leads
     await panel.click('#voiceToggle');
     await panel.waitForFunction(() => document.getElementById('voiceSpeak')?.checked === true, { timeout: 10000 });
@@ -1542,6 +1582,191 @@ async function runVoiceSafetyScenario(context, extensionId) {
   }
 }
 
+/** Mock LLM for the layout scenario: one look, one click (the approval), then a short report. */
+function layoutLlm() {
+  let turn = 0;
+  return (body) => {
+    const lastTool = [...body.messages].reverse().find((m) => m.role === 'tool')?.content ?? '';
+    if (turn === 0) { turn += 1; return ['read_page', {}]; }
+    if (turn === 1) { turn += 1; return ['click', { index: Number(find(lastTool, /\[(\d+)\] button "Go"/)) }]; }
+    return ['done', { success: false, report: '## Layout\n- the approval path was exercised' }];
+  };
+}
+
+/**
+ * The focused workspace layout, exercised as the real panel draws it: fresh
+ * startup, the settings pages, the model dialog, the chat, a real approval
+ * card and the voice screen, at narrow widths, in both themes and in Arabic.
+ * Screenshots land in E2E_SCREENSHOTS for comparing against the design.
+ */
+async function runUiLayoutScenario(context, extensionId) {
+  const failures = [];
+  const shotDir = process.env.E2E_SCREENSHOTS;
+  const shot = async (panel, name) => {
+    if (!shotDir) return;
+    await panel.bringToFront();
+    await panel.screenshot({ path: path.join(shotDir, name), animations: 'disabled' });
+  };
+  const { server, base } = await startServer({ llm: layoutLlm() });
+  const panel = await context.newPage();
+  const pageErrors = [];
+  panel.on('pageerror', (err) => pageErrors.push(err.message));
+  // Chrome has no recognizer in a test: the voice screen gets one that says
+  // nothing, and the microphone permission is granted, so the layout pass
+  // never opens the real microphone window.
+  await panel.addInitScript(() => {
+    class MockRecognition {
+      constructor() { this.lang = ''; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1; this.started = false; }
+      start() { this.started = true; window.__recognition = this; }
+      stop() { this.started = false; this.onend?.(); }
+      abort() { this.started = false; this.onend?.(); }
+    }
+    window.SpeechRecognition = MockRecognition;
+    window.webkitSpeechRecognition = MockRecognition;
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: { query: async (descriptor) => ({ state: descriptor?.name === 'microphone' ? 'granted' : 'prompt', onchange: null }) },
+    });
+  });
+  const overflows = async (label) => {
+    const box = await panel.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+    if (box.sw > box.cw + 1) failures.push(`${label} overflows its column (${box.sw} > ${box.cw})`);
+  };
+  let target = null;
+  try {
+    await panel.setViewportSize({ width: 360, height: 720 });
+    await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+
+    // Fresh startup with no model: settings open straight at the main provider.
+    // (The quick label is filled by init() just before it auto-opens the
+    // settings, so waiting for it makes the startup state deterministic.)
+    await panel.waitForFunction(() => document.querySelectorAll('#preset option').length > 0);
+    await panel.waitForFunction(() => (document.getElementById('modelQuickLabel')?.textContent ?? '') !== '');
+    if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+    await panel.waitForSelector('#settingsView:not([hidden])');
+    if (await panel.isHidden('#page-provider-main')) {
+      await panel.click('#settingsRowModels');
+      await panel.waitForSelector('#page-models:not([hidden])');
+      await panel.click('#settingsRowMain');
+    }
+    await panel.waitForSelector('#page-provider-main:not([hidden])');
+    await overflows('the startup provider page');
+    await shot(panel, 'ui-startup-provider-main-360-light.png');
+
+    // The provider page: fields, then the model through the shared dialog.
+    await panel.selectOption('#provider', 'compatible');
+    await panel.selectOption('#preset', 'custom');
+    await panel.fill('#baseUrl', `${base}/v1`);
+    await panel.click('#modelBtnMain');
+    await panel.waitForSelector('#modelDialog[open]');
+    await panel.click('#modelDialogRefresh');
+    await panel.waitForFunction(() => [...document.querySelectorAll('#modelDialogList .model-option')].some((o) => o.dataset.value === 'mock-model'));
+    await shot(panel, 'ui-model-dialog-360-light.png');
+    await panel.click('#modelDialogList .model-option[data-value="mock-model"]');
+    await panel.waitForSelector('#modelDialog', { state: 'hidden' });
+    await panel.waitForFunction(() => document.getElementById('modelMainLabel')?.textContent === 'mock-model');
+    await panel.click('#saveBtn');
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
+
+    // The chat: the model control sits beside the composer, already saved.
+    await panel.waitForFunction(() => document.getElementById('modelQuickLabel')?.textContent === 'mock-model');
+    await overflows('the chat');
+    await shot(panel, 'ui-chat-360-light.png');
+
+    // The settings index and two of its pages.
+    await panel.click('#settingsBtn');
+    await panel.waitForSelector('#settingsIndex:not([hidden])');
+    await panel.fill('#settingsSearch', 'voice');
+    await panel.waitForFunction(() => document.getElementById('settingsRowVoice')?.hidden === false && document.getElementById('settingsRowModels')?.hidden === true);
+    await panel.fill('#settingsSearch', '');
+    await shot(panel, 'ui-settings-index-360-light.png');
+    await panel.click('#settingsRowAccount');
+    await panel.waitForSelector('#page-account:not([hidden])');
+    await overflows('the account page');
+    await shot(panel, 'ui-account-360-light.png');
+    // Back returns to the index, and out of it to the chat.
+    await panel.click('#closeSettingsBtn');
+    await panel.waitForSelector('#settingsIndex:not([hidden])');
+    await panel.click('#closeSettingsBtn');
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
+
+    // A real approval card, in the bounded region above the composer.
+    target = await context.newPage();
+    await target.goto(`${base}/page`);
+    await target.bringToFront();
+    await panel.fill('#input', 'Click the Go button and report the result');
+    await panel.click('#sendBtn');
+    await panel.waitForSelector('#approvals .permission-request', { timeout: 30000 });
+    const bounded = await panel.evaluate(() => {
+      const region = document.getElementById('approvals');
+      const stop = document.getElementById('stopBtn').getBoundingClientRect();
+      return {
+        top: region.getBoundingClientRect().top >= 0,
+        stopVisible: stop.top < window.innerHeight && stop.height > 0,
+        dock: region.parentElement.id,
+        aboveComposer: region.getBoundingClientRect().bottom <= document.querySelector('.access-bar').getBoundingClientRect().top + 1,
+      };
+    });
+    if (!bounded.stopVisible) failures.push('the approval pushed the composer and Stop out of view');
+    if (bounded.dock !== 'approvalsChatDock' || !bounded.aboveComposer) failures.push('the approval is not docked above the composer');
+    await overflows('the chat with an approval');
+    await shot(panel, 'ui-approval-360-light.png');
+    await panel.click('#settingsBtn');
+    if (!(await panel.isVisible('#workspaceStopBtn'))) failures.push('settings hid Stop during a live task');
+    if (!(await panel.isVisible('#approvals .permission-request'))) failures.push('settings hid a live approval');
+    await panel.click('#closeSettingsBtn');
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    if (!(await panel.isVisible('#workspaceStopBtn'))) failures.push('voice hid Stop during a live task');
+    const voiceDock = await panel.locator('#approvals').evaluate((node) => node.parentElement.id);
+    if (voiceDock !== 'approvalsVoiceDock') failures.push('voice did not retain the single shared approval region');
+    await panel.click('#voiceBackBtn');
+    await panel.click('#approvals .permission-deny');
+    await panel.waitForSelector('.msg.final', { timeout: 60000 });
+
+    // The voice screen at 320px.
+    await panel.setViewportSize({ width: 320, height: 640 });
+    await panel.click('#voiceToggle');
+    await panel.waitForSelector('#voiceView:not([hidden])');
+    await overflows('the voice screen at 320px');
+    await shot(panel, 'ui-voice-320-light.png');
+    await panel.click('#voiceBackBtn');
+    await panel.waitForSelector('#voiceView', { state: 'hidden' });
+
+    // Dark theme, Arabic settings index: the mirrored layout.
+    await panel.setViewportSize({ width: 360, height: 720 });
+    await panel.emulateMedia({ colorScheme: 'dark' });
+    await panel.waitForTimeout(300);
+    await panel.click('#settingsBtn');
+    await panel.waitForSelector('#settingsIndex:not([hidden])');
+    await panel.click('#overflowBtn');
+    await panel.click('#langBtn');
+    await panel.waitForFunction(() => document.documentElement.dir === 'rtl');
+    await overflows('the Arabic settings index in the dark theme');
+    await shot(panel, 'ui-settings-index-ar-360-dark.png');
+    await panel.emulateMedia({ colorScheme: 'light' });
+    await panel.click('#overflowBtn');
+    await panel.click('#langBtn');
+    await panel.waitForFunction(() => document.documentElement.dir === 'ltr');
+    await panel.click('#closeSettingsBtn');
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
+
+    // The width sweep the design was drawn for.
+    for (const width of [320, 400]) {
+      await panel.setViewportSize({ width, height: 720 });
+      await overflows(`the chat at ${width}px`);
+    }
+
+    if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
+    console.log(`\n== scenario: ui-layout ==\nscreenshots ${shotDir ? shotDir : '(E2E_SCREENSHOTS not set, skipped)'}`);
+    return failures;
+  } finally {
+    await target?.close();
+    await panel.close();
+    server.close();
+  }
+}
+
 async function main() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-e2e-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -1558,6 +1783,8 @@ async function main() {
 
     const failures = [
       ...(await runSignInAfterRestartScenario(context, extensionId)),
+      ...(await runUiLayoutScenario(context, extensionId)),
+      ...(await runFocusedWorkspaceScenario(context, extensionId)),
       ...(await runParallelScenario(context, extensionId)),
       ...(await runVoiceScenario(context, extensionId)),
       ...(await runVoiceTrustedScenario(context, extensionId)),

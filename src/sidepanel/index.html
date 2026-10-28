@@ -8,8 +8,11 @@
   <link rel="stylesheet" href="panel.css" />
 </head>
 <body>
+  <!-- One compact header for every screen. On the chat it carries the session;
+       on a focused page it becomes that page's header (back, title), so the
+       panel never stacks two bars. -->
   <header class="bar">
-    <div class="brand">
+    <div class="brand" id="brandCluster">
       <img class="logo" src="../../icons/logo.png" alt="" width="22" height="22" />
       <button type="button" class="session-btn" id="sessionBtn" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="session.open">
         <span id="sessionTitle" dir="auto"></span>
@@ -17,27 +20,59 @@
       </button>
       <span class="dot" id="statusDot"></span>
     </div>
-    <span class="chip" id="modelChip" dir="ltr">—</span>
+    <div class="bar-context" id="settingsBarContext" hidden>
+      <button type="button" class="ghost icon" id="closeSettingsBtn" data-i18n-title="common.back">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-back"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
+      </button>
+      <strong class="settings-title" id="settingsTitle" role="heading" aria-level="2" tabindex="-1"></strong>
+      <span class="settings-dirty" id="settingsDirty" hidden data-i18n="settings.dirty"></span>
+    </div>
+    <div class="bar-context" id="voiceBarContext" hidden>
+      <button type="button" class="ghost icon voice-back-btn" id="voiceBackBtn" data-i18n-title="voice.backToChat">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-back"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
+        <span class="sr-only" data-i18n="voice.backToChat"></span>
+      </button>
+      <strong class="settings-title" data-i18n="voice.settingsTitle"></strong>
+      <button type="button" class="ghost icon" id="voiceSettingsBtn" data-i18n-title="voice.openSettings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+      </button>
+    </div>
     <div class="actions">
-      <button type="button" class="ghost icon account-btn" id="accountBtn" aria-haspopup="dialog" data-i18n-title="account.open">
-        <img class="avatar" id="accountAvatar" alt="" referrerpolicy="no-referrer" hidden />
-        <svg id="accountIcon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
-      </button>
-      <button type="button" class="ghost lang" id="langBtn" data-i18n="lang.switchLabel" data-i18n-title="lang.switchTitle">ع</button>
-      <button type="button" class="ghost icon" id="feedbackBtn" aria-haspopup="dialog" data-i18n-title="feedback.open">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z" /><path d="M8 9h8M8 12h5" /></svg>
-      </button>
       <button type="button" class="ghost icon" id="newChatBtn" data-i18n-title="header.newChat">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
       </button>
       <button type="button" class="ghost icon" id="settingsBtn" data-i18n-title="header.settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
       </button>
+      <button type="button" class="danger icon" id="workspaceStopBtn" data-i18n-title="composer.stop" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
+      </button>
+      <button type="button" class="ghost icon" id="overflowBtn" aria-haspopup="menu" aria-expanded="false" data-i18n-title="menu.more">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" /></svg>
+      </button>
     </div>
   </header>
   <div id="sessionMenu" class="session-menu" hidden>
     <input id="sessionSearch" type="search" autocomplete="off" data-i18n-placeholder="session.search" />
     <ul id="sessionList" role="listbox"></ul>
+  </div>
+  <!-- Account, the interface language and feedback live here, one click away
+       but out of the header's way. -->
+  <div id="overflowMenu" class="session-menu overflow-menu" role="menu" hidden>
+    <button type="button" class="menu-row" id="accountBtn" role="menuitem" aria-haspopup="dialog" data-i18n-title="account.open">
+      <img class="avatar" id="accountAvatar" alt="" referrerpolicy="no-referrer" hidden />
+      <svg id="accountIcon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
+      <span class="grow" data-i18n="menu.account"></span>
+    </button>
+    <button type="button" class="menu-row" id="langBtn" role="menuitem" data-i18n-title="lang.switchTitle">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h12M9 3v2M5 5c0 6 6 10 9 11M13 5c0 6-6 10-10 11M14 21l4-11 4 11M16 17h4" /></svg>
+      <span class="grow" data-i18n="menu.language"></span>
+      <bdi class="menu-tag" data-i18n="lang.switchLabel"></bdi>
+    </button>
+    <button type="button" class="menu-row" id="feedbackBtn" role="menuitem" aria-haspopup="dialog" data-i18n-title="feedback.open">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z" /><path d="M8 9h8M8 12h5" /></svg>
+      <span class="grow" data-i18n="menu.feedback"></span>
+    </button>
   </div>
   <div id="accountMenu" class="session-menu account-menu" role="dialog" hidden>
     <div id="accountSignedOut">
@@ -96,16 +131,30 @@
         </ul>
       </div>
     </section>
-    <!-- The access mode of this chat: one selection, the worker's own answer, and
+    <!-- The shared approval region docks here, directly above the controls it
+         guards, while the chat is the active screen. The same single region
+         re-docks beside the voice input and returns above settings when the
+         user is configuring, so one authority is always on the screen. -->
+    <div id="approvalsChatDock" class="approvals-dock"></div>
+    <!-- The row the composer answers to: which model does the work, and the
+         access mode of this chat — one selection, the worker's own answer, and
          the risk the answer carries. The panel never decides the mode itself. -->
     <div class="access-bar">
       <div class="access-row">
-        <label class="access-label" for="accessSelect" data-i18n="access.label"></label>
-        <select id="accessSelect" class="access-select" aria-describedby="accessState">
-          <option value="ask-first" data-i18n="access.askFirst"></option>
-          <option value="full-access" data-i18n="access.full"></option>
-        </select>
-        <span class="access-state" id="accessState"></span>
+        <button type="button" class="quick-control" id="modelQuickBtn" aria-haspopup="dialog" data-i18n-title="model.pickTitle">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>
+          <span class="quick-label" id="modelQuickLabel" dir="ltr"></span>
+          <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+        </button>
+        <label class="sr-only" for="accessSelect" data-i18n="access.label"></label>
+        <span class="access-control">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3" /></svg>
+          <select id="accessSelect" class="access-select" aria-describedby="accessState">
+            <option value="ask-first" data-i18n="access.askFirst"></option>
+            <option value="full-access" data-i18n="access.full"></option>
+          </select>
+        </span>
+        <span class="sr-only" id="accessState"></span>
       </div>
       <p class="access-risk" id="accessRisk" hidden></p>
       <p class="access-error" id="accessError" role="status" hidden></p>
@@ -114,40 +163,39 @@
       <ul id="pending" class="pending" hidden></ul>
       <ul id="fileChips" class="file-chips" hidden></ul>
       <div class="composer-box" id="composerBox">
-        <button type="button" class="round" id="attachBtn" data-i18n-title="composer.attach">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" /></svg>
-        </button>
-        <input id="fileInput" type="file" multiple hidden />
-        <button type="button" class="round" id="voiceToggle" data-i18n-title="composer.voice">
-          <svg class="icon-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4" /></svg>
-        </button>
         <textarea id="input" rows="2" dir="auto" data-i18n-placeholder="composer.placeholder"></textarea>
-        <button type="button" class="round danger" id="stopBtn" data-i18n-title="composer.stop" hidden>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
-        </button>
-        <button type="submit" class="round primary" id="sendBtn" data-i18n-title="composer.send">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
-        </button>
+        <div class="composer-tools">
+          <button type="button" class="tool" id="attachBtn" data-i18n-title="composer.attach">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" /></svg>
+          </button>
+          <input id="fileInput" type="file" multiple hidden />
+          <button type="button" class="tool" id="voiceToggle" data-i18n-title="composer.voice">
+            <svg class="icon-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4" /></svg>
+          </button>
+          <span class="tools-gap"></span>
+          <button type="button" class="tool danger" id="stopBtn" data-i18n-title="composer.stop" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
+          </button>
+          <button type="submit" class="tool primary" id="sendBtn" data-i18n-title="composer.send">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+          </button>
+        </div>
       </div>
       <span class="hint" id="hint"></span>
     </form>
   </main>
 
   <section id="voiceView" class="voice-view" hidden>
-    <header class="voice-topbar">
-      <button type="button" class="ghost voice-back-btn" id="voiceBackBtn" data-i18n-title="voice.backToChat">
-        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-back"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
-        <span data-i18n="voice.backToChat"></span>
-      </button>
-      <div class="voice-topbar-center">
-        <strong class="voice-topbar-title" data-i18n="voice.title"></strong>
-      </div>
-      <span class="pill voice-pill" id="voiceState" data-i18n="voice.stateIdle"></span>
-    </header>
-
+    <!-- The voice screen answers to the one compact header above (back, title,
+         its settings), so nothing is stacked here. -->
     <!-- The voice screen shows the mode the worker confirmed for this chat: the
          same one the chat shows, not a preference of its own. -->
-    <div class="voice-access" id="voiceAccess" role="status"></div>
+    <div class="voice-meta">
+      <span class="voice-engine" id="voiceEngineTag"></span>
+      <span class="meta-gap"></span>
+      <span class="pill voice-pill" id="voiceState" data-i18n="voice.stateIdle"></span>
+      <span class="pill voice-pill voice-access" id="voiceAccess" role="status"></span>
+    </div>
 
     <div class="voice-hero">
       <button type="button" id="voiceMicBtn" class="voice-mic-btn" aria-label="Microphone" data-i18n-title="composer.voice">
@@ -180,13 +228,6 @@
       <button type="button" id="voicePendingBtn" class="ghost" data-i18n="voice.answerInChat"></button>
     </div>
 
-    <form id="voiceTypedForm" class="voice-typed-form" autocomplete="off">
-      <input id="voiceTypedInput" type="text" dir="auto" data-i18n-placeholder="voice.placeholder" />
-      <button type="submit" class="round primary" data-i18n-title="composer.send">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
-      </button>
-    </form>
-
     <div class="voice-log-container">
       <div class="voice-log-header">
         <strong data-i18n="voice.activity"></strong>
@@ -194,17 +235,86 @@
       </div>
       <ol id="voiceLog" class="voice-log-list"></ol>
     </div>
+
+    <!-- The shared approval region re-docks here while the voice screen is the
+         active one: the same single region, above the input that speaks. -->
+    <div id="approvalsVoiceDock" class="approvals-dock"></div>
+
+    <form id="voiceTypedForm" class="voice-typed-form" autocomplete="off">
+      <input id="voiceTypedInput" type="text" dir="auto" data-i18n-placeholder="voice.placeholder" />
+      <button type="submit" class="tool primary" data-i18n-title="composer.send">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+      </button>
+    </form>
   </section>
 
+  <!-- Settings is one focused page at a time: a searchable index, then a
+       full-width page per section. The one compact header above becomes the
+       page's header (back, title); the forms keep their fields while the user
+       moves between pages, so an unsaved edit survives navigation. -->
   <section id="settingsView" hidden>
-    <h2 data-i18n="settings.title"></h2>
+    <p class="error" id="settingsError" hidden></p>
 
-    <div class="tabs" role="tablist">
-      <button type="button" role="tab" id="tabModels" aria-controls="panelModels" aria-selected="true" data-i18n="tabs.models"></button>
-      <button type="button" role="tab" id="tabFast" aria-controls="panelFast" aria-selected="false" tabindex="-1" data-i18n="tabs.fast"></button>
+    <div class="settings-page" id="settingsIndex">
+      <div class="search-field">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0" /></svg>
+        <input id="settingsSearch" type="search" autocomplete="off" data-i18n-placeholder="settings.search" data-i18n-title="settings.search" />
+      </div>
+      <div class="settings-rows" id="settingsRows">
+        <button type="button" class="settings-row" data-section="models" data-search="models providers main backup provider model key" id="settingsRowModels">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>
+          <span class="grow"><strong data-i18n="sec.models"></strong><small id="sumModels"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+        <button type="button" class="settings-row" data-section="fast" data-search="fast layer jev decisions auto hints" id="settingsRowFast">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 10-13h-7l1-7" /></svg>
+          <span class="grow"><strong data-i18n="sec.fast"></strong><small id="sumFast"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+        <button type="button" class="settings-row" data-section="voice" data-search="voice microphone speech listen speak engine handsfree" id="settingsRowVoice">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4" /></svg>
+          <span class="grow"><strong data-i18n="sec.voice"></strong><small id="sumVoice"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+        <button type="button" class="settings-row" data-section="behavior" data-search="agent behavior steps vision cursor javascript notifications steer" id="settingsRowBehavior">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+          <span class="grow"><strong data-i18n="sec.behavior"></strong><small id="sumBehavior"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+        <button type="button" class="settings-row" data-section="language" data-search="language interface reply arabic english" id="settingsRowLanguage">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h12M9 3v2M5 5c0 6 6 10 9 11M13 5c0 6-6 10-10 11M14 21l4-11 4 11M16 17h4" /></svg>
+          <span class="grow"><strong data-i18n="sec.language"></strong><small id="sumLanguage"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+        <button type="button" class="settings-row" data-section="account" data-search="account google drive backup restore sign in" id="settingsRowAccount">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18a5 5 0 1 1 1-10 7 7 0 0 1 13 3 4 4 0 0 1-1 8H6" /></svg>
+          <span class="grow"><strong data-i18n="sec.account"></strong><small id="sumAccount"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+      </div>
+      <p class="muted" id="settingsSearchEmpty" hidden data-i18n="settings.searchEmpty"></p>
+      <p class="settings-note muted" data-i18n="settings.note"></p>
     </div>
 
-    <div id="panelModels" role="tabpanel" aria-labelledby="tabModels">
+    <div class="settings-page" id="page-models" hidden>
+      <h2 tabindex="-1" data-i18n="head.models"></h2>
+      <p class="section-desc muted" data-i18n="sec.modelsDesc"></p>
+      <div class="settings-rows">
+        <button type="button" class="settings-row" data-section="provider-main" id="settingsRowMain">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>
+          <span class="grow"><strong data-i18n="sub.mainModel"></strong><small id="sumMain"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+        <label class="switch-row">
+          <span class="grow"><strong data-i18n="fallback.enable"></strong><small class="muted" data-i18n="fallback.desc"></small></span>
+          <input type="checkbox" id="fallbackEnabled" role="switch" />
+        </label>
+        <button type="button" class="settings-row" data-section="provider-backup" id="settingsRowBackup">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>
+          <span class="grow"><strong data-i18n="sub.backupModel"></strong><small id="sumBackup"></small></span>
+          <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+      </div>
       <div class="card recommended" id="recommended" hidden>
         <strong data-i18n="setup.title"></strong>
         <p class="muted" data-i18n="setup.desc"></p>
@@ -218,187 +328,264 @@
         <p class="muted" id="recommendedNote" data-i18n="setup.applied" hidden></p>
       </div>
       <button type="button" class="link" id="showRecommended" data-i18n="setup.show" hidden></button>
-      <fieldset class="frame" data-kind="main">
-        <legend><span class="frame-dot"></span><span data-i18n="frame.main"></span></legend>
-        <div id="mainProvider" class="fields">
+    </div>
+
+    <div class="settings-page" id="page-provider-main" hidden>
+      <h2 tabindex="-1" data-i18n="head.provider"></h2>
+      <p class="section-desc muted" data-i18n="sub.providerDesc"></p>
+      <div id="mainProvider" class="fields">
+        <label class="field">
+          <span data-i18n="settings.provider"></span>
+          <select id="provider" data-field="provider">
+            <option value="chatgpt" data-i18n="settings.provider.chatgpt"></option>
+            <option value="claude" data-i18n="settings.provider.claude"></option>
+            <option value="grok" data-i18n="settings.provider.grok"></option>
+            <option value="compatible" data-i18n="settings.provider.compatible"></option>
+          </select>
+        </label>
+
+        <div id="chatgptSection" class="inset" data-field="chatgptSection" data-provider="chatgpt">
+          <div class="row between">
+            <span data-auth="status"></span>
+            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+          </div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.chatgpt"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p>
+            <code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between">
+              <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
+              <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
+            </div>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+          <details>
+            <summary data-i18n="auth.importSummary"></summary>
+            <p class="muted"><span data-i18n="auth.importRun"></span> <code dir="ltr">codex login</code> <span data-i18n="auth.importThen"></span> <code dir="ltr">~/.codex/auth.json</code> <span data-i18n="auth.importHere"></span></p>
+            <textarea id="authJson" rows="4" dir="ltr" placeholder='{"tokens": {...}}'></textarea>
+            <button type="button" id="importBtn" data-i18n="auth.import"></button>
+          </details>
+        </div>
+
+        <div id="claudeSection" class="inset" data-field="claudeSection" data-provider="claude" hidden>
+          <div class="row between">
+            <span data-auth="status"></span>
+            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+          </div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.claude"></button>
+          <div class="device" data-auth="code" hidden>
+            <p data-i18n="auth.codeHelp"></p>
+            <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
+            <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
           <label class="field">
-            <span data-i18n="settings.provider"></span>
-            <select id="provider" data-field="provider">
-              <option value="chatgpt" data-i18n="settings.provider.chatgpt"></option>
-              <option value="claude" data-i18n="settings.provider.claude"></option>
-              <option value="grok" data-i18n="settings.provider.grok"></option>
-              <option value="compatible" data-i18n="settings.provider.compatible"></option>
+            <span data-i18n="claude.auth"></span>
+            <select data-field="claudeAuth">
+              <option value="account" data-i18n="claude.authAccount"></option>
+              <option value="apiKey" data-i18n="claude.authApiKey"></option>
             </select>
           </label>
-
-          <div id="chatgptSection" class="inset" data-field="chatgptSection" data-provider="chatgpt">
-            <div class="row between">
-              <span data-auth="status"></span>
-              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
-            </div>
-            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.chatgpt"></button>
-            <div class="device" data-auth="device" hidden>
-              <p data-i18n="auth.deviceHelp"></p>
-              <code data-auth="deviceCode" dir="ltr"></code>
-              <div class="row between">
-                <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
-                <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
-              </div>
-            </div>
-            <small class="error" data-auth="message" hidden></small>
-            <details>
-              <summary data-i18n="auth.importSummary"></summary>
-              <p class="muted"><span data-i18n="auth.importRun"></span> <code dir="ltr">codex login</code> <span data-i18n="auth.importThen"></span> <code dir="ltr">~/.codex/auth.json</code> <span data-i18n="auth.importHere"></span></p>
-              <textarea id="authJson" rows="4" dir="ltr" placeholder='{"tokens": {...}}'></textarea>
-              <button type="button" id="importBtn" data-i18n="auth.import"></button>
-            </details>
-          </div>
-
-          <div id="claudeSection" class="inset" data-field="claudeSection" data-provider="claude" hidden>
-            <div class="row between">
-              <span data-auth="status"></span>
-              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
-            </div>
-            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.claude"></button>
-            <div class="device" data-auth="code" hidden>
-              <p data-i18n="auth.codeHelp"></p>
-              <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
-              <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
-            </div>
-            <small class="error" data-auth="message" hidden></small>
-            <label class="field">
-              <span data-i18n="claude.auth"></span>
-              <select data-field="claudeAuth">
-                <option value="account" data-i18n="claude.authAccount"></option>
-                <option value="apiKey" data-i18n="claude.authApiKey"></option>
-              </select>
-            </label>
-            <label class="field">
-              <span data-i18n="claude.apiKey"></span>
-              <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
-            </label>
-          </div>
-
-          <div id="grokSection" class="inset" data-field="grokSection" data-provider="grok" hidden>
-            <div class="row between">
-              <span data-auth="status"></span>
-              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
-            </div>
-            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.grok"></button>
-            <div class="device" data-auth="device" hidden>
-              <p data-i18n="auth.deviceHelp"></p>
-              <code data-auth="deviceCode" dir="ltr"></code>
-              <div class="row between">
-                <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
-                <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
-              </div>
-            </div>
-            <small class="error" data-auth="message" hidden></small>
-          </div>
-
-          <div id="compatibleSection" class="fields" data-field="compatibleSection" hidden>
-            <label class="field">
-              <span data-i18n="compat.preset"></span>
-              <select id="preset" data-field="preset"></select>
-            </label>
-            <label class="field">
-              <span>Base URL</span>
-              <input id="baseUrl" data-field="baseUrl" dir="ltr" />
-            </label>
-            <label class="field">
-              <span>API Key</span>
-              <input id="apiKey" data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
-            </label>
-          </div>
-
           <label class="field">
-            <span data-i18n="model.label"></span>
-            <input id="modelSearch" data-field="modelSearch" type="search" class="model-search" dir="ltr" autocomplete="off" data-i18n-placeholder="model.search" hidden />
-            <div class="row">
-              <select id="modelSelect" data-field="modelSelect" class="grow"></select>
-              <button type="button" class="ghost icon" id="refreshModelsBtn" data-field="refresh" data-i18n-title="model.refresh">↻</button>
-            </div>
-            <input id="modelInput" data-field="modelInput" dir="ltr" data-i18n-placeholder="model.manual" />
-            <small class="muted" id="modelInfo" data-field="modelInfo"></small>
+            <span data-i18n="claude.apiKey"></span>
+            <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
-          <label class="field">
-            <span data-i18n="effort.label"></span>
-            <select id="effort" data-field="effort"></select>
-          </label>
-          <div class="row"><button type="button" class="test-btn" data-field="test" data-i18n="provider.test"></button><small class="muted test-result" data-field="testResult"></small></div>
         </div>
-      </fieldset>
 
-      <fieldset class="frame" data-kind="backup">
-        <legend><span class="frame-dot"></span><span data-i18n="fallback.title"></span></legend>
-        <label class="check switch"><input type="checkbox" id="fallbackEnabled" role="switch" /> <span data-i18n="fallback.enable"></span></label>
-        <p class="muted" data-i18n="fallback.desc"></p>
-        <div id="fallbackProvider" class="fields">
+        <div id="grokSection" class="inset" data-field="grokSection" data-provider="grok" hidden>
+          <div class="row between">
+            <span data-auth="status"></span>
+            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+          </div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.grok"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p>
+            <code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between">
+              <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
+              <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
+            </div>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+        </div>
+
+        <div id="compatibleSection" class="fields" data-field="compatibleSection" hidden>
           <label class="field">
-            <span data-i18n="settings.provider"></span>
-            <select data-field="provider">
-              <option value="chatgpt" data-i18n="settings.provider.chatgpt"></option>
-              <option value="claude" data-i18n="settings.provider.claude"></option>
-              <option value="grok" data-i18n="settings.provider.grok"></option>
-              <option value="compatible" data-i18n="settings.provider.compatible"></option>
+            <span data-i18n="compat.preset"></span>
+            <select id="preset" data-field="preset"></select>
+          </label>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="baseUrl" data-field="baseUrl" dir="ltr" />
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="apiKey" data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="field model-field">
+          <span data-i18n="model.label"></span>
+          <button type="button" class="model-button" id="modelBtnMain">
+            <span class="model-current" id="modelMainLabel" dir="ltr"></span>
+            <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+          </button>
+          <input id="modelInput" data-field="modelInput" type="text" dir="ltr" hidden />
+          <small class="muted" id="modelInfo" data-field="modelInfo"></small>
+        </div>
+        <label class="field">
+          <span data-i18n="effort.label"></span>
+          <select id="effort" data-field="effort"></select>
+        </label>
+        <div class="row"><button type="button" class="test-btn" data-field="test" data-i18n="provider.test"></button><small class="muted test-result" data-field="testResult"></small></div>
+      </div>
+    </div>
+
+    <div class="settings-page" id="page-provider-backup" hidden>
+      <h2 tabindex="-1" data-i18n="head.provider"></h2>
+      <p class="section-desc muted" data-i18n="sub.providerDesc"></p>
+      <div id="fallbackProvider" class="fields">
+        <label class="field">
+          <span data-i18n="settings.provider"></span>
+          <select data-field="provider">
+            <option value="chatgpt" data-i18n="settings.provider.chatgpt"></option>
+            <option value="claude" data-i18n="settings.provider.claude"></option>
+            <option value="grok" data-i18n="settings.provider.grok"></option>
+            <option value="compatible" data-i18n="settings.provider.compatible"></option>
+          </select>
+        </label>
+        <p class="muted" data-field="accountNote" data-i18n="fallback.sameLogin" hidden></p>
+        <div class="inset" data-field="fallbackAuth" data-provider="" hidden>
+          <div class="row between">
+            <span data-auth="status"></span>
+            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+          </div>
+          <button type="button" class="primary" data-auth="login"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p>
+            <code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between">
+              <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
+              <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
+            </div>
+          </div>
+          <div class="device" data-auth="code" hidden>
+            <p data-i18n="auth.codeHelp"></p>
+            <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
+            <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+        </div>
+        <div class="inset" data-field="claudeSection" hidden>
+          <label class="field">
+            <span data-i18n="claude.auth"></span>
+            <select data-field="claudeAuth">
+              <option value="account" data-i18n="claude.authAccount"></option>
+              <option value="apiKey" data-i18n="claude.authApiKey"></option>
             </select>
           </label>
-          <p class="muted" data-field="accountNote" data-i18n="fallback.sameLogin" hidden></p>
-          <div class="inset" data-field="fallbackAuth" data-provider="" hidden>
-            <div class="row between">
-              <span data-auth="status"></span>
-              <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
-            </div>
-            <button type="button" class="primary" data-auth="login"></button>
-            <div class="device" data-auth="device" hidden>
-              <p data-i18n="auth.deviceHelp"></p>
-              <code data-auth="deviceCode" dir="ltr"></code>
-              <div class="row between">
-                <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
-                <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
-              </div>
-            </div>
-            <div class="device" data-auth="code" hidden>
-              <p data-i18n="auth.codeHelp"></p>
-              <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
-              <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
-            </div>
-            <small class="error" data-auth="message" hidden></small>
-          </div>
-          <div class="inset" data-field="claudeSection" hidden>
-            <label class="field">
-              <span data-i18n="claude.auth"></span>
-              <select data-field="claudeAuth">
-                <option value="account" data-i18n="claude.authAccount"></option>
-                <option value="apiKey" data-i18n="claude.authApiKey"></option>
-              </select>
-            </label>
-            <label class="field">
-              <span data-i18n="claude.apiKey"></span>
-              <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
-            </label>
-          </div>
-          <div class="fields" data-field="compatibleSection">
-            <label class="field"><span data-i18n="compat.preset"></span><select data-field="preset"></select></label>
-            <label class="field"><span>Base URL</span><input data-field="baseUrl" dir="ltr" /></label>
-            <label class="field"><span>API Key</span><input data-field="apiKey" type="password" dir="ltr" autocomplete="off" /></label>
-          </div>
           <label class="field">
-            <span data-i18n="model.label"></span>
-            <input data-field="modelSearch" type="search" class="model-search" dir="ltr" autocomplete="off" data-i18n-placeholder="model.search" hidden />
-            <div class="row">
-              <select data-field="modelSelect" class="grow"></select>
-              <button type="button" class="ghost icon" data-field="refresh" data-i18n-title="model.refresh">↻</button>
-            </div>
-            <input data-field="modelInput" dir="ltr" data-i18n-placeholder="model.manual" />
-            <small class="muted" data-field="modelInfo"></small>
+            <span data-i18n="claude.apiKey"></span>
+            <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
-          <label class="field"><span data-i18n="effort.label"></span><select data-field="effort"></select></label>
-          <div class="row"><button type="button" class="test-btn" data-field="test" data-i18n="provider.test"></button><small class="muted test-result" data-field="testResult"></small></div>
         </div>
-      </fieldset>
+        <div class="fields" data-field="compatibleSection">
+          <label class="field"><span data-i18n="compat.preset"></span><select data-field="preset"></select></label>
+          <label class="field"><span>Base URL</span><input data-field="baseUrl" dir="ltr" /></label>
+          <label class="field"><span>API Key</span><input data-field="apiKey" type="password" dir="ltr" autocomplete="off" /></label>
+        </div>
+        <div class="field model-field">
+          <span data-i18n="model.label"></span>
+          <button type="button" class="model-button" id="modelBtnBackup">
+            <span class="model-current" id="modelBackupLabel" dir="ltr"></span>
+            <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+          </button>
+          <input data-field="modelInput" type="text" dir="ltr" hidden />
+          <small class="muted" id="modelBackupInfo" data-field="modelInfo"></small>
+        </div>
+        <label class="field"><span data-i18n="effort.label"></span><select data-field="effort"></select></label>
+        <div class="row"><button type="button" class="test-btn" data-field="test" data-i18n="provider.test"></button><small class="muted test-result" data-field="testResult"></small></div>
+      </div>
+    </div>
 
-      <div class="card">
+    <div class="settings-page" id="page-fast" hidden>
+      <h2 tabindex="-1" data-i18n="head.fast"></h2>
+      <p class="section-desc muted" data-i18n="fast.desc"></p>
+      <div class="fields">
+        <label class="check switch"><input type="checkbox" id="fastEnabled" role="switch" /> <span data-i18n="fast.enable"></span></label>
+        <div id="fastFields" class="fields">
+          <label class="field">
+            <span data-i18n="fast.provider"></span>
+            <select id="fastProvider"></select>
+          </label>
+          <label class="field">
+            <span data-i18n="fast.mode"></span>
+            <select id="fastMode">
+              <option value="auto" data-i18n="fast.mode.auto"></option>
+              <option value="hints" data-i18n="fast.mode.hints"></option>
+            </select>
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="fastApiKey" type="password" dir="ltr" autocomplete="off" />
+          </label>
+          <div class="field model-field">
+            <span data-i18n="model.label"></span>
+            <button type="button" class="model-button" id="modelBtnFast">
+              <span class="model-current" id="modelFastLabel" dir="ltr"></span>
+              <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+            <input id="fastModel" type="text" dir="ltr" hidden />
+          </div>
+          <label class="field"><span>Base URL</span><input id="fastBaseUrl" dir="ltr" /></label>
+          <div class="row">
+            <label class="field grow"><span data-i18n="fast.minProb"></span><input id="fastMinProb" type="number" min="0.3" max="0.99" step="0.05" /></label>
+            <label class="field grow"><span data-i18n="fast.riskyMax"></span><input id="fastRiskyMax" type="number" min="0.05" max="0.9" step="0.05" /></label>
+          </div>
+          <div class="row">
+            <button type="button" class="test-btn" id="fastTestBtn" data-i18n="fast.test"></button>
+            <small class="muted test-result" id="fastTestResult"></small>
+          </div>
+        </div>
+      </div>
+      <h3 data-i18n="fast.fallbackTitle"></h3>
+      <div class="fields" id="fastFallbackFrame">
+        <label class="check switch"><input type="checkbox" id="fastFallbackEnabled" role="switch" /> <span data-i18n="fast.fallbackEnable"></span></label>
+        <div id="fastFallbackFields" class="fields">
+          <label class="field"><span data-i18n="fast.provider"></span><select id="fastFallbackProvider"></select></label>
+          <label class="field"><span>API Key</span><input id="fastFallbackApiKey" type="password" dir="ltr" autocomplete="off" /></label>
+          <div class="field model-field">
+            <span data-i18n="model.label"></span>
+            <button type="button" class="model-button" id="modelBtnFastBackup">
+              <span class="model-current" id="modelFastBackupLabel" dir="ltr"></span>
+              <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+            <input id="fastFallbackModel" type="text" dir="ltr" hidden />
+          </div>
+          <div class="row"><button type="button" class="test-btn" id="fastFallbackTestBtn" data-i18n="provider.test"></button><small class="muted test-result" id="fastFallbackTestResult"></small></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-page" id="page-voice" hidden>
+      <h2 tabindex="-1" data-i18n="head.voice"></h2>
+      <p class="section-desc muted" data-i18n="voice.settingsDesc"></p>
+      <div class="fields">
+        <label class="field">
+          <span data-i18n="voice.engine"></span>
+          <select id="voiceEngine">
+            <option value="postora" data-i18n="voice.enginePostora"></option>
+            <option value="fast_only" data-i18n="voice.engineFastOnly"></option>
+          </select>
+        </label>
+        <p class="muted" data-i18n="voice.engineDesc"></p>
+      </div>
+    </div>
+
+    <div class="settings-page" id="page-behavior" hidden>
+      <h2 tabindex="-1" data-i18n="head.behavior"></h2>
+      <p class="section-desc muted" data-i18n="sec.behaviorDesc"></p>
+      <div class="fields">
         <label class="field">
           <span data-i18n="settings.maxSteps"></span>
           <input id="maxSteps" type="number" min="5" max="300" />
@@ -417,8 +604,20 @@
           </select>
         </label>
       </div>
+    </div>
 
-      <div class="card">
+    <div class="settings-page" id="page-language" hidden>
+      <h2 tabindex="-1" data-i18n="head.language"></h2>
+      <p class="section-desc muted" data-i18n="sec.languageDesc"></p>
+      <div class="fields">
+        <label class="field">
+          <span data-i18n="lang.ui"></span>
+          <select id="uiLanguage">
+            <option value="auto" data-i18n="lang.auto"></option>
+            <option value="ar">العربية</option>
+            <option value="en">English</option>
+          </select>
+        </label>
         <label class="check switch"><input type="checkbox" id="replyLangEnabled" role="switch" /> <strong data-i18n="replyLang.title"></strong></label>
         <p class="muted" data-i18n="replyLang.desc"></p>
         <label class="field" id="replyLangField">
@@ -430,20 +629,16 @@
           </select>
         </label>
       </div>
+    </div>
 
-      <div class="card">
-        <strong data-i18n="voice.settingsTitle"></strong>
-        <p class="muted" data-i18n="voice.settingsDesc"></p>
-        <label class="field">
-          <span data-i18n="voice.engine"></span>
-          <select id="voiceEngine">
-            <option value="postora" data-i18n="voice.enginePostora"></option>
-            <option value="fast_only" data-i18n="voice.engineFastOnly"></option>
-          </select>
-        </label>
-        <p class="muted" data-i18n="voice.engineDesc"></p>
-      </div>
-
+    <div class="settings-page" id="page-account" hidden>
+      <h2 tabindex="-1" data-i18n="head.account"></h2>
+      <p class="section-desc muted" data-i18n="sec.accountDesc"></p>
+      <button type="button" class="settings-row" id="accountRowBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
+        <span class="grow"><strong data-i18n="menu.account"></strong><small id="sumAccountRow"></small></span>
+        <svg class="chev-forward" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+      </button>
       <div class="card">
         <strong data-i18n="backup.title"></strong>
         <p class="muted" data-i18n="backup.desc"></p>
@@ -456,75 +651,52 @@
       </div>
     </div>
 
-    <div id="panelFast" role="tabpanel" aria-labelledby="tabFast" hidden>
-      <fieldset class="frame" data-kind="fast">
-        <legend><span class="frame-dot"></span><span data-i18n="fast.title"></span></legend>
-        <label class="check switch"><input type="checkbox" id="fastEnabled" role="switch" /> <span data-i18n="fast.enable"></span></label>
-        <p class="muted" data-i18n="fast.desc"></p>
-        <div id="fastFields" class="fields">
-          <label class="field">
-            <span data-i18n="fast.provider"></span>
-            <select id="fastProvider"></select>
-          </label>
-          <label class="field">
-            <span data-i18n="fast.mode"></span>
-            <select id="fastMode">
-              <option value="auto" data-i18n="fast.mode.auto"></option>
-              <option value="hints" data-i18n="fast.mode.hints"></option>
-            </select>
-          </label>
-          <label class="field">
-            <span>API Key</span>
-            <input id="fastApiKey" type="password" dir="ltr" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span data-i18n="model.label"></span>
-            <input id="fastModelSearch" type="search" class="model-search" dir="ltr" autocomplete="off" data-i18n-placeholder="model.search" hidden />
-            <div class="row">
-              <select id="fastModelSelect" class="grow"></select>
-              <button type="button" class="ghost icon" id="fastModelsBtn" data-i18n-title="model.refresh">↻</button>
-            </div>
-            <input id="fastModel" dir="ltr" data-i18n-placeholder="model.manual" />
-          </label>
-          <label class="field"><span>Base URL</span><input id="fastBaseUrl" dir="ltr" /></label>
-          <div class="row">
-            <label class="field grow"><span data-i18n="fast.minProb"></span><input id="fastMinProb" type="number" min="0.3" max="0.99" step="0.05" /></label>
-            <label class="field grow"><span data-i18n="fast.riskyMax"></span><input id="fastRiskyMax" type="number" min="0.05" max="0.9" step="0.05" /></label>
-          </div>
-          <div class="row">
-            <button type="button" class="test-btn" id="fastTestBtn" data-i18n="fast.test"></button>
-            <small class="muted test-result" id="fastTestResult"></small>
-          </div>
-        </div>
-      </fieldset>
-
-      <fieldset class="frame" data-kind="backup" id="fastFallbackFrame">
-        <legend><span class="frame-dot"></span><span data-i18n="fast.fallbackTitle"></span></legend>
-        <label class="check switch"><input type="checkbox" id="fastFallbackEnabled" role="switch" /> <span data-i18n="fast.fallbackEnable"></span></label>
-        <div id="fastFallbackFields" class="fields">
-          <label class="field"><span data-i18n="fast.provider"></span><select id="fastFallbackProvider"></select></label>
-          <label class="field"><span>API Key</span><input id="fastFallbackApiKey" type="password" dir="ltr" autocomplete="off" /></label>
-          <label class="field">
-            <span data-i18n="model.label"></span>
-            <input id="fastFallbackModelSearch" type="search" class="model-search" dir="ltr" autocomplete="off" data-i18n-placeholder="model.search" hidden />
-            <div class="row">
-              <select id="fastFallbackModelSelect" class="grow"></select>
-              <button type="button" class="ghost icon" id="fastFallbackModelsBtn" data-i18n-title="model.refresh">↻</button>
-            </div>
-            <input id="fastFallbackModel" dir="ltr" data-i18n-placeholder="model.manual" />
-          </label>
-          <div class="row"><button type="button" class="test-btn" id="fastFallbackTestBtn" data-i18n="provider.test"></button><small class="muted test-result" id="fastFallbackTestResult"></small></div>
-        </div>
-      </fieldset>
-    </div>
-
-
-    <p class="error" id="settingsError" hidden></p>
-    <div class="row end sticky-actions">
-      <button type="button" id="closeSettingsBtn" data-i18n="common.back"></button>
-      <button type="button" class="primary" id="saveBtn" data-i18n="common.save"></button>
+    <!-- Save and Cancel are deliberate: Save validates and closes, Cancel
+         throws the unsaved edits away and closes. The back arrow keeps the
+         edits and only moves between pages. -->
+    <div class="settings-footer row between" id="settingsFooter" hidden>
+      <small class="muted" id="settingsStatus"></small>
+      <div class="row end">
+        <button type="button" id="cancelSettingsBtn" data-i18n="common.cancel"></button>
+        <button type="button" class="primary" id="saveBtn" data-i18n="common.save"></button>
+      </div>
     </div>
   </section>
+
+  <!-- The model a field uses, chosen from the list the provider serves: one
+       searchable dialog for the quick control and for every settings page.
+       Nothing is chosen until the caller applies it. The heading is for the
+       reader; the search row is the visible header. -->
+  <dialog id="modelDialog" class="model-dialog" aria-labelledby="modelDialogTitle">
+    <h2 id="modelDialogTitle" class="sr-only"></h2>
+    <header class="model-dialog-top">
+      <div class="model-search-field" id="modelDialogSearchField">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0" /></svg>
+        <input id="modelDialogSearch" type="search" role="combobox" aria-controls="modelDialogList" aria-autocomplete="list" autocomplete="off" data-i18n-placeholder="model.searchDialog" data-i18n-title="model.searchDialog" />
+      </div>
+      <button type="button" class="ghost icon" id="modelDialogClose" data-i18n-title="common.cancel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </button>
+    </header>
+    <p class="muted model-dialog-status" id="modelDialogStatus" role="status" hidden></p>
+    <ul id="modelDialogList" role="listbox" aria-labelledby="modelDialogTitle"></ul>
+    <p class="muted" id="modelDialogEmpty" hidden data-i18n="model.noMatch"></p>
+    <div class="model-dialog-manual" id="modelDialogManual" hidden>
+      <label class="field">
+        <span data-i18n="model.manual"></span>
+        <input id="modelDialogManualInput" type="text" dir="ltr" autocomplete="off" />
+      </label>
+      <div class="row end">
+        <button type="button" class="primary" id="modelDialogManualSave" data-i18n="model.use"></button>
+      </div>
+    </div>
+    <footer class="model-dialog-actions">
+      <button type="button" class="ghost" id="modelDialogManualBtn" data-i18n="model.manualAction"></button>
+      <button type="button" class="ghost" id="modelDialogRefresh" data-i18n="model.refresh"></button>
+      <button type="button" class="ghost" id="modelDialogConfigure" data-i18n="model.configure" hidden></button>
+      <span class="model-dialog-hint muted" id="modelDialogHint" data-i18n="model.esc"></span>
+    </footer>
+  </dialog>
 
   <!-- The warning the user reads before Full access is asked for. It is a
        native dialog: the browser gives it the focus, the Escape key and the

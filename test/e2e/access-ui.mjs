@@ -389,6 +389,7 @@ export async function runAccessUiScenario(context, extensionId) {
     await shot(panel, 'access-full-320-light.png');
 
     // Arabic: the same control, read from the other side.
+    await panel.click('#overflowBtn');
     await panel.click('#langBtn');
     await panel.waitForFunction(() => document.documentElement.dir === 'rtl');
     const arabic = await layout(panel);
@@ -409,6 +410,7 @@ export async function runAccessUiScenario(context, extensionId) {
     failures.push(...(await darkThemeShot()));
 
     // The language comes back, so the scenarios that follow read English.
+    await panel.click('#overflowBtn');
     await panel.click('#langBtn');
     await panel.waitForFunction(() => document.documentElement.dir === 'ltr');
 

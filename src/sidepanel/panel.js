@@ -4,7 +4,9 @@ import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
 import { createAccessUi } from './access.js';
 import { createPermissionUi } from './permissions.js';
 import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
-import { bindSearch, escapeAttr, pickModel, renderPicker } from './model-picker.js';
+import { escapeAttr } from './model-picker.js';
+import { createModelDialog } from './model-dialog.js';
+import { createSettingsNav } from './settings-nav.js';
 import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
@@ -36,6 +38,9 @@ let presets = {};
 let fastPresets = {};
 let fastModels = [];
 let fastFallbackModels = [];
+// What each fast slot's list request is doing, so the shared model dialog can
+// say "loading" or show the refusal instead of a silent empty list.
+const fastListState = { fast: { loading: false, error: '' }, fastFallback: { loading: false, error: '' } };
 const loads = { fast: 0, fastFallback: 0 }; // newest request wins when lists load concurrently
 // The account providers: what the panel knows about each one's sign-in, the
 // attempt it waits for, and the message its section shows.
@@ -994,6 +999,7 @@ function setRunning(running) {
   if (!running) closeThread();
   $('statusDot').classList.toggle('running', running);
   $('stopBtn').hidden = !running;
+  $('workspaceStopBtn').hidden = !running || ($('settingsView').hidden && $('voiceView').hidden);
   $('sendBtn').hidden = false; // while running, a message steers the task (see steerMode)
   if (!running) {
     ui.question = null;
@@ -1483,6 +1489,8 @@ function syncVoiceToggles() {
 /** The texts of the voice screen that are drawn, not translated in place. */
 function updateVoiceLabels() {
   $('voiceLog')?.setAttribute('data-empty', t('voice.emptyLog'));
+  const engine = $('voiceEngineTag');
+  if (engine) engine.textContent = (settings?.voiceEngine ?? 'postora') === 'fast_only' ? t('voice.engineFastOnly') : t('voice.enginePostora');
   setVoiceState(voiceState);
   syncVoiceToggles();
 }
@@ -1493,6 +1501,10 @@ async function openVoice() {
   $('voiceView').hidden = false;
   $('chatView').hidden = true;
   $('settingsView').hidden = true;
+  syncHeaderContext();
+  // The shared approval region docks beside the voice input, where a spoken
+  // or typed answer reaches it.
+  placeApprovals('voice');
   voiceController ??= createVoice();
   // A question that is waiting for an answer is shown in the voice screen too:
   // it must never be hidden behind it.
@@ -1510,6 +1522,8 @@ function closeVoice({ cancel = false } = {}) {
   if ($('voiceView').hidden) return;
   $('voiceView').hidden = true;
   $('chatView').hidden = false;
+  syncHeaderContext();
+  placeApprovals('chat');
   voiceController?.close();
   voiceApproval?.();
   if (cancel) {
@@ -1793,6 +1807,7 @@ $('voiceToggle').addEventListener('click', (e) => {
   openVoice();
 });
 $('voiceBackBtn').addEventListener('click', () => closeVoice({ cancel: true }));
+$('voiceSettingsBtn').addEventListener('click', () => toggleSettings(true, 'voice'));
 $('voicePendingBtn').addEventListener('click', () => showChat());
 $('voiceMicBtn').addEventListener('click', () => voiceController?.toggleListening());
 $('voiceClearLog').addEventListener('click', () => {
@@ -1842,9 +1857,16 @@ $('input').addEventListener('keydown', (e) => {
   }
 });
 $('stopBtn').addEventListener('click', () => send({ type: 'stop' }));
+$('workspaceStopBtn').addEventListener('click', () => $('stopBtn').click());
+// A new session is a request for the conversation: it lands on the chat, even
+// when settings were open when it was asked for.
 $('newChatBtn').addEventListener('click', async () => {
   const meta = await request('session-create');
   await chooseSession(meta.id);
+  $('settingsView').hidden = true;
+  $('chatView').hidden = false;
+  syncHeaderContext();
+  placeApprovals('chat');
 });
 document.querySelectorAll('.examples li').forEach((li) => li.addEventListener('click', () => {
   $('input').value = li.textContent;
@@ -2022,6 +2044,7 @@ async function deleteSessionAsked(meta) {
 
 function toggleSessionMenu() {
   if ($('sessionMenu').hidden) {
+    closeOverflowMenu();
     $('sessionMenu').hidden = false;
     $('sessionBtn').setAttribute('aria-expanded', 'true');
     $('sessionSearch').value = '';
@@ -2040,11 +2063,57 @@ function closeSessionMenu() {
 
 $('sessionBtn').addEventListener('click', toggleSessionMenu);
 $('sessionSearch').addEventListener('input', renderSessionList);
+
+// One Escape dismisses only the topmost surface: a native dialog first (the
+// browser owns it), then a menu, then a settings page. Nothing is skipped
+// past, and nothing is closed twice by one keypress.
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('sessionMenu').hidden) closeSessionMenu();
+  if (e.key !== 'Escape') return;
+  if ($('modelDialog').open || $('accessWarning').open) return;
+  if (!$('sessionMenu').hidden) { closeSessionMenu(); $('sessionBtn').focus(); return; }
+  if (!$('overflowMenu').hidden) { closeOverflowMenu(); $('overflowBtn').focus(); return; }
+  if (!$('accountMenu').hidden) { closeAccountMenu(); return; }
+  if (!$('feedbackMenu').hidden) { $('feedbackMenu').hidden = true; $('overflowBtn').focus(); return; }
+  if (!$('settingsView').hidden && settingsNav.section() !== null) {
+    settingsNav.back();
+    syncFooter();
+  }
 });
 document.addEventListener('click', (e) => {
   if (!$('sessionMenu').hidden && !$('sessionMenu').contains(e.target) && !$('sessionBtn').contains(e.target)) closeSessionMenu();
+});
+
+// The overflow holds the account, the interface language and feedback: one
+// click away, out of the header's way.
+function toggleOverflowMenu() {
+  if ($('overflowMenu').hidden) {
+    closeSessionMenu();
+    $('overflowMenu').hidden = false;
+    $('overflowBtn').setAttribute('aria-expanded', 'true');
+    $('accountBtn').focus();
+  } else {
+    closeOverflowMenu();
+  }
+}
+
+function closeOverflowMenu() {
+  $('overflowMenu').hidden = true;
+  $('overflowBtn').setAttribute('aria-expanded', 'false');
+}
+
+$('overflowBtn').addEventListener('click', toggleOverflowMenu);
+$('overflowMenu').addEventListener('keydown', (e) => {
+  const items = [...$('overflowMenu').querySelectorAll('[role="menuitem"]')];
+  const index = items.indexOf(document.activeElement);
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+    : e.key === 'ArrowDown' ? (index + 1) % items.length
+      : e.key === 'ArrowUp' ? (index - 1 + items.length) % items.length : null;
+  if (next === null) return;
+  e.preventDefault();
+  items[next].focus();
+});
+document.addEventListener('click', (e) => {
+  if (!$('overflowMenu').hidden && !$('overflowMenu').contains(e.target) && !$('overflowBtn').contains(e.target)) closeOverflowMenu();
 });
 
 // ---------- Google account ----------
@@ -2056,23 +2125,43 @@ function renderAccount() {
   $('accountIcon').style.display = account?.picture ? 'none' : ''; // SVG elements have no hidden property
   $('accountSignedOut').hidden = Boolean(account);
   $('accountSignedIn').hidden = !account;
-  if (!account) return;
+  if (!account) {
+    renderSettingsSummaries();
+    return;
+  }
   $('accountMenuAvatar').src = account.picture;
   $('accountAvatar').src = account.picture;
   $('accountName').textContent = account.name;
   $('accountEmail').textContent = account.email;
   $('accountBtn').title = `${account.name} — ${account.email}`;
+  renderSettingsSummaries();
 }
+
+// The account popup has two real entry points — the overflow row and the row
+// on the Account & backup page. Both open the same dialog; whichever trigger
+// opened it is remembered, so Escape hands the focus back to it, and the
+// outside-click dismissal knows not to fight the click that opened it.
+let accountInvoker = null;
 
 function toggleAccountMenu() {
   const opening = $('accountMenu').hidden;
+  if (opening) accountInvoker = document.activeElement === $('accountBtn') ? $('overflowBtn') : document.activeElement;
   closeSessionMenu();
+  closeOverflowMenu();
   $('feedbackMenu').hidden = true;
   $('accountMenu').hidden = !opening;
   $('accountStatus').textContent = '';
+  if (opening) $('accountMenu').querySelector(account ? '#driveBackupBtn' : '#googleSignInBtn').focus();
+}
+
+function closeAccountMenu() {
+  $('accountMenu').hidden = true;
+  if (accountInvoker?.isConnected) accountInvoker.focus();
+  accountInvoker = null;
 }
 
 $('accountBtn').addEventListener('click', toggleAccountMenu);
+$('accountRowBtn').addEventListener('click', toggleAccountMenu);
 $('googleSignInBtn').addEventListener('click', async () => {
   $('accountStatus').textContent = t('account.signingIn');
   try {
@@ -2125,8 +2214,13 @@ $('googleSignOutBtn').addEventListener('click', async () => {
   account = null;
   renderAccount();
 });
+// A click outside the popup dismisses it — but never the click on one of its
+// own triggers, which must be allowed to open it first.
 document.addEventListener('click', (e) => {
-  if (!$('accountMenu').hidden && !$('accountMenu').contains(e.target) && !$('accountBtn').contains(e.target)) $('accountMenu').hidden = true;
+  if (!$('accountMenu').hidden && !$('accountMenu').contains(e.target) && !$('accountBtn').contains(e.target) && !$('accountRowBtn').contains(e.target)) {
+    $('accountMenu').hidden = true;
+    accountInvoker = null;
+  }
 });
 googleAccount().then((saved) => {
   account = saved;
@@ -2241,6 +2335,7 @@ async function submitFeedback({ message, rating, email = '' }, status, onSent) {
 function toggleFeedbackMenu() {
   const opening = $('feedbackMenu').hidden;
   closeSessionMenu();
+  closeOverflowMenu();
   $('accountMenu').hidden = true;
   $('feedbackMenu').hidden = !opening;
   if (!opening) return;
@@ -2267,10 +2362,44 @@ document.addEventListener('click', (e) => {
 // ---------- language ----------
 
 $('langBtn').addEventListener('click', async () => {
+  closeOverflowMenu();
   const next = currentLanguage() === 'ar' ? 'en' : 'ar';
-  applyLanguage(next);
-  settings = await request('save-settings', { settings: { ...settings, uiLanguage: next } });
+  await applyAndSaveLanguage(next);
 });
+
+// The same choice lives in the Language page: applied and saved at once, so
+// the panel never shows a language the settings do not agree with. A save
+// that did not go out changes nothing — the select says what is still saved.
+$('uiLanguage').addEventListener('change', async () => {
+  const value = $('uiLanguage').value;
+  if (value === 'auto') {
+    await applyAndSaveLanguage(resolveLanguage('auto', chrome.i18n.getUILanguage()), 'auto');
+  } else if (value !== settings.uiLanguage) {
+    await applyAndSaveLanguage(value, value);
+  }
+});
+
+/**
+ * Applies the interface language and saves it in the same breath. A failed
+ * save leaves nothing half-done: the previous language is applied back and
+ * the failure is shown where settings errors are readable.
+ */
+async function applyAndSaveLanguage(language, savedPreference = language) {
+  const previous = { language: currentLanguage(), preference: settings?.uiLanguage ?? 'auto' };
+  applyLanguage(language);
+  try {
+    settings = await request('save-settings', { settings: { ...settings, uiLanguage: savedPreference } });
+    $('uiLanguage').value = settings.uiLanguage;
+  } catch (err) {
+    applyLanguage(previous.language);
+    $('uiLanguage').value = previous.preference;
+    // The failure has to be readable: where the language is configured.
+    toggleSettings(true, 'language');
+    showSettingsError(err.message);
+    return;
+  }
+  renderSettingsSummaries();
+}
 
 /** Static text is retranslated by setLanguage; text this file renders is redrawn here. */
 function applyLanguage(language) {
@@ -2295,13 +2424,55 @@ function applyLanguage(language) {
   syncFastFallback();
   renderDriveState();
   updateVoiceLabels();
+  // The page the user is on says its name in the language they chose.
+  settingsNav.show(settingsNav.section(), { focus: false });
+  renderSettingsSummaries();
+  markDirtyRefresh();
+}
+
+/** The dirty note follows the language too, without inventing an edit. */
+function markDirtyRefresh() {
+  if (settingsDirty) markDirty();
 }
 
 // ---------- settings ----------
 
+/**
+ * The shared approval region follows the active screen: docked above the
+ * composer while the chat is on, above the voice input while voice is on,
+ * and above the settings when the user is configuring. One region, one
+ * authority — the node itself is moved, never copied.
+ */
+let approvalsHome = null;
+
+function placeApprovals(where) {
+  const node = $('approvals');
+  if (!approvalsHome) approvalsHome = node.parentElement;
+  const dock = where === 'voice' ? $('approvalsVoiceDock')
+    : where === 'chat' ? $('approvalsChatDock')
+      : null;
+  (dock ?? approvalsHome)?.append?.(node);
+}
+
+/**
+ * The panel has ONE compact header. It carries the session on the chat, and
+ * becomes the focused page's header (back, title) in settings and voice, so
+ * no screen ever stacks a second bar under the first.
+ */
+function syncHeaderContext() {
+  const settingsOpen = !$('settingsView').hidden;
+  const voiceOpen = !$('voiceView').hidden;
+  $('brandCluster').hidden = settingsOpen || voiceOpen;
+  $('settingsBarContext').hidden = !settingsOpen;
+  $('voiceBarContext').hidden = !voiceOpen;
+  $('newChatBtn').hidden = settingsOpen;
+  $('settingsBtn').hidden = settingsOpen || voiceOpen;
+  $('workspaceStopBtn').hidden = !ui.running || (!settingsOpen && !voiceOpen);
+}
+
 const keyStore = createKeyStore();
-const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames() });
-const fallbackForm = createProviderForm($('fallbackProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames() });
+const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
+const fallbackForm = createProviderForm($('fallbackProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
 keyStore.register($('fastApiKey'), () => $('fastProvider').value);
 keyStore.register($('fastFallbackApiKey'), () => $('fastFallbackProvider').value);
 // A provider's section shows that provider's sign-in, so the status of the one
@@ -2313,37 +2484,55 @@ $('provider').addEventListener('change', () => {
 
 $('settingsBtn').addEventListener('click', () => toggleSettings(true));
 
-// Settings tabs (WAI-ARIA tabs pattern): click or arrow keys switch, the last choice is remembered.
-const SETTINGS_TABS = [$('tabModels'), $('tabFast')];
-
-function selectSettingsTab(tab, focus = false) {
-  for (const t of SETTINGS_TABS) {
-    const selected = t === tab;
-    t.setAttribute('aria-selected', String(selected));
-    t.tabIndex = selected ? 0 : -1;
-    $(t.getAttribute('aria-controls')).hidden = !selected;
-  }
-  if (focus) tab.focus();
-  $('settingsView').scrollTop = 0;
-  try { localStorage.setItem('settingsTab', tab.id); } catch { /* storage blocked */ }
-}
-
-SETTINGS_TABS.forEach((tab, i) => {
-  tab.addEventListener('click', () => selectSettingsTab(tab));
-  tab.addEventListener('keydown', (e) => {
-    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
-    if (!step) return;
-    e.preventDefault();
-    const dir = document.documentElement.dir === 'rtl' ? -step : step;
-    selectSettingsTab(SETTINGS_TABS[(i + dir + SETTINGS_TABS.length) % SETTINGS_TABS.length], true);
-  });
+// One focused settings page at a time: a searchable index, then a page per
+// section. The forms are never rebuilt by moving around, so an unsaved edit
+// survives walking from a page to the index and back.
+const settingsNav = createSettingsNav({
+  index: $('settingsIndex'),
+  pages: {
+    models: $('page-models'),
+    'provider-main': $('page-provider-main'),
+    'provider-backup': $('page-provider-backup'),
+    fast: $('page-fast'),
+    voice: $('page-voice'),
+    behavior: $('page-behavior'),
+    language: $('page-language'),
+    account: $('page-account'),
+  },
+  title: $('settingsTitle'),
+  titles: {
+    null: () => t('settings.title'),
+    models: () => t('sec.models'),
+    'provider-main': () => t('sub.providerMain'),
+    'provider-backup': () => t('sub.providerBackup'),
+    fast: () => t('sec.fast'),
+    voice: () => t('sec.voice'),
+    behavior: () => t('sec.behavior'),
+    language: () => t('sec.language'),
+    account: () => t('sec.account'),
+  },
+  search: $('settingsSearch'),
+  searchEmpty: $('settingsSearchEmpty'),
+  rows: [...document.querySelectorAll('#settingsRows .settings-row')],
+  onExit: () => toggleSettings(false),
 });
 
-try {
-  const saved = $(localStorage.getItem('settingsTab') ?? '');
-  if (SETTINGS_TABS.includes(saved)) selectSettingsTab(saved);
-} catch { /* storage blocked */ }
-$('closeSettingsBtn').addEventListener('click', () => toggleSettings(false));
+// Every row opens its own page; the back arrow walks back out of them.
+for (const row of document.querySelectorAll('.settings-row[data-section]')) {
+  row.addEventListener('click', () => {
+    settingsNav.show(row.dataset.section, { from: row });
+    // A page's draft is what the footer saves; a dirty draft is offered its
+    // way out on the index too.
+    syncFooter();
+  });
+}
+$('settingsSearch').addEventListener('input', () => settingsNav.filter($('settingsSearch').value));
+$('settingsSearch').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const first = [...document.querySelectorAll('#settingsRows .settings-row')].find((row) => !row.hidden);
+  first?.click();
+});
 
 // Numbers each permission check; a newer check or a click on the switch makes an
 // older answer stale, so it can never undo what the user just chose.
@@ -2360,7 +2549,12 @@ function syncNotifySwitch() {
   }, () => {});
 }
 
-function toggleSettings(open) {
+/**
+ * Opens or leaves the settings. The section names the page to land on, so the
+ * panel can arrive straight at the main provider when no model is set up, or
+ * at the voice engine from the voice screen.
+ */
+function toggleSettings(open, section = null) {
   // Closing, saved or not: the notifications permission follows the saved switch. One
   // granted for an edit that was not saved, or for a switch saved off, is given back.
   if (!open && settings) {
@@ -2375,14 +2569,74 @@ function toggleSettings(open) {
   $('settingsView').hidden = !open;
   $('chatView').hidden = open;
   $('settingsError').hidden = true;
+  // The header becomes the settings page's header, and the approvals wait
+  // above the page where they can still be answered.
+  syncHeaderContext();
+  placeApprovals(open ? 'home' : 'chat');
   if (open) {
+    settingsNav.show(section);
+    $('settingsSearch').value = '';
+    settingsNav.filter('');
+    syncFooter();
     // The sign-in state may have changed while the panel was closed.
     refreshAuthStates().catch(() => {});
     mainForm.loadModels();
     if ($('fallbackEnabled').checked) fallbackForm.loadModels();
     loadFastModels();
     loadFastFallbackModels();
+  } else {
+    $('settingsBtn').focus();
   }
+}
+
+/**
+ * One edit somewhere in the settings: the footer says so, and Cancel means
+ * something as long as it does. The interface language is not part of the
+ * draft — it is saved the moment it is chosen, like the header switch — and
+ * neither are the transient sign-in fields (a device code, a pasted
+ * auth.json), which are not settings at all.
+ */
+function markDirty() {
+  settingsDirty = true;
+  $('settingsDirty').hidden = false;
+  $('settingsStatus').textContent = t('settings.dirty');
+  syncFooter();
+}
+
+function markClean() {
+  settingsDirty = false;
+  $('settingsDirty').hidden = true;
+  $('settingsStatus').textContent = '';
+  syncFooter();
+}
+
+let settingsDirty = false;
+
+// Fields that hold transient secrets, not settings: typing into them never
+// invents a draft.
+const NOT_A_SETTING_EDIT = '[data-auth], #authJson, .search-field';
+
+// Any edit in any page marks the draft, wherever the user walks afterwards.
+$('settingsView').addEventListener('input', (e) => {
+  if (e.target.id === 'uiLanguage') return;
+  if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
+  markDirty();
+  renderSettingsSummaries();
+});
+$('settingsView').addEventListener('change', (e) => {
+  if (e.target.id === 'uiLanguage') return;
+  if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
+  markDirty();
+  renderSettingsSummaries();
+});
+
+/**
+ * The footer owns Save and Cancel wherever a draft can be: on every page, and
+ * on the index too once an edit exists — a draft must not lose its way out
+ * just because the user went back to the index.
+ */
+function syncFooter() {
+  $('settingsFooter').hidden = settingsNav.section() === null && !settingsDirty;
 }
 
 async function init() {
@@ -2404,7 +2658,10 @@ async function init() {
   fillForm();
   await refreshAuthStates();
   updateChip();
-  if (!activeModel()) toggleSettings(true);
+  renderSettingsSummaries();
+  // No model to work with yet: the panel opens straight at the main provider,
+  // so there is an obvious route to set one up.
+  if (!activeModel()) toggleSettings(true, 'provider-main');
   mainForm.loadModels();
   loadFastModels();
 }
@@ -2446,7 +2703,11 @@ function fillForm() {
   syncReplyLanguage();
   fillFastForm(settings.fast);
   if ($('voiceEngine')) $('voiceEngine').value = settings.voiceEngine ?? 'postora';
+  $('uiLanguage').value = settings.uiLanguage ?? 'auto';
   syncRecommended();
+  markClean();
+  renderModelFields();
+  renderSettingsSummaries();
 }
 
 // The tested free setup: offered up front until a provider is set up, then behind a link.
@@ -2522,7 +2783,9 @@ $('notify').addEventListener('change', async () => {
 });
 
 function syncFallback() {
-  $('fallbackProvider').hidden = !$('fallbackEnabled').checked;
+  // The backup page stays reachable either way; the row that opens it only
+  // means something while a backup is used.
+  $('settingsRowBackup').hidden = !$('fallbackEnabled').checked;
 }
 
 $('fallbackEnabled').addEventListener('change', () => {
@@ -2538,6 +2801,12 @@ function knownFastProvider(slot) {
 }
 
 function fillFastForm(saved) {
+  loads.fast += 1;
+  loads.fastFallback += 1;
+  fastModels = [];
+  fastFallbackModels = [];
+  fastListState.fast = { loading: false, error: '' };
+  fastListState.fastFallback = { loading: false, error: '' };
   const fast = { ...knownFastProvider(saved), fallback: knownFastProvider(saved.fallback) };
   $('fastEnabled').checked = fast.enabled;
   $('fastProvider').value = fast.provider;
@@ -2604,31 +2873,22 @@ function syncFast() {
   $('fastFallbackFrame').hidden = !$('fastEnabled').checked; // a backup for a layer that is off means nothing
 }
 
-// TypeSafe has no model list; the other decision providers list theirs.
+// TypeSafe has no model list; the other decision providers list theirs. The
+// model button shows what is set, and the shared dialog does the choosing.
 function syncFastProvider() {
-  syncListedPicker($('fastProvider').value, fastPickerEls(), fastModels);
+  renderModelFields();
 }
 
 function syncFastFallback() {
   $('fastFallbackFields').hidden = !$('fastFallbackEnabled').checked;
-  syncListedPicker($('fastFallbackProvider').value, fastFallbackPickerEls(), fastFallbackModels);
+  renderModelFields();
 }
 
-const fastPickerEls = () => ({ select: $('fastModelSelect'), input: $('fastModel'), search: $('fastModelSearch'), refresh: $('fastModelsBtn') });
-const fastFallbackPickerEls = () => ({ select: $('fastFallbackModelSelect'), input: $('fastFallbackModel'), search: $('fastFallbackModelSearch'), refresh: $('fastFallbackModelsBtn') });
-
-function syncListedPicker(provider, els, list) {
-  const listed = provider !== 'typesafe';
-  els.refresh.hidden = !listed;
-  els.select.hidden = !listed;
-  if (listed) renderPicker(els.select, els.input, list, els.search);
-  else {
-    els.input.hidden = false;
-    els.search.hidden = true;
-  }
-}
-
-$('fastEnabled').addEventListener('change', syncFast);
+$('fastEnabled').addEventListener('change', () => {
+  syncFast();
+  loadFastModels();
+  loadFastFallbackModels();
+});
 $('fastProvider').addEventListener('change', () => {
   const preset = fastPresets[$('fastProvider').value];
   $('fastBaseUrl').value = preset.baseUrl;
@@ -2639,9 +2899,6 @@ $('fastProvider').addEventListener('change', () => {
   syncFastProvider();
   loadFastModels();
 });
-$('fastModelsBtn').addEventListener('click', () => loadFastModels(true));
-bindSearch($('fastModelSearch'), $('fastModelSelect'), () => fastModels, syncFastProvider);
-$('fastModelSelect').addEventListener('change', () => pickModel($('fastModelSelect'), $('fastModel')));
 
 $('fastFallbackEnabled').addEventListener('change', () => {
   syncFastFallback();
@@ -2654,37 +2911,54 @@ $('fastFallbackProvider').addEventListener('change', () => {
   syncFastFallback();
   loadFastFallbackModels();
 });
-$('fastFallbackModelsBtn').addEventListener('click', () => loadFastFallbackModels(true));
-bindSearch($('fastFallbackModelSearch'), $('fastFallbackModelSelect'), () => fastFallbackModels, syncFastFallback);
-$('fastFallbackModelSelect').addEventListener('change', () => pickModel($('fastFallbackModelSelect'), $('fastFallbackModel')));
 
 async function loadFastModels(showErrors = false) {
   const config = readFastForm();
-  if (!config.enabled || config.provider === 'typesafe') return;
   const load = ++loads.fast;
+  if (!config.enabled || config.provider === 'typesafe') {
+    fastListState.fast = { loading: false, error: '' };
+    modelDialog.update();
+    return;
+  }
+  fastListState.fast = { loading: true, error: '' };
+  modelDialog.update();
   try {
     const list = await request('list-fast-models', { config });
     if (load !== loads.fast) return;
     fastModels = list;
+    fastListState.fast = { loading: false, error: '' };
     syncFastProvider();
     showFastStatus('', '');
   } catch (err) {
-    if (load === loads.fast && showErrors) showFastStatus('fail', `✗ ${err.message}`);
+    if (load !== loads.fast) return;
+    fastListState.fast = { loading: false, error: showErrors ? err.message : '' };
+    if (showErrors) showFastStatus('fail', `✗ ${err.message}`);
   }
+  modelDialog.update();
 }
 
 async function loadFastFallbackModels(showErrors = false) {
   const config = readFastFallback();
-  if (!$('fastEnabled').checked || !config.enabled || config.provider === 'typesafe') return;
   const load = ++loads.fastFallback;
+  if (!$('fastEnabled').checked || !config.enabled || config.provider === 'typesafe') {
+    fastListState.fastFallback = { loading: false, error: '' };
+    modelDialog.update();
+    return;
+  }
+  fastListState.fastFallback = { loading: true, error: '' };
+  modelDialog.update();
   try {
     const list = await request('list-fast-models', { config });
     if (load !== loads.fastFallback) return;
     fastFallbackModels = list;
+    fastListState.fastFallback = { loading: false, error: '' };
     syncFastFallback();
   } catch (err) {
-    if (load === loads.fastFallback && showErrors) showFastStatus('fail', `✗ ${err.message}`);
+    if (load !== loads.fastFallback) return;
+    fastListState.fastFallback = { loading: false, error: showErrors ? err.message : '' };
+    if (showErrors) showFastStatus('fail', `✗ ${err.message}`);
   }
+  modelDialog.update();
 }
 
 async function testFast(config) {
@@ -2744,6 +3018,292 @@ function currentProviderSettings(s = settings) {
 function activeModel() {
   return currentProviderSettings().model;
 }
+
+// ---------- the model dialog ----------
+//
+// One dialog serves every model field: the quick control beside the composer
+// and the four settings slots. The fields stay the canonical state — the
+// dialog only reads what the field holds and applies what was picked, and the
+// quick control saves through the same path the Save button uses.
+
+const modelDialog = createModelDialog({
+  dialog: $('modelDialog'),
+  title: $('modelDialogTitle'),
+  searchRow: $('modelDialogSearchField'),
+  search: $('modelDialogSearch'),
+  list: $('modelDialogList'),
+  empty: $('modelDialogEmpty'),
+  status: $('modelDialogStatus'),
+  manual: $('modelDialogManual'),
+  manualInput: $('modelDialogManualInput'),
+  manualSave: $('modelDialogManualSave'),
+  manualBtn: $('modelDialogManualBtn'),
+  refresh: $('modelDialogRefresh'),
+  configure: $('modelDialogConfigure'),
+  close: $('modelDialogClose'),
+  hint: $('modelDialogHint'),
+});
+
+/** The provider label the summaries show for a slot's provider choice. */
+function providerLabel(provider, presetId) {
+  if (provider === 'compatible') return presets[presetId ?? 'custom']?.label ?? t('settings.provider.compatible');
+  return PROVIDER_LABELS[provider] ?? 'API';
+}
+
+/** The main slot's preset, read from its own select. */
+const mainPreset = () => document.querySelector('#mainProvider [data-field="preset"]')?.value ?? '';
+const backupPreset = () => document.querySelector('#fallbackProvider [data-field="preset"]')?.value ?? '';
+
+/**
+ * The index summaries say what each section is set to right now — the draft,
+ * not just the saved values, so a row never lies about the page behind it.
+ */
+function renderSettingsSummaries() {
+  if (!settings) return;
+  const mainModel = mainForm.model();
+  const backupOn = $('fallbackEnabled').checked;
+  const backupModel = backupOn ? fallbackForm.model() : '';
+  $('sumModels').textContent = [
+    mainModel || t('model.none'),
+    backupOn ? (backupModel ? t('sum.backupOn') : t('sum.backupOff')) : t('sum.backupOff'),
+  ].join(' · ');
+  $('sumMain').textContent = [mainModel || t('model.none'), providerLabel(mainForm.provider(), mainPreset())].join(' · ');
+  $('sumBackup').textContent = backupOn
+    ? [backupModel || t('model.none'), providerLabel(fallbackForm.provider(), backupPreset())].join(' · ')
+    : t('sum.off');
+  const fastOn = $('fastEnabled').checked;
+  $('sumFast').textContent = fastOn
+    ? [
+        fastPresets[$('fastProvider').value]?.label ?? $('fastProvider').value,
+        $('fastMode').selectedOptions[0]?.textContent ?? '',
+      ].filter(Boolean).join(' · ')
+    : t('sum.off');
+  $('sumVoice').textContent = $('voiceEngine').value === 'fast_only' ? t('voice.engineFastOnly') : t('voice.enginePostora');
+  $('sumBehavior').textContent = `${t('sum.behavior', { n: $('maxSteps').value || settings.maxSteps })} · ${$('vision').checked ? t('sum.visionOn') : t('sum.visionOff')}`;
+  const ui = $('uiLanguage').value;
+  const uiName = ui === 'auto' ? t('lang.auto') : ui === 'ar' ? 'العربية' : 'English';
+  const reply = $('replyLangEnabled').checked ? ($('replyLang').value === 'ar' ? 'العربية' : 'English') : t('lang.auto');
+  $('sumLanguage').textContent = `${uiName} · ${reply}`;
+  $('sumAccount').textContent = $('sumAccountRow').textContent = account?.email || t('sum.notSignedIn');
+}
+
+/** Every model button shows the model its field holds right now. */
+function renderModelFields() {
+  const main = mainForm.model();
+  const backup = fallbackForm.model();
+  $('modelMainLabel').textContent = main || t('model.pick');
+  $('modelBackupLabel').textContent = backup || t('model.pick');
+  $('modelFastLabel').textContent = $('fastModel').value || t('model.pick');
+  $('modelFastBackupLabel').textContent = $('fastFallbackModel').value || t('model.pick');
+  modelDialog.update();
+}
+
+/**
+ * The saved chat's own settings with one model swapped in. The quick control
+ * saves only this — the model and the effort that goes with it — never the
+ * draft the user may have left unsaved on a settings page.
+ */
+function quickModelSettings(id, effort) {
+  const next = structuredClone(settings);
+  const slot = currentProviderSettings(next);
+  slot.model = id;
+  slot.effort = effort;
+  return next;
+}
+
+/**
+ * The quick control saved a model: the saved chat keeps its own provider and
+ * model as the source of truth, the save round trip is the real one, and an
+ * unrelated draft (steps, keys, provider, language, fast layer) is left
+ * exactly as the user left it — still unsaved, still marked dirty.
+ */
+async function saveQuickModel(id, effort) {
+  const draft = mainForm.read();
+  const draftSlot = currentProviderSettings(draft);
+  const savedSlot = currentProviderSettings();
+  const sameConnection = draft.provider === settings.provider
+    && (draft.provider !== 'claude' || draft.claude.auth === settings.claude.auth)
+    && (draft.provider !== 'compatible' || (draft.compatible.preset === settings.compatible.preset && draft.compatible.baseUrl === settings.compatible.baseUrl));
+  const syncDraft = sameConnection && draftSlot.model === savedSlot.model && draftSlot.effort === savedSlot.effort;
+  const next = quickModelSettings(id, effort);
+  const problem = settingsProblem(next);
+  if (problem) {
+    toggleSettings(true, problemPage(problem));
+    showSettingsError(t(problem));
+    return;
+  }
+  try {
+    settings = await request('save-settings', { settings: next });
+    if (syncDraft) mainForm.chooseModel(id, effort);
+    updateChip();
+    renderSettingsSummaries();
+  } catch (err) {
+    // The save did not go out: the saved chat keeps its old model, the draft
+    // keeps its edits, and the failure is readable where models are edited.
+    toggleSettings(true, 'provider-main');
+    showSettingsError(err.message);
+  }
+}
+
+/** Where a validation failure is readable: the page that owns the field. */
+function problemPage(problem) {
+  if (problem.startsWith('err.fast')) return 'fast';
+  if (problem === 'err.pickReplyLanguage') return 'language';
+  if (problem === 'err.fallbackModel' || problem === 'err.fallbackAnthropicKey') return 'provider-backup';
+  return 'provider-main';
+}
+
+// The quick control serves the provider that is SAVED, not a draft one: while
+// a settings page drafts another provider, the list here is loaded for the
+// saved one on its own.
+let quickModels = [];
+let quickLoading = false;
+let quickError = '';
+let quickLoad = 0;
+
+/** The quick catalog belongs only to the saved connection, never the draft. */
+function quickModelsFor() {
+  return quickModels;
+}
+
+async function loadQuickModels(showErrors = false) {
+  if (!settings) return;
+  const load = ++quickLoad;
+  quickLoading = true;
+  quickError = '';
+  modelDialog.update();
+  try {
+    const list = await request('list-models', { settings });
+    if (load !== quickLoad) return;
+    quickModels = list;
+    quickLoading = false;
+    modelDialog.update();
+  } catch (err) {
+    if (load !== quickLoad) return;
+    quickLoading = false;
+    quickError = showErrors ? err.message : t('model.fallback');
+    modelDialog.update();
+  }
+}
+
+/** The effort that goes with a picked model: the list's own default, else none. */
+const effortOf = (list, id) => list.find((m) => m.id === id)?.defaultEffort ?? '';
+
+/** The one field a dialog open works on, and where its choice lands. */
+const MODEL_SLOTS = {
+  quick: {
+    title: () => t('model.pickTitle'),
+    // The saved model, not a drafted one: the quick control edits what runs now.
+    current: () => currentProviderSettings().model,
+    models: () => quickModelsFor(),
+    manualOnly: () => false,
+    loading: () => quickLoading,
+    error: () => quickError,
+    onOpen: () => {
+      loadQuickModels();
+    },
+    apply: () => {},
+    refresh: () => loadQuickModels(true),
+    configure: () => toggleSettings(true, 'provider-main'),
+    after: (id) => saveQuickModel(id, effortOf(quickModelsFor(), id)),
+  },
+  main: {
+    title: () => t('sub.providerMain'),
+    current: () => mainForm.model(),
+    models: () => mainForm.list(),
+    manualOnly: () => false,
+    loading: () => mainForm.status().loading,
+    error: () => mainForm.status().error,
+    apply: (id) => mainForm.chooseModel(id),
+    refresh: () => mainForm.loadModels(true),
+    after: () => {
+      markDirty();
+      renderModelFields();
+      renderSettingsSummaries();
+    },
+  },
+  backup: {
+    title: () => t('sub.backupModel'),
+    current: () => fallbackForm.model(),
+    models: () => fallbackForm.list(),
+    manualOnly: () => false,
+    loading: () => fallbackForm.status().loading,
+    error: () => fallbackForm.status().error,
+    apply: (id) => fallbackForm.chooseModel(id),
+    refresh: () => fallbackForm.loadModels(true),
+    after: () => {
+      markDirty();
+      renderModelFields();
+      renderSettingsSummaries();
+    },
+  },
+  fast: {
+    title: () => t('fast.title'),
+    current: () => $('fastModel').value,
+    models: () => fastModels,
+    // TypeSafe serves no list: the id is typed, as the field always allowed.
+    manualOnly: () => $('fastProvider').value === 'typesafe',
+    loading: () => fastListState.fast.loading,
+    error: () => fastListState.fast.error,
+    apply: (id) => { $('fastModel').value = id; },
+    refresh: () => loadFastModels(true),
+    after: () => {
+      markDirty();
+      renderModelFields();
+      renderSettingsSummaries();
+    },
+  },
+  fastBackup: {
+    title: () => t('fast.fallbackTitle'),
+    current: () => $('fastFallbackModel').value,
+    models: () => fastFallbackModels,
+    manualOnly: () => $('fastFallbackProvider').value === 'typesafe',
+    loading: () => fastListState.fastFallback.loading,
+    error: () => fastListState.fastFallback.error,
+    apply: (id) => { $('fastFallbackModel').value = id; },
+    refresh: () => loadFastFallbackModels(true),
+    after: () => {
+      markDirty();
+      renderModelFields();
+      renderSettingsSummaries();
+    },
+  },
+};
+
+function openModelSlot(slot) {
+  const conf = MODEL_SLOTS[slot];
+  modelDialog.open({
+    title: conf.title,
+    get: () => ({
+      current: conf.current(),
+      models: conf.models(),
+      manualOnly: conf.manualOnly(),
+      loading: conf.loading?.() ?? false,
+      error: conf.error?.() ?? '',
+    }),
+    onOpen: () => conf.onOpen?.(),
+    onPick: (id) => {
+      conf.apply(id);
+      conf.after(id);
+    },
+    onManual: (id) => {
+      conf.apply(id);
+      conf.after(id);
+    },
+    onRefresh: conf.refresh ? async () => {
+      await conf.refresh();
+      renderModelFields();
+      modelDialog.update();
+    } : null,
+    ...(conf.configure ? { onConfigure: conf.configure } : {}),
+  });
+}
+
+$('modelQuickBtn').addEventListener('click', () => openModelSlot('quick'));
+$('modelBtnMain').addEventListener('click', () => openModelSlot('main'));
+$('modelBtnBackup').addEventListener('click', () => openModelSlot('backup'));
+$('modelBtnFast').addEventListener('click', () => openModelSlot('fast'));
+$('modelBtnFastBackup').addEventListener('click', () => openModelSlot('fastBackup'));
 
 // ---------- account sign-in ----------
 
@@ -2984,24 +3544,58 @@ $('importBtn').addEventListener('click', async () => {
     showSettingsError(err.message);
   }
 });
+
+// Back walks out of a page to its parent, and out of the index to the chat.
+// The draft is kept either way: returning to settings shows it again.
+$('closeSettingsBtn').addEventListener('click', () => {
+  if (settingsNav.back()) return;
+  syncFooter();
+});
+
+// Cancel is deliberate: the draft is thrown away, back to the saved values,
+// and settings closes. Nothing unsaved survives it by accident.
+$('cancelSettingsBtn').addEventListener('click', () => {
+  fillForm();
+  syncAuthFrames();
+  redrawAuth();
+  toggleSettings(false);
+});
+
 $('saveBtn').addEventListener('click', async () => {
   const next = readForm();
   const problem = settingsProblem(next);
   if (problem) {
-    selectSettingsTab(problem.startsWith('err.fast') ? $('tabFast') : $('tabModels')); // show the field at fault
+    settingsNav.show(problemPage(problem), { focus: false });
+    syncFooter();
     showSettingsError(t(problem));
     return;
   }
-  settings = await request('save-settings', { settings: next });
-  updateChip();
-  toggleSettings(false);
+  $('saveBtn').disabled = true;
+  try {
+    settings = await request('save-settings', { settings: next });
+    fillForm();
+    updateChip();
+    toggleSettings(false);
+  } catch (err) {
+    showSettingsError(err.message);
+  } finally {
+    $('saveBtn').disabled = false;
+  }
 });
+
+// Escape's topmost-surface order is handled by the one document keydown
+// listener up in the menus section: dialogs first, then menus, then settings.
 
 function updateChip() {
   const p = currentProviderSettings();
   const label = PROVIDER_LABELS[settings.provider] ?? presets[settings.compatible.preset]?.label ?? 'API';
   const fastTag = settings.fast.enabled && settings.fast.apiKey ? ' · ⚡' : '';
-  $('modelChip').textContent = p.model ? `${label} · ${p.model}${p.effort ? ` · ${p.effort}` : ''}${fastTag}` : t('model.none');
+  const text = p.model ? `${p.model}${p.effort ? ` · ${p.effort}` : ''}` : t('model.none');
+  const control = $('modelQuickLabel');
+  control.textContent = text;
+  $('modelQuickBtn').title = p.model ? `${label} · ${text}${p.effort ? ` · ${p.effort}` : ''}${fastTag}` : t('model.none');
+  $('modelQuickBtn').setAttribute('aria-label', $('modelQuickBtn').title);
+  renderModelFields();
 }
 
 function showSettingsError(message) {
@@ -3012,3 +3606,6 @@ function showSettingsError(message) {
 
 pick(startSessions).catch((err) => showSettingsError(err.message));
 init().catch((err) => showSettingsError(err.message));
+// The chat is the first screen: its docks are wired before anything arrives.
+placeApprovals('chat');
+syncHeaderContext();
