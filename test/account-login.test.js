@@ -17,7 +17,49 @@ globalThis.chrome = {
   runtime: { getPlatformInfo: async () => ({}) },
 };
 
-const { accountLoginState, cancelAccountLogin, requestedProvider, signInFailureDetail, startAccountLogin, submitAccountInput } = await import('../src/background/account-login.js');
+const { accountLoginState, cancelAccountLogin, requestedProvider, signInFailureDetail, startAccountLogin, submitAccountInput, trustedKimiVerificationUrl } = await import('../src/background/account-login.js');
+
+test('Kimi verification origins reject credentials, cleartext, alternate ports and lookalike hosts', () => {
+  assert.equal(trustedKimiVerificationUrl('https://auth.kimi.com/authorize'), true);
+  assert.equal(trustedKimiVerificationUrl('https://www.kimi.com/code/authorize?user_code=TEST'), true);
+  for (const url of ['http://www.kimi.com/authorize', 'https://user@www.kimi.com/authorize', 'https://www.kimi.com:8443/authorize', 'https://www.kimi.com.evil.test/authorize', 'https://auth.kimi.ai/authorize', 'javascript:alert(1)']) {
+    assert.equal(trustedKimiVerificationUrl(url), false, url);
+  }
+});
+
+test('Kimi device sign-in opens the trusted complete URL and stores tokens only in its account record', async () => {
+  stubFetch((url) => {
+    if (url.endsWith('/device_authorization')) return Response.json({ device_code: 'PRIVATE-DEVICE', user_code: 'KIMI-1234', verification_uri: 'https://www.kimi.com/code/authorize', verification_uri_complete: 'https://www.kimi.com/code/authorize?user_code=KIMI-1234', interval: 1, expires_in: 60 });
+    if (url.endsWith('/oauth/token')) return Response.json({ access_token: 'KIMI-ACCESS', refresh_token: 'KIMI-REFRESH', expires_in: 3600 });
+    throw new Error('Unexpected auth origin');
+  });
+  const shown = await startAccountLogin('kimi', { post });
+  await settled('auth-success', 0, 5000);
+  assert.equal(shown.userCode, 'KIMI-1234');
+  assert.equal(openedTabs[0], 'https://www.kimi.com/code/authorize?user_code=KIMI-1234');
+  assert.equal(store['accountAuth.kimi'].credential.access, 'KIMI-ACCESS');
+  assert.ok(calls.every((call) => call.url.startsWith('https://auth.kimi.com/')));
+  assert.ok(!JSON.stringify(events).includes('PRIVATE-DEVICE'));
+  assert.ok(!JSON.stringify(events).includes('KIMI-ACCESS'));
+});
+
+test('Kimi sign-in rejects a malicious verification URL before opening or polling it', async () => {
+  stubFetch(() => Response.json({ device_code: 'PRIVATE', user_code: 'CODE', verification_uri: 'https://www.kimi.com/code/authorize', verification_uri_complete: 'https://www.kimi.com.evil.test/authorize', interval: 1, expires_in: 60 }));
+  await assert.rejects(startAccountLogin('kimi', { post }), /sign-in failed/i);
+  await settled('auth-error');
+  assert.equal(openedTabs.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(store['accountAuth.kimi'], undefined);
+});
+
+test('Kimi cancellation prevents a device poll from storing a credential', async () => {
+  stubFetch(() => Response.json({ device_code: 'PRIVATE', user_code: 'CODE', verification_uri: 'https://www.kimi.com/code/authorize', verification_uri_complete: 'https://www.kimi.com/code/authorize?user_code=CODE', interval: 1, expires_in: 60 }));
+  await startAccountLogin('kimi', { post });
+  await cancelAccountLogin('kimi');
+  await settled('auth-error');
+  assert.equal(calls.length, 1);
+  assert.equal(store['accountAuth.kimi'], undefined);
+});
 
 let calls;
 function stubFetch(handler) {

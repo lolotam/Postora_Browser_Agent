@@ -176,6 +176,8 @@ test('the control draws the copy of the language it is in', () => {
     assert.equal(elements.state.textContent, MESSAGES[language]['access.state.full']);
     assert.equal(elements.risk.textContent, MESSAGES[language]['access.state.fullRisk']);
     assert.equal(elements.risk.hidden, false, 'the risk is not shown while the mode is Full');
+    assert.equal(elements.select.title, MESSAGES[language]['access.state.fullRisk']);
+    assert.equal(elements.select.classes.get('risk'), true);
     // The voice screen shows the same mode the chat shows, in the same words.
     assert.equal(elements.voice.textContent, MESSAGES[language]['access.full']);
     assert.equal(elements.voice.title, MESSAGES[language]['access.state.full']);
@@ -194,6 +196,8 @@ test('the mode is never drawn before the worker confirmed it', () => {
   ui.reset();
   assert.equal(elements.select.value, ASK_FIRST);
   assert.equal(elements.risk.hidden, true);
+  assert.equal(elements.select.classes.get('risk'), false);
+  assert.equal(elements.select.title, MESSAGES.en['access.state.askFirst']);
   assert.equal(elements.state.textContent, MESSAGES.en['access.state.askFirst']);
 });
 
@@ -203,6 +207,9 @@ test('the panel markup holds the pieces the control drives', () => {
     assert.match(html, new RegExp(`id="${id}"`), `the panel has no #${id}`);
   }
   // The dialog names its heading and its description, so it is read out.
+  assert.match(html, /<span class="sr-only" id="accessRisk"/);
+  assert.doesNotMatch(html, /<p[^>]+id="accessRisk"/);
+  assert.match(html, /aria-describedby="accessState accessRisk"/);
   const dialog = html.slice(html.indexOf('id="accessWarning"'));
   assert.match(dialog, /aria-labelledby="accessWarningTitle"/);
   assert.match(dialog, /aria-describedby="accessWarningDesc"/);

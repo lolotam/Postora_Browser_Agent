@@ -1,4 +1,4 @@
-// Bundles the three pi-ai OAuth flows into src/vendor/pi-oauth.js, the only
+// Bundles the pi-ai OAuth flows into src/vendor/pi-oauth.js, the only
 // build step of this extension. The output is committed, so the extension
 // loads unpacked from the repository with nothing else to run.
 //
@@ -21,7 +21,17 @@ const FLOWS = [
   { file: 'anthropic.js', export: 'anthropicOAuth' },
   { file: 'openai-codex.js', export: 'openaiCodexOAuth' },
   { file: 'xai.js', export: 'xaiOAuth' },
+  { file: 'kimi-coding.js', export: 'kimiCodingOAuth' },
 ];
+
+/** Pin Kimi's authority and reject token-bearing redirects in the browser build. */
+export function kimiBrowserSource(source) {
+  const host = /function getOauthHost\(\) \{[\s\S]*?\n\}/;
+  const requests = source.match(/signal: requestSignal\(signal\),/g) ?? [];
+  if (!host.test(source) || requests.length !== 3) throw new Error('Review the updated pi Kimi OAuth source before bundling it');
+  return source.replace(host, 'function getOauthHost() { return DEFAULT_OAUTH_HOST; }')
+    .replaceAll('signal: requestSignal(signal),', 'redirect: "error", signal: requestSignal(signal),');
+}
 
 /** The banner every build of the bundle carries. */
 export function banner() {
@@ -54,6 +64,14 @@ export function buildOptions() {
     alias: { 'node:http': STUB, 'node:crypto': STUB, 'node:fs': STUB },
     banner: { js: banner() },
     legalComments: 'none',
+    plugins: [{
+      name: 'kimi-browser-boundary',
+      setup(build) {
+        build.onLoad({ filter: /[\\/]auth[\\/]oauth[\\/]kimi-coding\.js$/ }, (args) => ({
+          contents: kimiBrowserSource(fs.readFileSync(args.path, 'utf8')), loader: 'js',
+        }));
+      },
+    }],
     outfile: OUT_FILE,
     logLevel: 'warning',
   };

@@ -13,6 +13,7 @@ globalThis.chrome = {
 };
 
 const { exportBackup, importBackup } = await import('../src/lib/backup.js');
+const { backUpToDrive } = await import('../src/lib/drive-backup.js');
 
 beforeEach(() => {
   for (const k of Object.keys(store)) delete store[k];
@@ -37,6 +38,47 @@ test('a backup carries the settings and the signed-in accounts back after a rein
   assert.equal(store['accountAuth.chatgpt'].credential.access, 'at');
   assert.equal(store['accountAuth.chatgpt'].generation, 1, 'the import moves the generation on');
   assert.equal(store['accountAuth.claude'], undefined, 'a provider the file does not have is not written');
+});
+
+test('Gemini/Moonshot API keys and Kimi Code sign-in survive a backup without crossing scopes', async () => {
+  store.settings = { provider: 'gemini', gemini: { apiKey: 'GOOGLE-KEY', model: 'gemini-test' }, kimi: { apiKey: 'MOONSHOT-KEY', auth: 'account', model: 'kimi-for-coding' } };
+  store['accountAuth.kimi'] = { generation: 3, credential: credential('CODE-ACCESS') };
+  const backup = await exportBackup();
+  for (const key of Object.keys(store)) delete store[key];
+  await importBackup(backup);
+  assert.equal(store.settings.gemini.apiKey, 'GOOGLE-KEY');
+  assert.equal(store.settings.kimi.apiKey, 'MOONSHOT-KEY');
+  assert.equal(store['accountAuth.kimi'].credential.access, 'CODE-ACCESS');
+  assert.equal(store.settings.keys.moonshot, 'MOONSHOT-KEY');
+  assert.ok(!JSON.stringify(store.settings).includes('CODE-ACCESS'));
+});
+
+test('a forced manual backup replaces unchanged content and returns Drive failures', async () => {
+  store.settings = { provider: 'gemini', gemini: { apiKey: 'GOOGLE-KEY', model: 'gemini-test' } };
+  const calls = [];
+  let denied = false;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, method: init.method ?? 'GET' });
+    if (denied) return Response.json({ error: { message: 'Permission denied' } }, { status: 403 });
+    if (init.method === 'PATCH') return Response.json({ id: 'backup-file' });
+    return Response.json({ files: [{ id: 'backup-file' }] });
+  };
+  const getToken = async () => 'SYNTHETIC-DRIVE-TOKEN';
+  const first = await backUpToDrive({ getToken });
+  calls.length = 0;
+  store.driveBackup.at = 1;
+  const forced = await backUpToDrive({ getToken, force: true });
+  assert.deepEqual(calls.map((call) => call.method), ['PATCH']);
+  assert.match(calls[0].url, /\/files\/backup-file\?uploadType=media$/);
+  assert.equal(forced.hash, first.hash);
+  assert.ok(forced.at > 1);
+  calls.length = 0;
+  await backUpToDrive({ getToken });
+  assert.equal(calls.length, 0, 'automatic unchanged backup remains deduplicated');
+  denied = true;
+  const failed = await backUpToDrive({ getToken, force: true });
+  assert.equal(failed.error, 'Google Drive: Permission denied');
+  assert.equal(failed.at, forced.at, 'a failed write must not advance the success timestamp');
 });
 
 test('a backup taken right after the update still carries the old ChatGPT sign-in', async () => {

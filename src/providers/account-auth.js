@@ -4,13 +4,13 @@
 // result is stored only if the record it started from is still the current
 // one: a late result never undoes a sign-out or a newer sign-in.
 
-import { anthropicOAuth, openaiCodexOAuth, xaiOAuth } from '../vendor/pi-oauth.js';
+import { anthropicOAuth, kimiCodingOAuth, openaiCodexOAuth, xaiOAuth } from '../vendor/pi-oauth.js';
 import { chatgptIdentity } from '../lib/jwt.js';
 import { legacyCredential } from '../lib/credentials.js';
 import { ACCOUNT_PROVIDERS } from '../lib/settings.js';
 
 /** The pi-ai OAuth flow each account provider signs in with. */
-const ACCOUNT_FLOWS = { chatgpt: 'openaiCodexOAuth', claude: 'anthropicOAuth', grok: 'xaiOAuth' };
+const ACCOUNT_FLOWS = { chatgpt: 'openaiCodexOAuth', claude: 'anthropicOAuth', grok: 'xaiOAuth', kimi: 'kimiCodingOAuth' };
 
 /** The storage key of every provider's credential record. */
 export const ACCOUNT_STORAGE_KEYS = ACCOUNT_PROVIDERS.map((provider) => `accountAuth.${provider}`);
@@ -52,7 +52,7 @@ export class AccountAuthError extends Error {
   }
 }
 
-let flows = { anthropicOAuth, openaiCodexOAuth, xaiOAuth };
+let flows = { anthropicOAuth, kimiCodingOAuth, openaiCodexOAuth, xaiOAuth };
 
 /** Replaces OAuth flows, for tests. */
 export function setAccountFlows(replacement) {
@@ -241,7 +241,7 @@ function storeRefreshed(provider, record, refreshed) {
  * account out; anything else keeps the record, because the token may still work.
  */
 async function refreshError(provider, record, error) {
-  if (!isDeadToken(error)) return new AccountAuthError(REFRESH_FAILED, { retryable: true });
+  if (!isDeadToken(error, provider)) return new AccountAuthError(REFRESH_FAILED, { retryable: true, code: 'refresh-failed' });
   return enqueue(provider, async () => {
     const current = await readRecord(provider);
     if (sameRecord(current, record)) await writeRecord(provider, current.generation, null);
@@ -250,8 +250,11 @@ async function refreshError(provider, record, error) {
 }
 
 /** True when pi-ai's error is a confirmed OAuth rejection. */
-function isDeadToken(error) {
+function isDeadToken(error, provider) {
   const text = String(error?.message ?? error ?? '');
+  // pi's Kimi adapter emits this fixed prefix only on confirmed 401/403 or
+  // invalid_grant rejection. A generic 403 from inference is not a dead token.
+  if (provider === 'kimi' && /^Kimi Code token refresh unauthorized \(status (400|401|403)\)/.test(text)) return true;
   if (!DEAD_TOKEN_CODES.some((code) => text.includes(code))) return false;
   const status = statusIn(text);
   return status !== null && DEAD_TOKEN_STATUSES.includes(status);

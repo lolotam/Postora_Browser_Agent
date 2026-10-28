@@ -25,6 +25,10 @@ function keySlots(settings) {
     // The Claude slots of the main model and of its backup share one Anthropic key.
     [settings.claude, ANTHROPIC_GROUP],
     [settings.fallback?.claude, ANTHROPIC_GROUP],
+    [settings.gemini, 'gemini'],
+    [settings.fallback?.gemini, 'gemini'],
+    [settings.kimi, 'moonshot'],
+    [settings.fallback?.kimi, 'moonshot'],
     [settings.fast, settings.fast?.provider],
     [settings.fast?.fallback, settings.fast?.fallback?.provider],
   ].filter(([slot]) => slot);

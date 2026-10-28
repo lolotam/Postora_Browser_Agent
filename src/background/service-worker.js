@@ -15,6 +15,8 @@ import { CLAUDE_CODE_IDENTITY, anthropicEfforts, listAnthropicModels } from '../
 import { headerRules } from './header-rules.js';
 import { listCompatibleModels } from '../providers/openai-compatible.js';
 import { listGrokModels } from '../providers/responses.js';
+import { listGeminiModels } from '../providers/named-api.js';
+import { listKimiModels } from '../providers/kimi.js';
 import { BrowserController } from '../browser/controller.js';
 import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
@@ -263,6 +265,8 @@ async function handleRequest(msg, sender) {
         });
       }
       if (route === 'grok') return withKeepAlive(() => listGrokModels());
+      if (route === 'gemini') return withKeepAlive(() => listGeminiModels(settings.gemini));
+      if (route === 'kimi') return withKeepAlive(() => listKimiModels(settings.kimi));
       const preset = settings.compatible.preset;
       let list = [];
       try {
@@ -291,7 +295,7 @@ async function handleRequest(msg, sender) {
     case 'drive-after-sign-in':
       return afterGoogleSignIn();
     case 'drive-backup-now':
-      return backUpToDrive();
+      return backUpToDrive({ force: true });
     case 'drive-restore':
       return restoreFromDrive();
     case 'tab-session':

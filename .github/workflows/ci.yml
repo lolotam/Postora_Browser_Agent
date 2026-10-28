@@ -21,3 +21,11 @@ jobs:
         run: npx playwright-core install --with-deps chromium
       - name: End-to-end (extension in Chromium with mock models)
         run: npm run e2e
+      - name: Build the store package
+        run: npm run package
+      - name: Unpack the store package
+        run: unzip -q dist/postora-browser-agent-v*.zip -d "$RUNNER_TEMP/postora-store"
+      - name: End-to-end (packaged extension with mock models)
+        run: npm run e2e
+        env:
+          E2E_EXTENSION_DIR: ${{ runner.temp }}/postora-store

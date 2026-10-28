@@ -17,6 +17,10 @@ no build step. It is generated — do not edit it by hand. The bundle is used
 for the account sign-in and the token refresh only; no model call goes through
 it.
 
+The browser build includes Kimi Code device authorization and refresh. Its build
+transform pins the OAuth authority to `https://auth.kimi.com` and rejects HTTP
+redirects for token-bearing requests; see `kimiBrowserSource` in the build script.
+
 ### Licence text
 
 ```

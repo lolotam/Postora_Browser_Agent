@@ -2,7 +2,7 @@
 
 A Chrome side-panel extension. Give it a task in Arabic or English and it carries it out in your real browser, one step at a time: it searches, clicks, types, picks from menus, scrolls, switches tabs, and reads and collects information. When it finishes, it returns a **final report** with the results and sources.
 
-**Model access & auth:** sign in with a ChatGPT, Claude or Grok account, or use an API key.
+**Model access & auth:** sign in with a ChatGPT, Claude, Grok or eligible Kimi Code account, or use an API key.
 
 | Provider | How you connect |
 |---|---|
@@ -10,7 +10,9 @@ A Chrome side-panel extension. Give it a task in Arabic or English and it carrie
 | **Claude** (Pro / Max) | Account sign-in by **pasting the code Claude shows after you approve**: the extension opens claude.ai, you approve, and you paste the code back into the panel. An **Anthropic API key** works too. |
 | **Grok** (SuperGrok / X Premium) | Account sign-in with a **device code** at `auth.x.ai`. An **xAI API key** works too, through the xAI preset. |
 | **MiniMax** | API key: the **pay-as-you-go** preset or the **Coding Plan** preset (`sk-cp-…` keys), each with its own key. |
-| OpenAI, Gemini, DeepSeek, NVIDIA NIM, OpenRouter, OpenCode, Z.ai GLM | API key (OpenAI-compatible). |
+| **Google Gemini** | Select **Google Gemini — API key** and use a [Google AI Studio key](https://aistudio.google.com/apikey). Catalog and execution use Google's documented OpenAI-compatible API directly. Existing Gemini presets keep working. |
+| **Kimi** | Select **Moonshot API** for an international [Platform API key](https://platform.kimi.ai/console/api-keys), or **Kimi Code account** for subscription device sign-in. These are different products/billing scopes; ordinary Kimi chat sessions are not API credentials. Code is for eligible programming use, with account/region restrictions. |
+| OpenAI, DeepSeek, NVIDIA NIM, OpenRouter, OpenCode, Z.ai GLM | API key (OpenAI-compatible). |
 
 You choose the model, the auth method, and the reasoning effort.
 
@@ -35,9 +37,11 @@ You choose the model, the auth method, and the reasoning effort.
 - **Tools:** navigate, search, click, type, press keys, select options, hover, scroll, read long pages, history, and tab management. JavaScript extraction is optional.
 - **Safety:** the agent must ask you before payments, sending messages, deleting data or typing passwords. Page text is treated as untrusted.
 - **Optional fast layer:** a ⚡ layer can run confident steps without calling the main LLM. It uses TypeSafe's Jev decision model, directly or through Vercel AI Gateway, OpenCode Zen or OpenRouter, for both the fast layer and its backup. It is experimental.
+- **Fast-layer access failures:** a 403 or disabled model is skipped for the current task with one warning. A configured fast backup is tried; otherwise the normal agent continues with its main model. Fast-only voice reports the failure without claiming success or bypassing permissions. Correct the provider/model access in settings before retrying.
+- **Access control:** Full access still requires explicit warning acknowledgement and worker confirmation. Once active, the composer control is red; its risk text is available on hover and to screen readers, not as a persistent paragraph.
 - **Backup providers:** if the main model's provider fails (plan or quota used up, key rejected, server error, no connection), a backup provider finishes the same task from where it stopped; the fast layer has its own backup decision provider. A red or amber notice under the header says what failed and who took over.
 - **Test connection everywhere:** the main model, its backup, the fast layer and its backup each have a test button that sends a real request with the task's tools and settings, so a wrong key or a model without tool calls shows up before the first task. OpenRouter's list only offers models that support tool calls.
-- **Optional Google sign-in:** the header's account button opens a Google sign-in window; the extension keeps only the name, email and picture, shows the picture in the header, and sends the email with feedback. While signed in, settings, API keys and account sign-in tokens (ChatGPT, Claude, Grok) are backed up after every change to a hidden folder of the user's own Google Drive (`appDataFolder`), and a fresh install restores them at sign-in. No backend or client secret is involved.
+- **Optional Google sign-in:** the header's account button opens a Google sign-in window; the extension keeps only the name, email and picture, shows the picture in the header, and sends the email with feedback. While signed in, settings, API keys and account sign-in tokens (ChatGPT, Claude, Grok, Kimi Code) are backed up after every change to a hidden folder of the user's own Google Drive (`appDataFolder`), and a fresh install restores them at sign-in. **Back up now** always writes the current backup again, even when unchanged, and shows a green timestamped confirmation or the actual failure in red. Automatic unchanged backups remain deduplicated. No backend or client secret is involved.
 - **One API key per provider:** a key entered for one provider is reused by the backup slot and the fast layer whenever they pick the same provider. The Anthropic key is shared by the main Claude slot and the one of its backup.
 - **Sessions:** several sessions, saved on your computer, with search, rename and delete. Sessions can run tasks at the same time; each works only in its own Chrome tab group and never brings a tab to the front. The side panel follows the tab in front: a new tab starts on a blank session, and a tab where a task ran (or that the user picked a session for) keeps its session.
 - **Interface:** Arabic or English, light or dark following the system. The agent replies in the language of the task, or always in a language you switch on in settings. Settings can be backed up to a file and restored after reinstalling.
@@ -55,8 +59,10 @@ The extension has no server of its own: tasks and page content go only to the AI
 | Account authentication (ChatGPT, Claude, Grok subscriptions) | 🟡 ChatGPT by device code, Claude by pasting the code Claude shows after you approve, Grok by device code. The **Grok account path is not yet verified against a live account** — the transport is pi-ai's, but no live SuperGrok/X Premium account has been driven through it yet. |
 | Claude provider (Anthropic Messages API, account token or API key) | ✅ Unit tested against the real request and stream shapes |
 | MiniMax (pay-as-you-go and Coding Plan) | ✅ Unit tested; the model list is a fixed one, as MiniMax serves no `/models` |
+| Named Gemini API, Moonshot API and Kimi Code account | 🟡 Unit and Chromium integration tests use synthetic HTTP/credentials. Real Gemini/Moonshot key access and Kimi Code account entitlement/refresh are **not live-verified**. Kimi OAuth is pinned to `auth.kimi.com`, with inference at `api.kimi.com/coding/v1`; tokens are not silently moved to `.ai` or Moonshot. |
 | Other providers & API keys (Gemini, Grok, DeepSeek, NVIDIA NIM, GLM, OpenAI API, OpenRouter) | ⏳ Code exists; model lists checked live where they are public (NVIDIA, OpenRouter); configurable with API keys |
 | Fast layer (Jev or a gateway chat model) | ⏳ Experimental, tested with mocks only |
+| Manual Google Drive backup | ✅ Forced writes, unchanged-content deduplication for automatic backups, timestamp/error feedback, expired sessions and deleted-file recovery covered with synthetic Drive HTTP and browser tests; no live Drive account was used for these regressions. |
 
 > Using provider account plans or subscriptions outside official apps is unofficial. Providers may change or block endpoints at any time.
 

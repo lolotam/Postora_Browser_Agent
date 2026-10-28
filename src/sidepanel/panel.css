@@ -167,6 +167,8 @@ body { position: relative; }
 /* Feedback box and the rating card after a task. */
 .feedback-menu { gap: 8px; }
 .account-menu { gap: 10px; }
+#accountStatus[data-tone="success"] { color: var(--success); }
+#accountStatus[data-tone="error"] { color: var(--danger); }
 .account-menu p { margin: 0 0 8px; font-size: 12.5px; }
 .account-menu .row { gap: 10px; align-items: center; }
 .account-who { display: flex; flex-direction: column; min-width: 0; }
@@ -326,11 +328,8 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 }
 :root[dir="rtl"] .access-select { padding: 4px 28px 4px 24px; }
 .access-select:hover { border-color: var(--border-strong); }
-.access-risk {
-  margin: 6px 0 0; padding: 5px 8px; font-size: 11.5px; line-height: 1.45;
-  color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn);
-  border-radius: var(--radius-control);
-}
+.access-select.risk { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
+.access-control:has(.access-select.risk) > svg { color: var(--on-danger); }
 .access-error { margin: 6px 0 0; font-size: 11.5px; color: var(--danger); }
 
 /* The warning before Full access is asked for. A native dialog: the browser

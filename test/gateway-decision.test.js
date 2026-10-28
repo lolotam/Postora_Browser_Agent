@@ -106,6 +106,7 @@ describe('fast-layer backup', () => {
     assert.equal(notices.length, 1);
     assert.equal(notices[0].level, 'warning');
     assert.equal(notices[0].code, 'auth');
+    assert.equal(seen.filter((s) => s[0] === 'vercel').length, 1, 'a forbidden primary is not retried on each step');
   });
 
   test('after three primary failures the primary is skipped for the rest of the task', async () => {
@@ -118,5 +119,24 @@ describe('fast-layer backup', () => {
   test('without a backup the primary error comes through', async () => {
     const ask = askWithBackup({ primary: { provider: 'vercel' }, backup: null, notify: () => {}, clientFor: () => async () => { throw new Error('HTTP 401'); } });
     await assert.rejects(ask(request), /HTTP 401/);
+  });
+
+  test('disabled model access without a backup is bounded and notified once', async () => {
+    let calls = 0;
+    const notices = [];
+    const ask = askWithBackup({ primary: { provider: 'opencode-zen', model: 'jev-1.13' }, backup: null, notify: (notice) => notices.push(notice),
+      clientFor: () => async () => { calls += 1; throw Object.assign(new Error('Jev request failed (HTTP 403): Model access is disabled'), { status: 403 }); } });
+    for (let n = 0; n < 3; n++) await assert.rejects(ask(request), /Model access is disabled/);
+    assert.equal(calls, 1);
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].kind, 'fast-unavailable');
+  });
+
+  test('cancellation never invokes a fast backup or emits an unavailable notice', async () => {
+    const controller = new AbortController();
+    const { ask, seen, notices } = setup(() => { controller.abort(); throw new DOMException('stop', 'AbortError'); });
+    await assert.rejects(ask({ ...request, signal: controller.signal }), { name: 'AbortError' });
+    assert.equal(seen.length, 1);
+    assert.equal(notices.length, 0);
   });
 });

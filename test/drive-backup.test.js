@@ -143,6 +143,34 @@ test('a Drive error is kept for the account menu, not thrown', async () => {
   assert.match((await driveBackupState()).error, /disabled/);
 });
 
+test('a forced unchanged backup reports an expired Google session without changing the saved timestamp', async () => {
+  local.settings = setUp;
+  const saved = await backUpToDrive({ getToken });
+  calls = [];
+  const failed = await backUpToDrive({ force: true, getToken: async () => { throw new Error('Google needs you to sign in again (session expired).'); } });
+  assert.match(failed.error, /session expired/);
+  assert.equal(failed.at, saved.at);
+  assert.deepEqual(calls, []);
+});
+
+test('a forced unchanged backup recreates a deleted remote file', async () => {
+  local.settings = setUp;
+  await backUpToDrive({ getToken });
+  drive = null;
+  calls = [];
+  const result = await backUpToDrive({ getToken, force: true });
+  assert.equal(result.error, null);
+  assert.equal(drive.content.settings.compatible.model, 'openai/gpt-5');
+  assert.deepEqual(calls, ['PATCH /upload/drive/v3/files/file1', 'POST /drive/v3/files', 'PATCH /upload/drive/v3/files/file1']);
+});
+
+test('a named provider model prevents automatic restore over this computer\'s setup', () => {
+  for (const provider of ['gemini', 'kimi']) {
+    assert.equal(isFreshSetup({ settings: mergeSettings({ [provider]: { model: 'chosen-model' } }), accounts: {} }), false);
+    assert.equal(isFreshSetup({ settings: mergeSettings({ fallback: { [provider]: { model: 'chosen-backup' } } }), accounts: {} }), false);
+  }
+});
+
 test('restoring when Drive has no backup says so', async () => {
   await assert.rejects(restoreFromDrive({ getToken }), /no backup in Google Drive/);
 });

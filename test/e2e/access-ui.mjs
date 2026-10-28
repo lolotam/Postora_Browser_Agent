@@ -69,6 +69,8 @@ const accessState = (page) => page.evaluate(() => {
     state: node('accessState').textContent.trim(),
     risk: risk.textContent.trim(),
     riskHidden: risk.hidden,
+    tooltip: node('accessSelect').title,
+    fullDanger: node('accessSelect').classList.contains('risk'),
     voice: voice.textContent.trim(),
     voiceRisk: voice.classList.contains('risk'),
     warningOpen: node('accessWarning').open,
@@ -92,9 +94,12 @@ const layout = (page) => page.evaluate(() => {
     clientWidth: doc.clientWidth,
     select: box(document.getElementById('accessSelect')),
     riskHidden: risk.hidden,
-    riskVisible: box(risk).height > 0 && box(risk).width > 0,
-    riskBackground: getComputedStyle(risk).backgroundColor,
-    riskColor: getComputedStyle(risk).color,
+    riskInline: box(risk).height > 1 && box(risk).width > 1,
+    fullDanger: document.getElementById('accessSelect').classList.contains('risk'),
+    tooltip: document.getElementById('accessSelect').title,
+    riskText: risk.textContent,
+    riskBackground: getComputedStyle(document.getElementById('accessSelect')).backgroundColor,
+    riskColor: getComputedStyle(document.getElementById('accessSelect')).color,
   };
 });
 
@@ -177,7 +182,8 @@ async function darkThemeShot() {
     const dark = await layout(page);
     if (dark.scrollWidth > dark.clientWidth + 1) failures.push('the panel overflows a narrow column in the dark theme');
     if (dark.riskHidden) failures.push('the risk is hidden in the dark theme');
-    if (!dark.riskVisible) failures.push('the risk is not on the screen in the dark theme');
+    if (dark.riskInline) failures.push('the risk paragraph is persistently visible in the dark theme');
+    if (!dark.fullDanger || dark.tooltip !== dark.riskText) failures.push('Full access lacks its danger style or risk tooltip');
     await page.screenshot({ path: path.join(SHOT_DIR, 'access-full-320-dark.png') });
     if (pageErrors.length) failures.push(`side panel errors in the dark theme: ${pageErrors.join(' | ')}`);
     await page.close();
@@ -278,6 +284,7 @@ export async function runAccessUiScenario(context, extensionId) {
     const full = await accessState(panel);
     if (full.value !== 'full-access') failures.push(`the mode stayed at ${full.value} after the worker confirmed it`);
     if (full.riskHidden || !full.risk) failures.push('the risk is not shown while Full access is on');
+    if (!full.fullDanger || full.tooltip !== full.risk) failures.push('the confirmed Full control has no danger style or risk tooltip');
     if (!/Full access/i.test(full.state)) failures.push(`the status does not report the mode: "${full.state}"`);
     if (full.checked || !full.confirmDisabled) failures.push('the warning was left armed after it was confirmed');
 
@@ -383,9 +390,13 @@ export async function runAccessUiScenario(context, extensionId) {
     await panel.keyboard.press('Escape');
     await panel.waitForFunction(() => !document.getElementById('accessWarning').open);
 
-    // The risk is on the screen while the worker has Full access on.
+    // Full access is red; the risk is in its hover title/accessible description,
+    // not a persistent paragraph consuming space above the composer.
     await openWarning(panel);
     await acknowledgeAndConfirm(panel);
+    const compact = await layout(panel);
+    if (compact.riskInline || !compact.fullDanger || compact.tooltip !== compact.riskText) failures.push('the Full control is not a compact danger control with a risk tooltip');
+    await panel.hover('#accessSelect');
     await shot(panel, 'access-full-320-light.png');
 
     // Arabic: the same control, read from the other side.
@@ -395,7 +406,7 @@ export async function runAccessUiScenario(context, extensionId) {
     const arabic = await layout(panel);
     if (arabic.scrollWidth > arabic.clientWidth + 1) failures.push('the panel overflows a narrow column in Arabic');
     if (arabic.select.right > arabic.innerWidth + 1) failures.push('the access selection sticks out of the panel in Arabic');
-    const lightRisk = await panel.evaluate(() => getComputedStyle(document.getElementById('accessRisk')).backgroundColor);
+    const lightRisk = await panel.evaluate(() => getComputedStyle(document.getElementById('accessSelect')).backgroundColor);
     await shot(panel, 'access-full-320-ar-light.png');
 
     // Dark: the risk is still a warning, not only a colour that is missing.

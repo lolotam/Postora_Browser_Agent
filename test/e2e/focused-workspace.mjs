@@ -2,6 +2,7 @@
 // are synthetic; no account sign-in or physical microphone is used.
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { extensionWorker } from './extension-worker.mjs';
 
 export async function runFocusedWorkspaceScenario(context, extensionId) {
   let releaseSlow = () => {};
@@ -297,7 +298,7 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.selectOption('#uiLanguage', 'en');
     await panel.waitForFunction(async () => (await chrome.storage.local.get('settings')).settings.uiLanguage === 'en');
     await chat();
-    patchedWorker = context.serviceWorkers().find((worker) => worker.url().startsWith(`chrome-extension://${extensionId}/`));
+    patchedWorker = extensionWorker(context, panel, extensionId);
     await patchedWorker.evaluate(() => {
       globalThis.__focusedStorageSet = chrome.storage.local.set;
       chrome.storage.local.set = (values, ...args) => values.settings

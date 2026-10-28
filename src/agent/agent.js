@@ -44,7 +44,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
       if (fastUsage) emit({ type: 'usage', source: 'fast', usage: fastUsage });
       if (outcome.kind === 'off') {
         fast = null;
-        emit({ type: 'fast-handoff', reason: 'Fast layer failed 3 times; continuing with the main model only' });
+        emit({ type: 'fast-handoff', reason: 'Fast layer is unavailable; continuing with the main model only' });
       } else if (outcome.kind === 'acted') {
         // The fast layer decides and acts in one go: its step covers both.
         const callId = `fast-${step}`;

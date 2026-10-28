@@ -78,19 +78,20 @@ function serial(operation) {
 }
 
 /**
- * Uploads the current settings unless Drive already has them. A failure is kept
+ * Uploads the current settings unless Drive already has them. Manual backups
+ * force a real write even when unchanged. A failure is kept
  * in the state (shown in the account menu) rather than thrown, since this runs
  * on its own after every settings change.
  */
-export function backUpToDrive({ getToken = googleAccessToken } = {}) {
-  return serial(() => upload(getToken));
+export function backUpToDrive({ getToken = googleAccessToken, force = false } = {}) {
+  return serial(() => upload(getToken, force));
 }
 
-async function upload(getToken) {
+async function upload(getToken, force = false) {
   const data = await exportBackup();
   const hash = await backupHash(data);
   const state = await driveBackupState();
-  if (state.hash === hash && !state.error) return state;
+  if (!force && state.hash === hash && !state.error) return state;
   try {
     const token = await getToken();
     const fileId = await writeBackupFile(token, data, state.fileId ?? (await findBackupFile(token))?.id);
@@ -111,10 +112,13 @@ export function isFreshSetup({ settings, accounts }) {
   const slotKeys = [
     settings.compatible, settings.fallback?.compatible, settings.fast, settings.fast?.fallback,
     settings.claude, settings.fallback?.claude,
+    settings.gemini, settings.fallback?.gemini, settings.kimi, settings.fallback?.kimi,
   ].map((slot) => slot?.apiKey);
   const models = [
     settings.chatgpt?.model, settings.claude?.model, settings.grok?.model,
     settings.fallback?.chatgpt?.model, settings.fallback?.claude?.model, settings.fallback?.grok?.model,
+    settings.gemini?.model, settings.kimi?.model,
+    settings.fallback?.gemini?.model, settings.fallback?.kimi?.model,
   ];
   return !signedIn && !storedKeys && !slotKeys.some(Boolean) && !models.some(Boolean);
 }
