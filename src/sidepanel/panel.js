@@ -3,6 +3,7 @@ import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } fro
 import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
 import { createAccessUi } from './access.js';
 import { createPermissionUi } from './permissions.js';
+import { bindComposerSize } from './composer-size.js';
 import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 import { escapeAttr } from './model-picker.js';
 import { createModelDialog } from './model-dialog.js';
@@ -27,6 +28,7 @@ import { SECRET_TOKENS } from '../voice/voice-safety.js';
 import { createChromeBrowser } from '../voice/voice-browser.js';
 
 const $ = (id) => document.getElementById(id);
+const resizeComposer = bindComposerSize($('input'));
 
 // The question that waits for an answer, and its number: a question that
 // arrives while another one is being answered is a different question.
@@ -1009,6 +1011,7 @@ function setRunning(running) {
   if (!running) closeThread();
   $('statusDot').classList.toggle('running', running);
   $('stopBtn').hidden = !running;
+  $('voiceToggle').hidden = running;
   $('workspaceStopBtn').hidden = !running || ($('settingsView').hidden && $('voiceView').hidden);
   $('sendBtn').hidden = false; // while running, a message steers the task (see steerMode)
   if (!running) {
@@ -1102,6 +1105,7 @@ function submitComposer(text, { tabId, signal, expectedSessionId } = {}) {
   attachments = [];
   renderFiles();
   $('input').value = '';
+  resizeComposer();
   const message = { text: packed.task, display: packed.display, images: packed.images };
   const options = { signal, expectedSessionId };
   let sent;
@@ -1881,6 +1885,7 @@ $('newChatBtn').addEventListener('click', async () => {
 });
 document.querySelectorAll('.examples li').forEach((li) => li.addEventListener('click', () => {
   $('input').value = li.textContent;
+  resizeComposer();
   $('input').focus();
 }));
 

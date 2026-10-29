@@ -2,7 +2,7 @@
    reserved for the send action, fast (⚡) steps and the running indicator.
    The layout is one conversation-first workspace: a quiet header, the chat,
    and settings one focused page at a time. Ordinary controls are rectangular;
-   only the microphone is a circle. */
+   the microphone and the composer's send action are circles. */
 :root {
   --bg: #ffffff;
   --surface: #f9f9f9;
@@ -200,13 +200,6 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #messages { flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; }
 .empty { color: var(--text-2); padding: 18px 4px 0; }
 .empty-logo { border-radius: 11px; }
-.empty h2 { color: var(--text); font-size: 16px; margin: 10px 0 6px; }
-.examples { list-style: none; padding: 0; margin: 14px 0 0; display: flex; flex-direction: column; gap: 6px; }
-.examples li {
-  cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius-card);
-  padding: 8px 10px; color: var(--text); transition: border-color .12s, background-color .12s;
-}
-.examples li:hover { border-color: var(--border-strong); background: var(--surface); }
 
 .msg { border-radius: 12px; padding: 8px 11px; max-width: 100%; overflow-wrap: anywhere; }
 .msg.user { background: var(--surface-2); align-self: flex-end; max-width: 85%; white-space: pre-wrap; }
@@ -283,50 +276,56 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .msg.user.steer::after { content: attr(data-tag); display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
 /* The composer: what the user writes on top, the tools it needs underneath. */
 .composer-box {
-  display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border-strong);
-  border-radius: 12px; padding: 4px 6px 6px; background: var(--bg); transition: border-color .12s;
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; border: 1px solid var(--border-strong);
+  border-radius: 16px; padding: 8px; background: var(--bg); transition: border-color .12s;
 }
 .composer-box:focus-within { border-color: var(--accent-text); }
-.composer-box textarea { border: none; padding: 6px 6px 2px; resize: none; background: transparent; }
+.composer-box textarea {
+  border: none; border-radius: 0; padding: 4px; resize: none; background: transparent;
+  min-height: 48px; max-height: min(200px, 30vh); overflow-y: auto;
+  transition: height .12s ease-out;
+}
 .composer-box textarea:focus { outline: none; }
+@media (prefers-reduced-motion: reduce) { .composer-box textarea { transition: none; } }
 /* dir="auto" sizes direction from typed text; while empty, follow the interface so the placeholder reads right. */
 .composer-box textarea:placeholder-shown { unicode-bidi: normal; direction: inherit; }
-.composer-tools { display: flex; align-items: center; gap: 2px; }
-.tools-gap { flex: 1; }
+.composer-toolbar { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.composer-tools { display: flex; align-items: center; gap: 2px; flex: none; }
 .tool {
   width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
   flex: none; border: none; background: transparent; color: var(--text-2); border-radius: var(--radius-control);
 }
 .tool:hover { background: var(--surface-2); color: var(--text); }
 .tool.primary { background: var(--accent); color: var(--on-accent); }
+#sendBtn { border-radius: 50%; }
 .tool.primary:hover { filter: brightness(0.95); background: var(--accent); color: var(--on-accent); }
 .tool.danger { background: var(--danger); color: var(--on-danger); }
 .tool.danger:hover { filter: brightness(1.05); background: var(--danger); color: var(--on-danger); }
 .hint { display: block; min-height: 16px; margin-top: 4px; padding-inline: 4px; font-size: 11.5px; color: var(--muted); text-align: center; }
 
-/* ---------- the row the composer answers to ---------- */
+/* ---------- inline composer model and access pills ---------- */
 /* One compact row: the model doing the work, and the access mode of this
    chat — the selection, the worker's own answer, and the risk it carries. */
-.access-bar { padding: 4px 10px 6px; flex: none; }
-.access-row { position: relative; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.access-row { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; }
 .quick-control {
-  display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 58%;
-  border: 1px solid var(--border); background: transparent; border-radius: var(--radius-control);
-  padding: 4px 8px; font-size: 12px; color: var(--text);
+  display: inline-flex; align-items: center; gap: 4px; min-width: 46px; max-width: 240px; height: 30px; flex: 0 1 auto;
+  border: 1px solid var(--border); background: transparent; border-radius: 999px;
+  padding: 4px 6px; font-size: 11.5px; color: var(--text);
 }
 .quick-control:hover { background: var(--surface); border-color: var(--border-strong); }
 .quick-control svg { width: 13px; height: 13px; flex: none; color: var(--text-2); }
 .quick-control .quick-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .access-control { position: relative; display: inline-flex; align-items: center; min-width: 0; flex: none; }
 .access-control > svg {
-  position: absolute; inset-inline-start: 8px; width: 13px; height: 13px;
+  position: absolute; inset-inline-start: 7px; width: 12px; height: 12px;
   color: var(--text-2); pointer-events: none;
 }
+.access-control > .chev-down { inset-inline-start: auto; inset-inline-end: 6px; }
 .access-select {
-  width: auto; max-width: 200px; border: 1px solid var(--border); border-radius: var(--radius-control);
-  background: transparent; padding: 4px 24px 4px 28px; font-size: 12px; appearance: none;
+  width: auto; max-width: 160px; height: 30px; border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; padding-block: 4px; padding-inline: 23px 21px; font-size: 11.5px; appearance: none;
 }
-:root[dir="rtl"] .access-select { padding: 4px 28px 4px 24px; }
+.access-select:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 1px; }
 .access-select:hover { border-color: var(--border-strong); }
 .access-select.risk { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
 .access-control:has(.access-select.risk) > svg { color: var(--on-danger); }
@@ -336,6 +335,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   clip: auto; width: min(280px, calc(100vw - 32px)); height: auto;
   margin: 0; padding: 8px; overflow: visible; white-space: normal;
   inset-inline-end: 0; bottom: calc(100% + 6px); z-index: 20;
+  pointer-events: none; /* The read-only description must not block the draft beneath it. */
   color: var(--text); background: var(--surface); border: 1px solid var(--danger);
   border-radius: var(--radius-control); font-size: 11.5px; line-height: 1.45;
 }
