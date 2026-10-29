@@ -3,17 +3,19 @@ import { askGatewayDecision } from './gateway-decision-client.js';
 import { askJev } from './jev-client.js';
 import { describeFailure } from '../lib/failure.js';
 import { isFastAccessFailure } from './errors.js';
+import { fastRequestConfig, isZenDecisionModel } from './provider-config.js';
 
 const PRIMARY_FAILURES_BEFORE_SKIP = 3;
 // Providers that serve Jev on TypeSafe's System One API (POST <base>/v1/systemone).
-const SYSTEM_ONE_PROVIDERS = new Set(['typesafe', 'opencode-zen', 'openrouter']);
+const SYSTEM_ONE_PROVIDERS = new Set(['typesafe', 'openrouter']);
 
 /**
- * System One providers (TypeSafe, OpenCode Zen, OpenRouter) answer natively,
+ * System One providers (TypeSafe, OpenRouter, and Zen's Jev) answer natively,
  * gateway decision models through the decision API, and any other model through
  * a JSON-mode chat completion.
  */
 export function fastClientFor(fast) {
+  if (fast.provider === 'opencode-zen') return isZenDecisionModel(fast.model) ? askJev : askChatJudge;
   if (SYSTEM_ONE_PROVIDERS.has(fast.provider)) return askJev;
   return fast.decision ? askGatewayDecision : askChatJudge;
 }
@@ -24,6 +26,8 @@ export function fastClientFor(fast) {
  * the primary is skipped for the rest of the task. `clientFor` exists for tests.
  */
 export function askWithBackup({ primary, backup, notify, clientFor = fastClientFor }) {
+  primary = fastRequestConfig(primary);
+  backup = backup ? fastRequestConfig(backup) : null;
   const askPrimary = clientFor(primary);
   const askBackup = backup ? clientFor(backup) : null;
   let failures = 0;
@@ -59,6 +63,7 @@ export function askWithBackup({ primary, backup, notify, clientFor = fastClientF
  * provider, the model, the endpoint and the key are never lost.
  */
 export function createFastAsk(fast, notify) {
-  const ask = askWithBackup({ primary: fast, backup: fast?.fallback?.enabled && fast.fallback.apiKey ? fast.fallback : null, notify });
+  const sessionId = crypto.randomUUID();
+  const ask = askWithBackup({ primary: { ...fast, sessionId }, backup: fast?.fallback?.enabled && fast.fallback.apiKey ? { ...fast.fallback, sessionId } : null, notify });
   return (request) => ask({ ...fast, ...request });
 }

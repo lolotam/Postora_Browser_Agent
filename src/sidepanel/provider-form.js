@@ -41,8 +41,10 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   // Custom endpoint keys are not shared, so the form keeps the last one typed.
   let preset = '';
   let customKey = '';
+  let keyReload = null;
 
   function fill(s) {
+    clearTimeout(keyReload);
     latestLoad += 1; // a model list still loading belongs to the values being replaced
     listLoading = false;
     listError = '';
@@ -99,7 +101,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
 
   const compatibleFields = () => ({ preset: f('preset').value, baseUrl: f('baseUrl').value.trim(), apiKey: f('apiKey').value.trim() });
   const claudeFields = () => ({ auth: f('claudeAuth')?.value ?? 'account', apiKey: f('claudeApiKey')?.value.trim() ?? '' });
-  const geminiFields = () => ({ apiKey: f('geminiApiKey')?.value.trim() ?? saved.gemini.apiKey ?? '' });
+  const geminiFields = () => ({ apiKey: f('geminiApiKey')?.value.trim() ?? keyStore.snapshot?.().gemini ?? saved.gemini.apiKey ?? '' });
   const kimiFields = () => ({ auth: f('kimiAuth')?.value ?? saved.kimi.auth ?? 'apiKey', apiKey: f('kimiApiKey')?.value.trim() ?? saved.kimi.apiKey ?? '' });
 
   function syncSections() {
@@ -143,6 +145,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   }
 
   async function loadModels(showErrors = false) {
+    clearTimeout(keyReload);
     const draft = read();
     // Numbered before any wait, so a slower earlier load (or a fill since) never wins.
     const load = ++latestLoad;
@@ -152,6 +155,12 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     onModels?.();
     f('modelInfo').textContent = t('model.loading');
     try {
+      if (draft.provider === 'gemini' && !draft.gemini.apiKey) {
+        listLoading = false;
+        f('modelInfo').textContent = listError = t('err.geminiKey');
+        onModels?.();
+        return;
+      }
       if (needsSignIn(draft)) {
         const status = await request('auth-status', { provider: draft.provider });
         if (load !== latestLoad) return;
@@ -255,6 +264,21 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       const { model, ms, reply } = await request('provider-test', { slot: read() });
       return t('provider.testOk', { model, ms, reply: reply || '—' });
     },
+  });
+  keyStore.subscribe?.((group, value) => {
+    const gemini = f('provider').value === 'gemini' || (f('provider').value === 'compatible' && f('preset').value === 'gemini');
+    if (!saved || !gemini || group !== 'gemini') return;
+    // Invalidate immediately, before the debounce, so a response for the old
+    // key cannot repaint this form. Shared main/backup key edits count too.
+    latestLoad += 1;
+    clearTimeout(keyReload);
+    models = [];
+    listLoading = Boolean(value);
+    listError = value ? '' : t('err.geminiKey');
+    f('modelInfo').textContent = value ? t('model.loading') : listError;
+    showTestStatus('', '');
+    onModels?.();
+    if (value) keyReload = setTimeout(() => loadModels(true), 250);
   });
 
   return {

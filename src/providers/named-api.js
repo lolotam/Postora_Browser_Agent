@@ -8,5 +8,10 @@ export async function listGeminiModels(config) {
   if (!config.apiKey?.trim()) throw new Error('Enter a Gemini API key in settings first.');
   return (await listCompatibleModels(GEMINI_API_URL, config.apiKey, {
     anonymousFallback: false, redirect: 'error', signal: AbortSignal.timeout(30000),
-  })).filter((model) => !model.decision && model.tools !== false);
+  })).filter((model) => !model.decision && model.tools !== false && geminiChatModel(model.id));
+}
+
+/** Specialized Gemini image/audio/live models are not browser-tool chat models. */
+export function geminiChatModel(id) {
+  return /^gemini-/i.test(id) && !/(?:^|-)(image|tts|audio|live|embedding|robotics|omni)(?:-|$)/i.test(id);
 }

@@ -26,6 +26,7 @@ import { runNamedProvidersScenario } from './named-providers.mjs';
 import { runSessionRefreshRestartScenario } from './session-refresh-restart.mjs';
 import { extensionWorker } from './extension-worker.mjs';
 import { runDriveBackupScenario } from './drive-backup.mjs';
+import { runZenFastScenario } from './zen-fast.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -1825,6 +1826,7 @@ async function main() {
       ...(await verify(runUiLayoutScenario)),
       ...(await verify(runFocusedWorkspaceScenario)),
       ...(await verify(runNamedProvidersScenario)),
+      ...(await verify(runZenFastScenario)),
       ...(await verify(runDriveBackupScenario)),
       ...(await verify(runParallelScenario)),
       ...(await verify(runVoiceScenario)),
@@ -1847,6 +1849,32 @@ async function main() {
           ...(counts.jev === 1 && counts.llm >= 7 ? [] : [`disabled Jev was not skipped while the main model continued: ${JSON.stringify(counts)}`]),
           ...(/opencode-zen/.test(duringResult) && /unavailable/i.test(duringResult) ? [] : ['the Fast-layer access warning was not shown']),
         ],
+      })),
+      ...(await runScenario(context, extensionId, {
+        name: 'zen-disabled-vercel-backup',
+        task: 'Search for "hello world" and press Go',
+        handlers: { llm: reportingLlm(), jev: () => 'disabled', decision: scriptedGatewayJev() },
+        fast: (base) => ({ enabled: true, mode: 'auto', provider: 'opencode-zen', apiKey: 'jev-key', model: 'jev-1.13', baseUrl: base,
+          fallback: { enabled: true, provider: 'vercel', decision: true, apiKey: 'vercel-key', model: 'typesafe-ai/jev', baseUrl: `${base}/v1` } }),
+        during: async (panel) => {
+          await panel.waitForSelector('.msg.final', { timeout: 60000 });
+          return panel.locator('#notices .notice.warning').allTextContents();
+        },
+        expectReport: 'Result: hello world / Red',
+        check: ({ counts, notices, duringResult, report, steps }) => [
+          ...fastChecks({ counts, report, steps }),
+          ...(counts.jev === 1 && counts.decision >= 2 ? [] : [`expected one forbidden Zen call then Vercel, got ${JSON.stringify(counts)}`]),
+          ...(notices.length === 0 && duringResult.length === 1 && /vercel/.test(duringResult[0]) ? [] : ['successful Fast backup had missing or redundant error messages']),
+        ],
+      })),
+      ...(await runScenario(context, extensionId, {
+        name: 'zen-chat-judge',
+        task: 'Search for "hello world" and press Go',
+        handlers: { llm: reportingLlm(), judge: scriptedJudge() },
+        // A stale saved decision flag must not override the selected chat model.
+        fast: (base) => ({ enabled: true, mode: 'auto', provider: 'opencode-zen', apiKey: 'judge-key', model: 'glm-5.3-flash', decision: true, baseUrl: `${base}/v1`, minProb: 0.8 }),
+        expectReport: 'Result: hello world / Red',
+        check: (run) => [...fastChecks(run), ...(run.counts.judge >= 2 && run.counts.jev === 0 ? [] : ['Zen chat model was routed to System One'])],
       })),
       ...(await runScenario(context, extensionId, {
         name: 'llm',

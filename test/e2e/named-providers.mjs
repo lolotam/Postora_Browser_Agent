@@ -72,6 +72,12 @@ export async function runNamedProvidersScenario(context, extensionId) {
         const model = google ? 'gemini-test' : code ? 'kimi-for-coding' : 'kimi-k3.1-pro';
         if (url.endsWith('/models')) return Response.json({ data: [{ id: model }] });
         const body = JSON.parse(init.body);
+        if (google && (body.stream_options || JSON.stringify(body.tools).includes('additionalProperties'))) {
+          return Response.json({ error: { message: 'Synthetic Gemini compatibility-profile rejection' } }, { status: 400 });
+        }
+        if (google && body.tool_choice === 'none') {
+          return new Response('data: {"choices":[{"delta":{"reasoning_content":"synthetic thought"}}]}\r\n\r\ndata: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\r\n\r\ndata: [DONE]\r\n\r\n', { headers: { 'Content-Type': 'text/event-stream' } });
+        }
         const report = google ? 'GEMINI-EXECUTED' : code ? 'CODE-EXECUTED' : 'MOONSHOT-EXECUTED';
         const chunk = { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `named-${Date.now()}`, function: { name: 'done', arguments: JSON.stringify({ success: true, report }) } }] }, finish_reason: 'tool_calls' }] };
         if (body.model !== model) return new Response('wrong model', { status: 400 });
@@ -80,10 +86,21 @@ export async function runNamedProvidersScenario(context, extensionId) {
     });
     await panel.evaluate(async () => {
       const { mergeSettings } = await import(chrome.runtime.getURL('src/lib/settings.js'));
-      await chrome.storage.local.set({ settings: mergeSettings({ provider: 'gemini', gemini: { apiKey: 'SYNTHETIC-GEMINI-KEY', model: 'gemini-test' }, kimi: { apiKey: 'SYNTHETIC-MOONSHOT-KEY' }, fast: { enabled: false }, uiLanguage: 'en' }) });
+      await chrome.storage.local.set({ settings: mergeSettings({ provider: 'gemini', gemini: { apiKey: '', model: 'gemini-test' }, kimi: { apiKey: 'SYNTHETIC-MOONSHOT-KEY' }, fast: { enabled: false }, uiLanguage: 'en' }) });
     });
     await panel.reload();
     await panel.waitForFunction(() => document.getElementById('sessionTitle').textContent && document.getElementById('modelQuickLabel').textContent === 'gemini-test');
+    await openSettings();
+    // Type the very first key. Neither a provider round-trip, Save nor a manual
+    // model refresh may be needed to load this catalog.
+    await panel.fill('#mainProvider [data-field="geminiApiKey"]', 'SYNTHETIC-GEMINI-KEY');
+    await panel.click('#modelBtnMain');
+    await panel.waitForSelector('#modelDialogList [data-value="gemini-test"]');
+    await panel.click('#modelDialogList [data-value="gemini-test"]');
+    await panel.click('#mainProvider [data-field="test"]');
+    await panel.waitForSelector('#mainProvider [data-field="testResult"][data-state="ok"]');
+    assert.match(await panel.textContent('#mainProvider [data-field="testResult"]'), /OK/);
+    await save();
     target = await context.newPage();
     await target.goto(`http://127.0.0.1:${server.address().port}/`);
     await task('GEMINI-EXECUTED');
@@ -133,7 +150,7 @@ export async function runNamedProvidersScenario(context, extensionId) {
     await panel.waitForSelector('#mainProvider [data-provider="kimi"] [data-auth="login"]:not([hidden])');
     assert.equal(await panel.evaluate(async () => (await chrome.storage.local.get('accountAuth.kimi'))['accountAuth.kimi'].credential), null);
     assert.deepEqual(errors, []);
-    console.log('\n== scenario: named-providers ==\nGemini API, Moonshot API, Kimi Code sign-in/cancel/logout and backup configuration behaved (synthetic HTTP)');
+    console.log('\n== scenario: named-providers ==\nGemini first-key catalog/test/execution, Moonshot API, Kimi Code sign-in/cancel/logout and backup configuration behaved (synthetic HTTP)');
     return [];
   } catch (error) {
     return [`named providers: ${error.stack ?? error.message}`];

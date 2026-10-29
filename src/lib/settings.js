@@ -29,7 +29,7 @@ export function kimiEfforts(model, auth = 'apiKey') {
 // stop thinking.
 export const COMPATIBLE_PRESETS = {
   openai: { label: 'OpenAI API key', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5', thinkingStyle: 'reasoning_effort', usage: true },
-  gemini: { label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash', thinkingStyle: 'gemini', usage: true },
+  gemini: { label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash', thinkingStyle: 'gemini', usage: false },
   xai: { label: 'xAI (Grok)', baseUrl: 'https://api.x.ai/v1', model: 'grok-4', thinkingStyle: 'reasoning_effort', usage: true },
   deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', thinkingStyle: 'none', usage: true },
   // textToolCalls: its models were seen writing tool calls as text (showcase, 2026-10-10).
@@ -70,7 +70,7 @@ export function slotModels(preset, list) {
   return fixed.map((id) => ({ id, name: id, efforts: [], decision: false }));
 }
 
-// Fast-layer providers serve decision models (Jev).
+// Fast-layer providers serve native decisions or JSON chat judges.
 // The free pairing that did best in the Postora showcase (October 2026): NVIDIA's
 // Nemotron 3 Super as the main model, Apodex Mini on OpenRouter as the backup.
 export const RECOMMENDED_SETUP = {
@@ -97,8 +97,9 @@ export function recommendedSlots(draft, presets = COMPATIBLE_PRESETS) {
 export const FAST_PRESETS = {
   typesafe: { label: 'TypeSafe Jev', baseUrl: 'https://api.typesafe.ai', model: 'jev-latest', minProb: 0.6, decision: true },
   vercel: { label: 'Vercel AI Gateway', baseUrl: 'https://ai-gateway.vercel.sh/v1', model: 'typesafe-ai/jev', minProb: 0.6, decision: true },
-  // Zen serves Jev on TypeSafe's own /v1/systemone API under its base URL.
-  'opencode-zen': { label: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen', model: 'jev-1.13', minProb: 0.6, decision: true },
+  // Paid chat models work outside OpenCode; Jev remains an explicit choice
+  // whose workspace/model entitlement is checked by the upstream service.
+  'opencode-zen': { label: 'OpenCode Zen', baseUrl: 'https://opencode.ai/inference/openai/v1', model: 'glm-5.3-flash', minProb: 0.8, decision: false },
   // OpenRouter serves Jev on /api/v1/systemone too, but leaves it out of /models,
   // so its two ids are listed here.
   openrouter: { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api', model: 'typesafe/jev-1.13', minProb: 0.6, decision: true, models: ['typesafe/jev-1.13', '~typesafe/jev-latest'] },

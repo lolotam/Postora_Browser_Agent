@@ -138,7 +138,7 @@ async function acknowledgeAndConfirm(page) {
  * screen. The mode is asked for through the same UI, so the picture shows what
  * the user would see.
  */
-async function darkThemeShot() {
+async function darkThemeShot(extensionId) {
   const failures = [];
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-access-dark-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -149,13 +149,9 @@ async function darkThemeShot() {
     args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
   });
   try {
-    let worker = null;
-    for (let i = 0; i < 120 && !worker; i += 1) {
-      worker = context.serviceWorkers()[0];
-      if (!worker) await new Promise((r) => setTimeout(r, 500));
-    }
-    if (!worker) return ['the browser of the dark theme did not start'];
-    const extensionId = new URL(worker.url()).host;
+    // The same unpacked tree has the same ID in both profiles. Opening its
+    // surface wakes the worker naturally; waiting for an unsolicited worker
+    // event first can miss an idle worker in a fresh headless profile.
     const page = await context.newPage();
     const pageErrors = [];
     page.on('pageerror', (err) => pageErrors.push(err.message));
@@ -429,7 +425,7 @@ export async function runAccessUiScenario(context, extensionId) {
     if (dark.riskBackground === lightRisk) failures.push('the risk looks the same in the dark theme');
     if (dark.riskColor === 'rgba(0, 0, 0, 0)') failures.push('the risk has no colour of its own');
     await panel.emulateMedia({ colorScheme: 'light' });
-    failures.push(...(await darkThemeShot()));
+    failures.push(...(await darkThemeShot(extensionId)));
 
     // The language comes back, so the scenarios that follow read English.
     await panel.click('#overflowBtn');
