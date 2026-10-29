@@ -1,2 +1,6 @@
+# Every checkout uses LF, so a Windows clone reads the same bytes CI reads on
+# Linux. The tests that slice source files fail on a CRLF checkout.
+* text=auto eol=lf
+
 # esbuild writes LF; test/vendor.test.js compares the committed bundle byte for byte.
-src/vendor/pi-oauth.js -text
+src/vendor/pi-oauth.js -text -eol

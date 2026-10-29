@@ -80,4 +80,12 @@ npm test                  # unit tests
 npm install && npm run e2e
 ```
 
+The checkout uses LF line endings on every platform, so a test that reads a
+source file sees the same bytes CI sees. A clone made before this rule holds
+CRLF on Windows; normalize it once with:
+
+```bash
+git rm --cached -r . && git reset --hard
+```
+
 The OAuth sign-in and refresh flows come from [pi-ai](https://github.com/earendil-works/pi) (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
