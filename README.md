@@ -80,4 +80,19 @@ npm test                  # unit tests
 npm install && npm run e2e
 ```
 
+The checkout uses LF line endings on every platform, so a test that reads a
+source file sees the same bytes CI sees. A Windows clone made before this rule
+holds CRLF, and Git does not report it: the CRLF files clean to the same LF
+blobs, so `git status` stays clean while the tests fail on the bytes on disk.
+Normalize the clone once:
+
+```bash
+git status                                  # commit or stash anything of your own first
+git rm --cached -r . && git reset --hard    # rewrite the tracked files as LF
+```
+
+The second command writes every tracked file on disk again, and it drops staged
+and unstaged edits to tracked files, so the tree has to be clean before it runs.
+Your untracked files are left alone.
+
 The OAuth sign-in and refresh flows come from [pi-ai](https://github.com/earendil-works/pi) (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
