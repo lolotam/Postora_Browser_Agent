@@ -15,6 +15,7 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -27,6 +28,7 @@ import { runSessionRefreshRestartScenario } from './session-refresh-restart.mjs'
 import { extensionWorker } from './extension-worker.mjs';
 import { runDriveBackupScenario } from './drive-backup.mjs';
 import { runZenFastScenario } from './zen-fast.mjs';
+import { runComposerScenario } from './composer.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -1696,7 +1698,7 @@ async function runUiLayoutScenario(context, extensionId) {
     await panel.click('#saveBtn');
     await panel.waitForSelector('#settingsView', { state: 'hidden' });
 
-    // The chat: the model control sits beside the composer, already saved.
+    // The chat: the model control sits inside the composer, already saved.
     await panel.waitForFunction(() => document.getElementById('modelQuickLabel')?.textContent === 'mock-model');
     await overflows('the chat');
     await shot(panel, 'ui-chat-360-light.png');
@@ -1722,9 +1724,22 @@ async function runUiLayoutScenario(context, extensionId) {
     target = await context.newPage();
     await target.goto(`${base}/page`);
     await target.bringToFront();
-    await panel.fill('#input', 'Click the Go button and report the result');
-    await panel.click('#sendBtn');
+    await panel.fill('#input', 'Click the Go button and report the result\n\nUse the visible page.\nReport the outcome.\nDo not skip consent.');
+    await panel.press('#input', 'Enter');
     await panel.waitForSelector('#approvals .permission-request', { timeout: 30000 });
+    if (await panel.isVisible('#voiceToggle')) failures.push('the busy toolbar did not replace Voice with Stop');
+    if (await panel.inputValue('#input')) failures.push('Enter did not clear the submitted draft');
+    await panel.waitForFunction(() => document.getElementById('input').getBoundingClientRect().height <= 50);
+    for (const width of [320, 360, 400]) {
+      await panel.setViewportSize({ width, height: 720 });
+      await overflows(`the busy composer at ${width}px`);
+      const reachable = await panel.locator('#stopBtn').evaluate((stop) => {
+        const box = stop.getBoundingClientRect();
+        return box.width > 0 && box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+      });
+      if (!reachable) failures.push(`Stop is not reachable at ${width}px`);
+    }
+    await panel.setViewportSize({ width: 360, height: 720 });
     const bounded = await panel.evaluate(() => {
       const region = document.getElementById('approvals');
       const stop = document.getElementById('stopBtn').getBoundingClientRect();
@@ -1732,7 +1747,7 @@ async function runUiLayoutScenario(context, extensionId) {
         top: region.getBoundingClientRect().top >= 0,
         stopVisible: stop.top < window.innerHeight && stop.height > 0,
         dock: region.parentElement.id,
-        aboveComposer: region.getBoundingClientRect().bottom <= document.querySelector('.access-bar').getBoundingClientRect().top + 1,
+        aboveComposer: region.getBoundingClientRect().bottom <= document.querySelector('#composer').getBoundingClientRect().top + 1,
       };
     });
     if (!bounded.stopVisible) failures.push('the approval pushed the composer and Stop out of view');
@@ -1743,7 +1758,7 @@ async function runUiLayoutScenario(context, extensionId) {
     if (!(await panel.isVisible('#workspaceStopBtn'))) failures.push('settings hid Stop during a live task');
     if (!(await panel.isVisible('#approvals .permission-request'))) failures.push('settings hid a live approval');
     await panel.click('#closeSettingsBtn');
-    await panel.click('#voiceToggle');
+    await panel.keyboard.press('Alt+Shift+V');
     await panel.waitForSelector('#voiceView:not([hidden])');
     if (!(await panel.isVisible('#workspaceStopBtn'))) failures.push('voice hid Stop during a live task');
     const voiceDock = await panel.locator('#approvals').evaluate((node) => node.parentElement.id);
@@ -1806,8 +1821,24 @@ async function main() {
     args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
   });
   try {
-    const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-    const extensionId = new URL(worker.url()).host;
+    // Wake the extension from a real surface instead of requiring an unsolicited
+    // MV3 worker event. The store build drops the development key, so discover
+    // its installed ID from Chrome rather than assuming the source build's ID.
+    const { key } = JSON.parse(fs.readFileSync(path.join(EXTENSION_DIR, 'manifest.json'), 'utf8'));
+    const bootstrap = await context.newPage();
+    let extensionId;
+    if (key) {
+      extensionId = createHash('sha256').update(Buffer.from(key, 'base64')).digest('hex').slice(0, 32)
+        .replace(/[0-9a-f]/g, (digit) => String.fromCharCode(97 + parseInt(digit, 16)));
+    } else {
+      await bootstrap.goto('chrome://extensions/');
+      const installed = await bootstrap.evaluate(() => new Promise((resolve) => chrome.developerPrivate.getExtensionsInfo({ includeDisabled: false }, resolve)));
+      extensionId = installed.find((item) => item.path && path.resolve(item.path).toLowerCase() === path.resolve(EXTENSION_DIR).toLowerCase())?.id;
+      if (!extensionId) throw new Error('Chrome did not load the requested packaged extension');
+    }
+    await bootstrap.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await bootstrap.waitForFunction(() => document.querySelectorAll('#preset option').length > 0);
+    await bootstrap.close();
 
     const verify = async (scenario) => {
       console.log(`\nSTART ${scenario.name}`);
@@ -1824,6 +1855,7 @@ async function main() {
       ...(await verify(runSignInAfterRestartScenario)),
       ...(await verify(runSessionRefreshRestartScenario)),
       ...(await verify(runUiLayoutScenario)),
+      ...(await verify(runComposerScenario)),
       ...(await verify(runFocusedWorkspaceScenario)),
       ...(await verify(runNamedProvidersScenario)),
       ...(await verify(runZenFastScenario)),

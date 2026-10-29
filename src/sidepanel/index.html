@@ -123,13 +123,6 @@
     <section id="messages" aria-live="polite">
       <div class="empty" id="emptyState">
         <img class="empty-logo" src="../../icons/logo.png" alt="" width="44" height="44" />
-        <h2 data-i18n="empty.title"></h2>
-        <p data-i18n="empty.body"></p>
-        <ul class="examples">
-          <li data-i18n="empty.ex1"></li>
-          <li data-i18n="empty.ex2"></li>
-          <li data-i18n="empty.ex3"></li>
-        </ul>
       </div>
     </section>
     <!-- The shared approval region docks here, directly above the controls it
@@ -137,50 +130,48 @@
          re-docks beside the voice input and returns above settings when the
          user is configuring, so one authority is always on the screen. -->
     <div id="approvalsChatDock" class="approvals-dock"></div>
-    <!-- The row the composer answers to: which model does the work, and the
-         access mode of this chat — one selection, the worker's own answer, and
-         the risk the answer carries. The panel never decides the mode itself. -->
-    <div class="access-bar">
-      <div class="access-row">
-        <button type="button" class="quick-control" id="modelQuickBtn" aria-haspopup="dialog" data-i18n-title="model.pickTitle">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>
-          <span class="quick-label" id="modelQuickLabel" dir="ltr"></span>
-          <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-        </button>
-        <label class="sr-only" for="accessSelect" data-i18n="access.label"></label>
-        <span class="access-control">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3" /></svg>
-          <select id="accessSelect" class="access-select" aria-describedby="accessState accessRisk">
-            <option value="ask-first" data-i18n="access.askFirst"></option>
-            <option value="full-access" data-i18n="access.full"></option>
-          </select>
-        </span>
-        <span class="sr-only" id="accessState"></span>
-        <span class="sr-only" id="accessRisk" hidden></span>
-      </div>
-      <p class="access-error" id="accessError" role="status" hidden></p>
-    </div>
     <form id="composer">
       <ul id="pending" class="pending" hidden></ul>
       <ul id="fileChips" class="file-chips" hidden></ul>
       <div class="composer-box" id="composerBox">
         <textarea id="input" rows="2" dir="auto" data-i18n-placeholder="composer.placeholder"></textarea>
-        <div class="composer-tools">
-          <button type="button" class="tool" id="attachBtn" data-i18n-title="composer.attach">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" /></svg>
-          </button>
-          <input id="fileInput" type="file" multiple hidden />
-          <button type="button" class="tool" id="voiceToggle" data-i18n-title="composer.voice">
-            <svg class="icon-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4" /></svg>
-          </button>
-          <span class="tools-gap"></span>
-          <button type="button" class="tool danger" id="stopBtn" data-i18n-title="composer.stop" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
-          </button>
-          <button type="submit" class="tool primary" id="sendBtn" data-i18n-title="composer.send">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
-          </button>
+        <div class="composer-toolbar">
+          <!-- The worker still owns access; nesting the controls never grants it. -->
+          <div class="access-row">
+            <button type="button" class="quick-control" id="modelQuickBtn" aria-haspopup="dialog" data-i18n-title="model.pickTitle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>
+              <span class="quick-label" id="modelQuickLabel" dir="ltr"></span>
+              <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+            <label class="sr-only" for="accessSelect" data-i18n="access.label"></label>
+            <span class="access-control">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3" /></svg>
+              <select id="accessSelect" class="access-select" aria-describedby="accessState accessRisk">
+                <option value="ask-first" data-i18n="access.askFirst"></option>
+                <option value="full-access" data-i18n="access.full"></option>
+              </select>
+              <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+            </span>
+            <span class="sr-only" id="accessState"></span>
+            <span class="sr-only" id="accessRisk" hidden></span>
+          </div>
+          <div class="composer-tools">
+            <button type="button" class="tool" id="attachBtn" data-i18n-title="composer.attach">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" /></svg>
+            </button>
+            <input id="fileInput" type="file" multiple hidden />
+            <button type="button" class="tool" id="voiceToggle" data-i18n-title="composer.voice">
+              <svg class="icon-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4" /></svg>
+            </button>
+            <button type="button" class="tool danger" id="stopBtn" data-i18n-title="composer.stop" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
+            </button>
+            <button type="submit" class="tool primary" id="sendBtn" data-i18n-title="composer.send">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+            </button>
+          </div>
         </div>
+        <p class="access-error" id="accessError" role="status" hidden></p>
       </div>
       <span class="hint" id="hint"></span>
     </form>

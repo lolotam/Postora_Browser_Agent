@@ -29,7 +29,7 @@ function panel({ postMessage = () => {}, picking = null } = {}) {
       if (!elements.has(id)) elements.set(id, { hidden: false, textContent: '', value: '' });
       return elements.get(id);
     },
-    t: (key) => key, renderFiles() {}, connect() {}, showTabSession: async () => {},
+    t: (key) => key, renderFiles() {}, resizeComposer() {}, connect() {}, showTabSession: async () => {},
     packFiles: (text) => ({ task: text, display: text, images: [] }),
   });
   vm.runInContext(`${send}\n${composer}\n${questionSource}\n${chatSource}`, context);

@@ -706,7 +706,7 @@ async function cardLooksRightEverywhere(panel, target, failures) {
   await panel.click('#sendBtn');
   await waitForCard(panel);
   await panel.evaluate(() => { window.__sharedApprovals = document.getElementById('approvals'); });
-  await panel.click('#voiceToggle');
+  await panel.keyboard.press('Alt+Shift+V');
   await panel.waitForSelector('#voiceView:not([hidden])');
   const shared = await panel.evaluate(() => {
     const card = document.querySelector('#approvals .permission-request');
@@ -812,6 +812,18 @@ export async function runAccessRuntimeScenario(context, extensionId) {
     if (errors.length) failures.push(`side panel errors: ${errors.join(' | ')}`);
     console.log(`\n== scenario: access-runtime ==\nmodel calls: ${counts.llm}, fast calls: ${counts.jev}\n${failures.length ? failures.join('\n') : 'the approvals behaved'}`);
     return failures;
+  } catch (error) {
+    const view = await panel.evaluate(() => ({
+      chatHidden: document.getElementById('chatView').hidden,
+      voiceHidden: document.getElementById('voiceView').hidden,
+      settingsHidden: document.getElementById('settingsView').hidden,
+      title: document.getElementById('settingsTitle').textContent,
+      model: document.getElementById('modelQuickLabel').textContent,
+      notices: document.getElementById('notices').textContent,
+      posted: window.__posted,
+    })).catch(() => null);
+    await shot(panel, 'access-runtime-failure.png').catch(() => {});
+    throw new Error(`${error.stack ?? error.message}\nView: ${JSON.stringify(view)}`, { cause: error });
   } finally {
     await target?.close();
     await panel.close();

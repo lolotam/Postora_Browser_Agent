@@ -226,14 +226,18 @@ test('the panel markup holds the pieces the control drives', () => {
   assert.match(voice, /id="voiceAccess"/);
 });
 
-test('the access control sits next to the composer, not inside it', () => {
+test('the access control and model picker share the inline composer toolbar', () => {
   const html = fs.readFileSync(path.join(ROOT, 'src/sidepanel/index.html'), 'utf8');
-  const bar = html.indexOf('class="access-bar"');
   const composer = html.indexOf('<form id="composer">');
-  assert.ok(bar > 0 && composer > 0, 'the composer or the access bar is missing');
-  assert.ok(bar < composer, 'the access bar is not near the composer');
-  // A selection inside the form would swallow the Enter key of the composer.
-  assert.equal(html.slice(bar, composer).includes('<form'), false);
+  const box = html.indexOf('id="composerBox"', composer);
+  const toolbar = html.indexOf('class="composer-toolbar"', box);
+  const end = html.indexOf('</form>', composer);
+  assert.ok(composer > 0 && box > composer && toolbar > box);
+  for (const id of ['modelQuickBtn', 'accessSelect', 'accessState', 'accessRisk', 'accessError', 'attachBtn', 'voiceToggle', 'stopBtn', 'sendBtn']) {
+    const control = html.indexOf(`id="${id}"`, toolbar);
+    assert.ok(control > toolbar && control < end, `${id} must remain inside the form`);
+  }
+  assert.doesNotMatch(html, /class="access-bar"/);
 });
 
 // The wiring of the panel around the control: the choice of the user, the
