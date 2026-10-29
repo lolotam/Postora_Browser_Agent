@@ -67,7 +67,7 @@ test('decision API errors are reported with their status', async () => {
 
 test('the fast layer picks its client from the provider and the model kind', () => {
   assert.equal(fastClientFor({ provider: 'typesafe' }), askJev);
-  assert.equal(fastClientFor({ provider: 'opencode-zen', decision: true }), askJev, 'Zen serves Jev on the same /v1/systemone API');
+  assert.equal(fastClientFor({ provider: 'opencode-zen', model: 'jev-1.13', decision: true }), askJev, 'an explicitly selected Zen Jev uses System One');
   assert.equal(fastClientFor({ provider: 'vercel', decision: true }), askGatewayDecision);
   assert.equal(fastClientFor({ provider: 'openrouter', decision: true }), askJev, 'OpenRouter serves Jev on /api/v1/systemone');
   assert.equal(fastClientFor({ provider: 'vercel', decision: false }), askChatJudge);

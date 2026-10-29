@@ -32,9 +32,10 @@ export function parseSseChunk(buffer) {
 export const MODEL_IDLE_MS = 180000;
 
 export class StalledError extends Error {
-  constructor(ms) {
-    super(`The model sent nothing for ${Math.round(ms / 1000)} s, so the request was stopped. Try again, pick a faster model or a lower reasoning effort, or turn on a backup provider.`);
+  constructor(ms, phase = null) {
+    super(`The model sent nothing for ${Math.round(ms / 1000)} s${phase === 'headers' ? ' while waiting for response headers' : phase === 'stream' ? ' while waiting for stream data' : ''}, so the request was stopped. Try again, pick a faster model or a lower reasoning effort, or turn on a backup provider.`);
     this.name = 'StalledError';
+    this.phase = phase;
   }
 }
 
@@ -47,7 +48,7 @@ export async function fetchModel(url, init, idleMs = MODEL_IDLE_MS) {
   const outer = init.signal;
   if (outer?.aborted) controller.abort(outer.reason);
   outer?.addEventListener('abort', () => controller.abort(outer.reason), { once: true });
-  const timer = setTimeout(() => controller.abort(new StalledError(idleMs)), idleMs);
+  const timer = setTimeout(() => controller.abort(new StalledError(idleMs, 'headers')), idleMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
@@ -67,8 +68,8 @@ export async function* readSse(response, signal, { idleMs = MODEL_IDLE_MS } = {}
   let deadline = Date.now() + idleMs;
   try {
     while (true) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const { value, done } = await readWithin(reader, Math.max(0, deadline - Date.now()), idleMs);
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      const { value, done } = await readWithin(reader, Math.max(0, deadline - Date.now()), idleMs, signal);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const { events, rest } = parseSseChunk(buffer);
@@ -80,18 +81,31 @@ export async function* readSse(response, signal, { idleMs = MODEL_IDLE_MS } = {}
     const { events } = parseSseChunk(buffer + '\n\n');
     yield* events;
   } finally {
+    reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
 
 /** One read, given up after `ms`; `idleMs` is the limit named in the error. */
-function readWithin(reader, ms, idleMs) {
+function readWithin(reader, ms, idleMs, signal) {
   let timer;
+  let onAbort;
   const stalled = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      reject(new StalledError(idleMs)); // first: cancelling settles the pending read as done
+      reject(new StalledError(idleMs, 'stream')); // first: cancelling settles the pending read as done
       reader.cancel().catch(() => {});
     }, ms);
   });
-  return Promise.race([reader.read(), stalled]).finally(() => clearTimeout(timer));
+  const aborted = new Promise((_, reject) => {
+    onAbort = () => {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      reader.cancel().catch(() => {});
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+  });
+  return Promise.race([reader.read(), stalled, aborted]).finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  });
 }

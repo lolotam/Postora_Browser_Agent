@@ -179,6 +179,67 @@ test('Gemini and Kimi provider fields keep separate keys and switch account mode
   assert.equal(form.read().gemini.apiKey, 'GOOGLE-KEY');
 });
 
+test('the first Gemini key entry reloads models without switching provider or saving', async () => {
+  const { root, el } = fakeRoot(MAIN_FIELDS);
+  const keyStore = createKeyStore();
+  const requests = [];
+  const form = createProviderForm(root, { keyStore, getPresets: () => COMPATIBLE_PRESETS,
+    request: async (type, data) => { requests.push({ type, data }); return [{ id: 'gemini-3.8-flash', efforts: [], decision: false }]; },
+  });
+  form.fill(mergeSettings({ provider: 'gemini' }));
+  el('geminiApiKey').value = 'synthetic-first-google-key';
+  el('geminiApiKey').dispatch('input');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].data.settings.gemini.apiKey, 'synthetic-first-google-key');
+  assert.equal(form.list()[0]?.id, 'gemini-3.8-flash');
+});
+
+test('shared Gemini key edits update both catalogs, and clearing never revives a saved key', async () => {
+  const keyStore = createKeyStore();
+  keyStore.load({ gemini: 'synthetic-old-key' });
+  const requests = [];
+  const roots = [fakeRoot(MAIN_FIELDS), fakeRoot(BACKUP_FIELDS)];
+  const settings = mergeSettings({ provider: 'gemini', gemini: { apiKey: 'synthetic-old-key', model: 'gemini-old' } });
+  const forms = roots.map(({ root }) => {
+    const form = createProviderForm(root, { keyStore, getPresets: () => COMPATIBLE_PRESETS,
+      request: async (_type, data) => { requests.push(data.settings.gemini.apiKey); return [{ id: 'gemini-new', efforts: [] }]; },
+    });
+    form.fill(settings);
+    return form;
+  });
+  roots[0].el('geminiApiKey').value = 'synthetic-new-key';
+  roots[0].el('geminiApiKey').dispatch('input');
+  assert.equal(roots[1].el('geminiApiKey').value, 'synthetic-new-key');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual(requests, ['synthetic-new-key', 'synthetic-new-key']);
+  roots[0].el('geminiApiKey').value = '';
+  roots[0].el('geminiApiKey').dispatch('input');
+  assert.ok(forms.every((form) => form.read().gemini.apiKey === '' && form.list().length === 0));
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(requests.length, 2, 'clearing does not send an old key to Google');
+});
+
+test('a late Gemini catalog response for a replaced key cannot overwrite the new catalog', async () => {
+  const { root, el } = fakeRoot(MAIN_FIELDS);
+  const keyStore = createKeyStore();
+  keyStore.load({ gemini: 'synthetic-old-key' });
+  let finishOld;
+  const form = createProviderForm(root, { keyStore, getPresets: () => COMPATIBLE_PRESETS,
+    request: async (_type, { settings }) => settings.gemini.apiKey === 'synthetic-old-key'
+      ? new Promise((resolve) => { finishOld = resolve; }) : [{ id: 'gemini-new', efforts: [] }],
+  });
+  form.fill(mergeSettings({ provider: 'gemini', gemini: { apiKey: 'synthetic-old-key' } }));
+  const old = form.loadModels();
+  el('geminiApiKey').value = 'synthetic-new-key';
+  el('geminiApiKey').dispatch('input');
+  finishOld([{ id: 'gemini-stale', efforts: [] }]);
+  await old;
+  assert.equal(form.list().length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(form.list()[0].id, 'gemini-new');
+});
+
 test('every sign-in failure the worker can send has a message in every language', async () => {
   const { SIGN_IN_FAILURES } = await import('../src/background/account-login.js');
   const { ACCOUNT_ERROR_CODES } = await import('../src/providers/account-auth.js');

@@ -59,7 +59,10 @@ export class CompatibleSession {
   constructor({ baseUrl, apiKey, model, effort, thinkingStyle, systemPrompt, tools, sessionId = crypto.randomUUID(), notify = null, textToolCalls = false, usage = false, strictRedirects = false }) {
     this.strictRedirects = strictRedirects;
     this.notify = notify;
-    this.usage = usage; // ask for token usage in the stream (presets known to accept it)
+    // Gemini's compatibility endpoint is kept on its minimal streaming profile:
+    // optional usage streaming has caused reported idle stalls. Other providers
+    // retain usage and their existing one-time unsupported-option fallback.
+    this.usage = thinkingStyle === 'gemini' ? false : usage;
     this.retryWaitMs = 0;
     this.textToolCalls = textToolCalls; // only presets where models were seen writing calls as text
     this.turn = 0;
@@ -167,6 +170,9 @@ export class CompatibleSession {
       if (answer) onEvent({ type: 'text-reset' }); // withdrawn before the backup or the error shows
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
     }
+    if (!answer.trim() && !result.toolCalls.length) {
+      throw new Error(`Model request failed: the model returned no text or tool calls (${result.finishReason ?? 'empty completion'}). Choose a chat model with tool support.`);
+    }
     this.turn += 1;
     const complete = COMPLETE.has(result.finishReason) || (done && !result.finishReason);
     if (complete && !result.toolCalls.length && toolChoice !== 'none' && this.textToolCalls) {
@@ -220,7 +226,12 @@ export class CompatibleSession {
     const body = {
       model: this.model,
       messages: this.messages,
-      tools: this.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })),
+      tools: this.tools.map((t) => {
+        if (this.thinkingStyle !== 'gemini') return { type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } };
+        const parameters = geminiSchema(t.parameters);
+        const noArgs = parameters.type === 'object' && !Object.keys(parameters.properties ?? {}).length;
+        return { type: 'function', function: { name: t.name, description: t.description, ...(!noArgs ? { parameters } : {}) } };
+      }),
       tool_choice: toolChoice,
       stream: true,
       ...(this.usage ? { stream_options: { include_usage: true } } : {}),
@@ -239,6 +250,14 @@ export class CompatibleSession {
     }
     return body;
   }
+}
+
+/** Google's function schemas use a subset; do not mutate the shared tool registry. */
+function geminiSchema(value) {
+  if (Array.isArray(value)) return value.map(geminiSchema);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'additionalProperties' && key !== '$schema')
+    .map(([key, child]) => [key, geminiSchema(child)]));
 }
 
 /** Reassembles streamed Chat Completions deltas, including split tool-call arguments. */

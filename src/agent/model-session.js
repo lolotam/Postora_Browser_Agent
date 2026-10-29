@@ -42,7 +42,7 @@ function createProviderSession(slot, settings, conversationId, notify = null, ac
   if (slot.provider === 'gemini') {
     if (!slot.gemini.model || !slot.gemini.apiKey?.trim()) throw new Error('Choose a Gemini model and API key in settings first.');
     return new CompatibleSession({ ...slot.gemini, baseUrl: GEMINI_API_URL, thinkingStyle: 'gemini',
-      systemPrompt, tools, sessionId: conversationId, notify, usage: true, strictRedirects: true });
+      systemPrompt, tools, sessionId: conversationId, notify, usage: false, strictRedirects: true });
   }
   if (slot.provider === 'kimi') {
     if (!slot.kimi.model) throw new Error('Choose a Kimi model in settings first.');
@@ -60,12 +60,23 @@ const TEST_TIMEOUT_MS = 45000;
  * A real request to a model slot with the tools and prompt a task uses, so a model
  * that rejects tools or the reasoning setting fails here and not in the first task.
  */
-export async function testProviderSlot(slot, settings) {
+export async function testProviderSlot(slot, settings, { timeoutMs = TEST_TIMEOUT_MS } = {}) {
   const session = createProviderSession(slot, settings);
   session.addUserMessage('Connection test: reply with the single word OK and do not call any tool.');
   const started = Date.now();
-  const turn = await session.next({ signal: AbortSignal.timeout(TEST_TIMEOUT_MS) });
-  return { ms: Date.now() - started, model: slotLabel(slot), reply: (turn.text || '').trim().slice(0, 60) };
+  const signal = AbortSignal.timeout(timeoutMs);
+  let turn;
+  try {
+    // Keep the real schemas, but don't let a connection check become an agent
+    // task. No tool is executed and a blank/tool-only answer is not success.
+    turn = await session.next({ signal, toolChoice: 'none' });
+  } catch (error) {
+    if (signal.aborted) throw new Error(`Connection test for ${slotLabel(slot)} timed out after ${Math.round(timeoutMs / 1000)} s. Try a faster chat model or lower reasoning effort.`, { cause: error });
+    throw error;
+  }
+  const reply = (turn.text || '').trim();
+  if (!reply) throw new Error('Connection test returned no text. Choose a chat model with tool support.');
+  return { ms: Date.now() - started, model: slotLabel(slot), reply: reply.slice(0, 60) };
 }
 
 function slotLabel(slot) {

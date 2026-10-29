@@ -28,6 +28,7 @@ export function keyFieldState(value, editing) {
 export function createKeyStore() {
   let values = {};
   const fields = []; // { input, provider: () => provider id }
+  const listeners = new Set();
 
   function paint(input) {
     input.paintKey?.();
@@ -36,6 +37,7 @@ export function createKeyStore() {
   function set(provider, value, source) {
     const group = keyGroup(provider);
     if (!group) return;
+    const changed = (values[group] ?? '') !== value;
     if (value) values[group] = value;
     else delete values[group];
     for (const field of fields) {
@@ -44,6 +46,7 @@ export function createKeyStore() {
         paint(field.input);
       }
     }
+    if (changed) for (const listener of listeners) listener(group, value);
   }
 
   // The saved line is built once, and only for a real field. Tests pass plain objects.
@@ -92,6 +95,11 @@ export function createKeyStore() {
       values = { ...keys };
     },
     snapshot: () => ({ ...values }),
+    /** Shared-key edits (including Sign out), after every matching input is updated. */
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     register(input, provider) {
       fields.push({ input, provider });
       decorate(input, provider);

@@ -2885,7 +2885,7 @@ function readFastForm() {
   };
 }
 
-// Backups are decision providers only, so the base URL is the preset's.
+// A backup may be a native decision provider or Zen JSON chat judge.
 function readFastFallback() {
   const provider = $('fastFallbackProvider').value;
   const preset = fastPresets[provider] ?? {};
@@ -2895,17 +2895,19 @@ function readFastFallback() {
     baseUrl: preset.baseUrl,
     apiKey: $('fastFallbackApiKey').value.trim(),
     model: $('fastFallbackModel').value.trim() || preset.model,
-    decision: true,
+    decision: isDecisionModel(provider, $('fastFallbackModel').value.trim() || preset.model, fastFallbackModels, settings.fast.fallback),
   };
 }
 
-// The fast list only holds decision models; a typed id counts as one when it is
-// the preset's default (list not loaded yet) or was saved as one before.
-function isDecisionModel(provider, model) {
-  if (fastModels.some((m) => m.id === model)) return true;
+// Catalog metadata distinguishes JSON chat judges from calibrated decisions.
+// Zen's model family wins over a stale saved flag even before the list arrives.
+function isDecisionModel(provider, model, models = fastModels, saved = settings.fast) {
+  if (provider === 'opencode-zen') return /^jev-/i.test(model);
+  const listed = models.find((m) => m.id === model);
+  if (listed) return Boolean(listed.decision);
   const preset = fastPresets[provider] ?? {};
   if (model === preset.model) return Boolean(preset.decision);
-  return settings.fast.provider === provider && settings.fast.model === model && Boolean(settings.fast.decision);
+  return saved.provider === provider && saved.model === model && Boolean(saved.decision);
 }
 
 function syncFast() {

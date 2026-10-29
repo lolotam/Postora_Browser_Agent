@@ -8,14 +8,16 @@ import { requestJson } from '../lib/json.js';
 
 const REQUEST_TIMEOUT_MS = 15000;
 
-export async function askChatJudge({ baseUrl, apiKey, model, state, questions, signal }) {
+export async function askChatJudge({ baseUrl, apiKey, model, state, questions, signal, sessionId = crypto.randomUUID() }) {
   if (!apiKey) throw new Error('Fast layer API key is missing.');
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const res = await fetch(`${String(baseUrl).replace(/\/+$/, '')}/chat/completions`, {
     method: 'POST',
     credentials: 'omit',
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json',
+      ...(/^https:\/\/opencode\.ai\//.test(baseUrl) ? { 'x-opencode-session': sessionId } : {}),
+    },
     body: requestJson({
       model,
       response_format: { type: 'json_object' },

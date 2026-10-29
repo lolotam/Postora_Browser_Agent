@@ -5,6 +5,8 @@ import { SessionRunner } from './session-runner.js';
 import { testProviderSlot } from '../agent/model-session.js';
 import { accountLoginState, cancelAccountLogin, requestedProvider, startAccountLogin, submitAccountInput, withKeepAlive } from './account-login.js';
 import { fastClientFor } from '../fast/clients.js';
+import { fastRequestConfig } from '../fast/provider-config.js';
+import { listFastModels } from '../fast/catalog.js';
 import { accountsIn, exportBackup, importBackup } from '../lib/backup.js';
 import { errorResponse } from '../lib/errors.js';
 import { COMPATIBLE_PRESETS, FAST_PRESETS, loadSettings, modelListRoute, saveSettings, slotModels } from '../lib/settings.js';
@@ -237,9 +239,10 @@ async function handleRequest(msg, sender) {
       return authStatusFor(provider);
     }
     case 'fast-test': {
-      const ask = fastClientFor(msg.config);
+      const config = fastRequestConfig(msg.config);
+      const ask = fastClientFor(config);
       const { answers, model } = await ask({
-        ...msg.config,
+        ...config,
         state: { message: 'Hello, can you hear me?' },
         questions: { greeting: { type: 'noul', instructions: 'The message is a greeting or a connection check.' } },
       });
@@ -248,9 +251,7 @@ async function handleRequest(msg, sender) {
     case 'provider-test':
       return withKeepAlive(async () => testProviderSlot(msg.slot, await loadSettings()));
     case 'list-fast-models': {
-      const fixed = FAST_PRESETS[msg.config.provider]?.models;
-      if (fixed) return fixed.map((id) => ({ id, name: id, efforts: [], decision: true }));
-      return (await listCompatibleModels(msg.config.baseUrl, msg.config.apiKey)).filter((m) => m.decision);
+      return listFastModels(msg.config);
     }
     case 'list-models': {
       const settings = msg.settings ?? (await loadSettings());
