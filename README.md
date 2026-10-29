@@ -81,11 +81,18 @@ npm install && npm run e2e
 ```
 
 The checkout uses LF line endings on every platform, so a test that reads a
-source file sees the same bytes CI sees. A clone made before this rule holds
-CRLF on Windows; normalize it once with:
+source file sees the same bytes CI sees. A Windows clone made before this rule
+holds CRLF, and Git then reports every tracked file as modified, because the
+bytes on disk no longer match the new checkout rule. Normalize it once:
 
 ```bash
+git stash push --include-untracked   # keep your work safe; skip if the tree is clean
 git rm --cached -r . && git reset --hard
+git stash pop                          # bring your work back; skip if nothing was stashed
 ```
+
+The middle command rewrites every tracked file on disk, so it drops unstaged and
+staged edits unless they are stashed first. Run it on a clean worktree, or keep
+the stash above around it.
 
 The OAuth sign-in and refresh flows come from [pi-ai](https://github.com/earendil-works/pi) (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

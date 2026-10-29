@@ -160,4 +160,14 @@ npm run e2e       # بيحمّل الإكستنشن في Chromium مع مودي�
 # لو Chromium بتاع Playwright مش متثبت: CHROMIUM_PATH=/path/to/chrome npm run e2e
 ```
 
+الـ checkout بيستخدم نهايات سطر LF على كل المنصات، عشان أي اختبار بيقرأ ملف مصدري يشوف نفس البايتات اللي بيشوفها CI. لو الكلون بتاعك على ويندوز متعملش قبل القاعدة دي، هيفضل فيه CRLF وGit هيبلّغ إن كل ملف متتبّع اتغيّر. صلّحها مرة واحدة:
+
+```bash
+git stash push --include-untracked   # احتفظ بشغلك؛ سيب السطر ده لو الشجرة نضيفة
+git rm --cached -r . && git reset --hard
+git stash pop                          # رجّع شغلك؛ سيب السطر ده لو مفيش حاجة اتخزنت
+```
+
+الأمر الأوسط بيكتب كل الملفات المتتبّعة من جديد على القرص، فبيضيع أي تعديلات مش محفوظة. اشتغل على شجرة نضيفة، أو سيب الـ stash اللي فوقه.
+
 مسارات تسجيل الدخول وتجديد التوكنات مأخوذة من [pi-ai](https://github.com/earendil-works/pi) برخصة MIT — انظر [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
