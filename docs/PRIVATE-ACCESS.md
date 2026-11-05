@@ -164,6 +164,12 @@ saved conversation replay. Arabic prose determines RTL alignment independently
 of the interface language, including mixed reports beginning with English text.
 Code blocks and isolated inline commands retain LTR direction.
 
+Unconfigured/legacy installs retain browser speech recognition until a
+transcription service is explicitly configured. Native command approvals show
+the command text in an LTR scrollable preview. Native project handlers are
+removed from the store build. Model integrity checks use streaming hashes rather
+than loading the entire model into memory; integrity verification remains enabled.
+
 Version 0.4.1 adds Arabic/English playback test buttons and persistent playback
 status. Missing system voices and browser playback errors are reported separately
 from speech recognition errors. A paused synthesis queue is resumed before speech.
@@ -173,7 +179,7 @@ into separate commands. This changes capture latency, not model inference speed.
 Deepgram configuration does not supply a text-to-speech voice; Arabic playback
 still requires an Arabic voice visible to the browser.
 
-- `npm test`: 1073 passing tests.
+- `npm test`: 1078 passing tests.
 - `node test/e2e/providers-voice.mjs` with `POSTORA_TEST_DOWNLOAD=1`:
   grouped connection routes, account/API switching, independent speech keys,
   real checksum-verified download, native transport and local inference passed.

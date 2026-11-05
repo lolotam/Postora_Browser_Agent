@@ -235,6 +235,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       f(saved.provider === 'claude' ? 'claudeAuth' : 'kimiAuth').value = route().auth;
     }
     if (route().preset && f('preset').value !== route().preset) {
+      if (preset === 'custom') customKey = f('apiKey').value.trim();
       preset = route().preset;
       const defaults = getPresets()[preset];
       f('preset').value = preset;

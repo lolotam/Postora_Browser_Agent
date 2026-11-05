@@ -42,6 +42,8 @@ html[dir="rtl"] body { letter-spacing: 0; }
 .msg code { direction: ltr; unicode-bidi: isolate; }
 .msg :not(pre) > code { display: inline-block; max-width: 100%; vertical-align: baseline; }
 .msg pre, .msg pre code { direction: ltr; text-align: left; }
+.permission-command { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow-y: auto; text-align: left; font: 11px/1.5 var(--mono); }
+.permission-command-warning { color: var(--danger); }
 .totals { direction: ltr; text-align: start; }
 @media (prefers-reduced-motion: reduce) { .thread > summary::after, .step > summary::after { transition: none; } }
 #composer { padding: 4px 12px 10px; }

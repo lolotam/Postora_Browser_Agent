@@ -14,7 +14,9 @@ import { effectiveSettings, loadSettings } from '../lib/settings.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
+// @store-strip-start
 import { nativeRequest } from '../native/client.js';
+// @store-strip-end
 
 const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
@@ -226,9 +228,12 @@ export class SessionRunner {
     else if (msg.type === 'dismiss-notice') this.emit({ type: 'notice-dismissed', id: msg.id });
     else if (msg.type === 'access-mode') this.setAccessMode(msg, port);
     else if (msg.type === 'access-approval') this.answerAccessRequest(msg, port);
+    // @store-strip-start
     else if (msg.type === 'project-set') this.setProject(msg, port).catch((error) => this.broadcast({ type: 'project-state', project: this.project, error: error.message }));
+    // @store-strip-end
   }
 
+  // @store-strip-start
   async setProject(msg, port) {
     if (!this.livePort(port) || !ownSidePanel(port) || !portBoundToSession(port, this.id) || msg.sessionId !== this.id) return;
     if (this.running) throw new Error('Stop the current task before changing its project.');
@@ -243,6 +248,7 @@ export class SessionRunner {
     this.scheduleSave();
     this.broadcast({ type: 'project-state', project });
   }
+  // @store-strip-end
 
   /**
    * The access mode of this session.
@@ -311,7 +317,9 @@ export class SessionRunner {
   /**
    * What a panel may show about a question.
    *
-   * The arguments are left out: the text that was going to be typed, the
+   * Arguments are left out except the bounded command preview for project_run
+   * and run_terminal, which must be visible before approving execution. The
+   * text that was going to be typed, the
    * value that was going to be read and the permit itself never belong in a
    * preview that may be on screen. What is left is the action, its kind, the
    * site it happens on and the name the page itself gave the target — enough
@@ -330,6 +338,10 @@ export class SessionRunner {
       kind: request.kind,
       origin: safeOrigin(destination) ?? safeOrigin(request.target?.url),
       label: safeLabel(request.target?.element?.label) ?? (request.action.startsWith('project_') ? safeLabel(request.args?.path || this.project?.name) : null),
+      ...(['project_run', 'run_terminal'].includes(request.action) ? {
+        command: String(request.args?.command ?? '').slice(0, 16000),
+        commandTruncated: String(request.args?.command ?? '').length > 16000,
+      } : {}),
     });
   }
 

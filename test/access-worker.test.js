@@ -33,6 +33,15 @@ globalThis.chrome = {
 const { SessionRunner } = await import('../src/background/session-runner.js');
 const sessions = await import('../src/sessions/store.js');
 
+test('public command approvals include bounded shell text, while unrelated arguments stay private', () => {
+  const request = { id: 'test', sessionId: 'session', revision: 1, action: 'project_run', args: { command: 'x'.repeat(17000) } };
+  const shown = SessionRunner.prototype.publicRequest.call({ project: { name: 'fixture' } }, request);
+  assert.equal(shown.command.length, 16000);
+  assert.equal(shown.commandTruncated, true);
+  assert.equal('args' in shown, false);
+  assert.equal('command' in SessionRunner.prototype.publicRequest.call({}, { ...request, action: 'type_text' }), false);
+});
+
 /** A port like the one a panel opens, with the sender metadata of its page. */
 function makePort({ name, sender } = {}) {
   const messages = [];

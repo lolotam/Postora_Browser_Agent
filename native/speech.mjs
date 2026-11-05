@@ -1,6 +1,7 @@
 // Private Windows offline transcription. Downloads are pinned and verified before
 // execution; microphone bytes are never sent to a network service by this module.
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,7 +14,11 @@ export const SPEECH_ASSETS = [
 ];
 const root = () => path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'Postora', 'speech');
 const installedPath = () => path.join(root(), 'whisper-base-1.9.2-r2');
-const sha = (data) => createHash('sha256').update(data).digest('hex');
+async function hashFile(file) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
 const powershell = () => path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 export function validateWav(encoded) {
@@ -37,7 +42,7 @@ async function status(verify = false) {
       if (path.basename(name) !== name || !/^(model\.bin|[\w.-]+\.(exe|dll))$/.test(name)) return { installed: false };
       const file = path.join(directory, name);
       if ((await fs.stat(file)).size !== record.size) return { installed: false };
-      if (verify && sha(await fs.readFile(file)) !== record.sha256) return { installed: false };
+      if (verify && await hashFile(file) !== record.sha256) return { installed: false };
     }
     if (manifest.files['model.bin'].sha256 !== SPEECH_ASSETS[1].sha256) return { installed: false };
     return { installed: true, model: 'base' };
@@ -103,7 +108,7 @@ async function install(options) {
     await run(path.join(staging, 'whisper-cli.exe'), ['--help'], options);
     const files = {};
     for (const name of await fs.readdir(staging)) if (/^(model\.bin|[\w.-]+\.(exe|dll))$/.test(name)) {
-      const data = await fs.readFile(path.join(staging, name)); files[name] = { size: data.length, sha256: sha(data) };
+      const file = path.join(staging, name); files[name] = { size: (await fs.stat(file)).size, sha256: await hashFile(file) };
     }
     await fs.unlink(path.join(staging, 'runtime.zip')); await fs.unlink(path.join(staging, 'vclibs.appx')); await fs.unlink(path.join(staging, 'extract.ps1'));
     await fs.writeFile(path.join(staging, 'installed.json'), JSON.stringify({ version: '1.9.2-r2', model: 'base', files }));

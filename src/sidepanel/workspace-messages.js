@@ -1,5 +1,6 @@
 export const WORKSPACE_MESSAGES = {
   en: {
+    'access.approval.commandTruncated': 'Command preview truncated. Deny this request and ask for a shorter command to review.',
     'voice.pause': 'Pause before transcription', 'voice.pauseFast': 'Fast · 0.6 s (may split speech with long pauses)', 'voice.pauseBalanced': 'Balanced · 0.9 s', 'voice.pausePatient': 'Patient · 1.2 s',
     'voice.testArabic': 'Test Arabic voice', 'voice.testEnglish': 'Test English voice',
     'voice.playback.unavailable': 'No matching system voice is available. Add a voice in Windows Settings → Time & language → Speech, then restart the browser.',
@@ -42,6 +43,7 @@ export const WORKSPACE_MESSAGES = {
     'project.stopFirst': 'Stop the current task before changing its project.',
   },
   ar: {
+    'access.approval.commandTruncated': 'معاينة الأمر غير مكتملة. ارفض الطلب واطلب أمرًا أقصر يمكن مراجعته بالكامل.',
     'voice.pause': 'مدة الصمت قبل تفريغ الكلام', 'voice.pauseFast': 'سريع · 0.6 ثانية (قد يقسّم الكلام عند التوقف الطويل)', 'voice.pauseBalanced': 'متوازن · 0.9 ثانية', 'voice.pausePatient': 'متمهّل · 1.2 ثانية',
     'voice.testArabic': 'اختبار الصوت العربي', 'voice.testEnglish': 'اختبار الصوت الإنجليزي',
     'voice.playback.unavailable': 'لا يوجد صوت نظام مناسب. أضف صوتًا من إعدادات Windows ← الوقت واللغة ← الكلام، ثم أعد تشغيل المتصفح.',

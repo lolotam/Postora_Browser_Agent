@@ -2802,6 +2802,7 @@ function syncRecommended(open = false) {
 
 // The store build has no run-JavaScript tool, so it has no switch for it either.
 $('allowJavascript').closest('label').hidden = STORE_BUILD;
+$('projectBtn').hidden = STORE_BUILD;
 
 $('keyLinkMain').href = RECOMMENDED_SETUP.main.keyUrl;
 $('keyLinkBackup').href = RECOMMENDED_SETUP.backup.keyUrl;

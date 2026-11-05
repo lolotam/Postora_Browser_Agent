@@ -29,7 +29,9 @@ import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
 import { isMicRelay } from '../sidepanel/voice.js';
+// @store-strip-start
 import { nativeRequest, runNativeCommand } from '../native/client.js';
+// @store-strip-end
 
 const GROUP_COLORS = ['cyan', 'blue', 'green', 'yellow', 'purple', 'pink', 'orange', 'red'];
 const runners = new Map(); // sessionId → SessionRunner
@@ -209,6 +211,7 @@ async function handleRequest(msg, sender) {
     case 'openrouter-login':
       if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Sign-in requires the extension settings panel.');
       return withKeepAlive(() => signInOpenRouter());
+    // @store-strip-start
     case 'project-list-ui': {
       if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Project listing requires the extension panel.');
       const runner = await runnerFor(msg.sessionId);
@@ -221,6 +224,7 @@ async function handleRequest(msg, sender) {
       if (result.exitCode !== 0) throw new Error(result.output || 'Folder selection failed.');
       return result.output.trim();
     }
+    // @store-strip-end
     case 'overlay-stop':
       return stopFromPage(sender);
     case 'get-settings':
