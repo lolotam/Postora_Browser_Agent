@@ -426,9 +426,9 @@ export function createVoiceController({
       if (!screenOpen || !captureActive || capture !== 'window') return;
       onFinal(String(text ?? ''));
     },
-    handleError(code) {
+    handleError(code, detail) {
       if (!screenOpen || !captureActive || capture !== 'window') return;
-      onError(code);
+      onError(code, detail);
     },
     /** The microphone window ran out: the capture is over. */
     handleCaptureEnded() {

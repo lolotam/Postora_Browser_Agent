@@ -114,7 +114,25 @@ try {
     fs.mkdirSync(process.env.E2E_SCREENSHOTS, { recursive: true });
     await panel.screenshot({ path: path.join(process.env.E2E_SCREENSHOTS, 'workspace-ar.png') });
   }
-  console.log('WORKSPACE PASSED: compact composer, Cairo/RTL, linked project, @file, hash-bound write, native command, live mode notice, multilingual transcription transport.');
+  await panel.waitForFunction(() => document.getElementById('stopBtn').hidden);
+  await panel.evaluate(async () => {
+    await chrome.storage.local.set({ voiceHandsfree: false, voiceSpeak: true });
+    window.__spokenReplies = [];
+    window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
+    Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
+      getVoices: () => [{ lang: 'ar-EG' }, { lang: 'en-US' }], cancel() {}, resume() {},
+      speak(utterance) { window.__spokenReplies.push(utterance.text); utterance.onend?.(); },
+    } });
+  });
+  await target.bringToFront();
+  await panel.click('#voiceToggle');
+  await panel.waitForSelector('#voiceView:not([hidden])');
+  await panel.fill('#voiceTypedInput', 'أكمل الفحص وأخبرني بالنتيجة');
+  await panel.locator('#voiceTypedInput').press('Enter');
+  await panel.waitForFunction(() => window.__spokenReplies.length > 0, { timeout: 30000 });
+  assert.match(await panel.evaluate(() => window.__spokenReplies.at(-1)), /[\u0600-\u06ff]/);
+  assert.deepEqual(errors, []);
+  console.log('WORKSPACE PASSED: compact composer, Cairo/RTL, linked project, @file, hash-bound write, native command, live mode notice, multilingual transcription and full-agent spoken completion.');
 } finally {
   await context.close();
   server.closeAllConnections(); await new Promise((resolve) => server.close(resolve));

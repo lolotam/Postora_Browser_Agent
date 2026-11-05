@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const HIDDEN = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.venv', 'vendor']);
-const secret = (name) => /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$/i.test(name);
+const secret = (name) => /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$|\.postora-write\.lock$/i.test(name);
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 export async function projectInfo(root) {
@@ -58,32 +58,46 @@ export async function projectOperation(message) {
   }
   if (message.type === 'project-write') {
     if (typeof message.text !== 'string' || Buffer.byteLength(message.text) > 64000) throw new Error('Write supports up to 64000 UTF-8 bytes per file.');
-    let previous;
-    try { previous = await fs.readFile(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (previous ? message.expected_hash !== hash(previous) : message.expected_hash !== 'new') {
-      throw new Error('File changed or expected_hash is missing. Read the current file before writing.');
+    // Native requests use separate processes. Serialize cooperating writes across
+    // those processes, including the final hash check and atomic replacement.
+    const lockPath = `${target}.postora-write.lock`;
+    let lock;
+    try { lock = await fs.open(lockPath, 'wx', 0o600); }
+    catch (error) {
+      if (error.code === 'EEXIST') throw new Error('File has an active or interrupted Postora write lock. Retry after the other write finishes; an interrupted lock requires user recovery.');
+      throw error;
     }
-    // Write a sibling first so Stop or a failed write cannot leave the original
-    // half-written. Only replace it after checking the current revision again.
-    const temporary = `${target}.postora-${randomUUID()}.tmp`;
     try {
-      const data = Buffer.from(message.text);
-      const mode = previous ? (await fs.stat(target)).mode & 0o777 : 0o600;
-      await fs.writeFile(temporary, data, { flag: 'wx', mode });
-      if (await projectPath(project.root, relative, { create: true }) !== target) throw new Error('File target changed before writing.');
-      let actual;
-      try { actual = await fs.readFile(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (previous ? !actual || hash(actual) !== message.expected_hash : actual !== undefined) {
-        throw new Error('File changed before writing. Read it again.');
+      let previous;
+      try { previous = await fs.readFile(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (previous ? message.expected_hash !== hash(previous) : message.expected_hash !== 'new') {
+        throw new Error('File changed or expected_hash is missing. Read the current file before writing.');
       }
-      if (previous) await fs.rename(temporary, target);
-      else {
-        // Exclusive link creation is atomic and cannot overwrite a file that
-        // appeared after the check for a new path.
-        await fs.link(temporary, target);
-      }
-    } finally { await fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; }); }
-    return { path: relative, hash: hash(Buffer.from(message.text)), bytes: Buffer.byteLength(message.text) };
+      // Write a sibling first so Stop or a failed write cannot leave the original
+      // half-written. Only replace it after checking the current revision again.
+      const temporary = `${target}.postora-${randomUUID()}.tmp`;
+      try {
+        const data = Buffer.from(message.text);
+        const mode = previous ? (await fs.stat(target)).mode & 0o777 : 0o600;
+        await fs.writeFile(temporary, data, { flag: 'wx', mode });
+        if (await projectPath(project.root, relative, { create: true }) !== target) throw new Error('File target changed before writing.');
+        let actual;
+        try { actual = await fs.readFile(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (previous ? !actual || hash(actual) !== message.expected_hash : actual !== undefined) {
+          throw new Error('File changed before writing. Read it again.');
+        }
+        if (previous) await fs.rename(temporary, target);
+        else {
+          // Exclusive link creation is atomic and cannot overwrite a file that
+          // appeared after the check for a new path.
+          await fs.link(temporary, target);
+        }
+      } finally { await fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; }); }
+      return { path: relative, hash: hash(Buffer.from(message.text)), bytes: Buffer.byteLength(message.text) };
+    } finally {
+      await lock.close();
+      await fs.unlink(lockPath);
+    }
   }
   throw new Error('Unknown project operation.');
 }

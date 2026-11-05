@@ -582,7 +582,6 @@ function onEvent(event) {
       }
       const voiceEntry = voiceEntryFor(event);
       if (voiceEntry) {
-        const voiceT = (key) => translateFor(speechLocale(voiceTask?.text || event.report).slice(0, 2), key);
         const mark = event.ok ? '✓' : '✗';
         voiceEntry.setStatus(`${mark} ${event.summary || event.name}`, event.ok ? 'ok' : 'err');
       }
@@ -622,6 +621,7 @@ function onEvent(event) {
       if (ui.replayed) askForRating(); // live finals only, not the history replayed on open
       const voiceEntry = voiceEntryFor(event);
       if (voiceEntry) {
+        const voiceT = (key) => translateFor(speechLocale(voiceTask?.text || event.report).slice(0, 2), key);
         // A report that says the task failed is never shown as a success.
         if (event.success) {
           voiceEntry.setOk(t('voice.success'));
@@ -1374,8 +1374,7 @@ function onMicMessage(message) {
     return;
   }
   if (message.kind === 'error') {
-    if (message.code === 'transcription-failed') voiceFailure(message.code, message.detail);
-    voiceController?.handleError(message.code);
+    voiceController?.handleError(message.code, message.detail);
   }
 }
 

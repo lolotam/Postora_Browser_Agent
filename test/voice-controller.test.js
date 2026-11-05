@@ -51,6 +51,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
   const states = [];
   const transcripts = [];
   const failures = [];
+  const failureDetails = [];
   const windows = [];
   const pauses = [];
   const resumes = [];
@@ -97,7 +98,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     },
     loadPrefs: async () => (prefs ?? { ...saved }),
     savePrefs: async (next) => { Object.assign(saved, next); },
-    onFailure: (code) => failures.push(code),
+    onFailure: (code, detail) => { failures.push(code); failureDetails.push(detail); },
     onMicBlocked: () => { blocked = true; },
     cancelledText: () => 'Cancelled',
     now: () => clock,
@@ -110,6 +111,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     states,
     transcripts,
     failures,
+    failureDetails,
     windows,
     pauses,
     resumes,
@@ -122,6 +124,15 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     release: () => release?.(),
   };
 }
+
+test('microphone-window transcription failures preserve the provider detail once', async () => {
+  const app = setup({ panel: false });
+  await app.controller.open();
+  app.controller.handleError('transcription-failed', 'Transcription failed (HTTP 401).');
+  assert.deepEqual(app.failures, ['transcription-failed']);
+  assert.deepEqual(app.failureDetails, ['Transcription failed (HTTP 401).']);
+  app.controller.close();
+});
 
 test('hands-free off: one utterance runs one command and the microphone stops', async () => {
   const app = setup({ handsFree: false });

@@ -43,6 +43,12 @@ file and 24000 characters per result; writes are limited to 64000 UTF-8 bytes.
 PowerShell commands start in the project but retain the Windows user's privileges:
 they are not an OS sandbox. Commands retain the 60-second maximum timeout.
 
+Project writes use an exclusive sibling lock across native processes, so two
+Postora sessions cannot silently overwrite the same revision. A crash can leave
+a `.postora-write.lock` file: after confirming that no Postora write is running,
+the user may remove that specific lock and retry after reading the file again.
+Editors outside Postora do not participate in this lock protocol.
+
 This is a local, unpacked extension. Nothing is uploaded to the Chrome Web Store.
 Run `npm run package:private` to create `dist/postora-private-v0.4.2.zip`.
 Extract it into a permanent directory and load that directory with **Load unpacked**
@@ -165,7 +171,7 @@ into separate commands. This changes capture latency, not model inference speed.
 Deepgram configuration does not supply a text-to-speech voice; Arabic playback
 still requires an Arabic voice visible to the browser.
 
-- `npm test`: 1070 passing tests.
+- `npm test`: 1072 passing tests.
 - `node test/e2e/providers-voice.mjs` with `POSTORA_TEST_DOWNLOAD=1`:
   grouped connection routes, account/API switching, independent speech keys,
   real checksum-verified download, native transport and local inference passed.
