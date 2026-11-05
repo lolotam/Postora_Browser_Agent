@@ -85,6 +85,7 @@ try {
   assert.ok(audioBody.includes('name="model"'));
   assert.equal(audioBody.includes('name="language"'), false);
   const target = await context.newPage(); await target.goto(`${base}/fixture`); await target.bringToFront();
+  await panel.bringToFront();
   await panel.fill('#input', 'Update the selected synthetic project and run its check.');
   await panel.click('#sendBtn');
   await panel.waitForSelector('#approvals .permission-request', { timeout: 30000 });

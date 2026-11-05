@@ -3,7 +3,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
 export const SPEECH_ASSETS = [
@@ -108,10 +108,37 @@ async function install(options) {
     await fs.unlink(path.join(staging, 'runtime.zip')); await fs.unlink(path.join(staging, 'vclibs.appx')); await fs.unlink(path.join(staging, 'extract.ps1'));
     await fs.writeFile(path.join(staging, 'installed.json'), JSON.stringify({ version: '1.9.2-r2', model: 'base', files }));
     options.signal?.throwIfAborted();
-    try { await fs.rename(staging, installedPath()); }
-    catch (error) { if (!(await status(true)).installed) throw new Error(`Local installation could not be committed: ${error.code}.`); }
+    await commitInstallation(staging, installedPath(), async () => (await status(true)).installed, options.signal);
     return await status(true);
   } finally { await fs.rm(staging, { recursive: true, force: true }); }
+}
+
+/** Serialize publication; retain an invalid old installation for user recovery. */
+export async function commitInstallation(staging, destination, valid, signal) {
+  const lockPath = `${destination}.install.lock`;
+  let lock;
+  try { lock = await fs.open(lockPath, 'wx', 0o600); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (await valid()) return;
+    throw new Error('Another local model installation is committing. Retry after it finishes.');
+  }
+  let previous;
+  try {
+    if (await valid()) return;
+    signal?.throwIfAborted();
+    const backup = `${destination}.previous-${randomUUID()}`;
+    try { await fs.rename(destination, backup); previous = backup; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try { await fs.rename(staging, destination); }
+    catch (error) {
+      if (previous) await fs.rename(previous, destination);
+      throw error;
+    }
+  } finally {
+    await lock.close();
+    await fs.unlink(lockPath);
+  }
 }
 
 export async function speechOperation(message, options = {}) {

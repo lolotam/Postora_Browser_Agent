@@ -136,7 +136,9 @@ progress, verifies pinned SHA-256 hashes, and installs under
 pinned Hugging Face revision, and app-local Microsoft VC runtime DLLs downloaded
 from Microsoft. It does not install machine-wide software or need administrator
 rights. The host verifies that the executable actually starts before committing
-the installation. Cancel closes the native port, aborts downloads/inference, and
+the installation. Repair serializes the final directory swap and preserves a
+damaged previous installation in a `.previous-*` sibling for manual recovery.
+Cancel closes the native port, aborts downloads/inference, and
 removes this attempt's staging files. No cloud fallback occurs in local mode.
 Audio is converted to mono 16 kHz PCM in the browser, sent over native messaging,
 and stored in a temporary directory only for inference, then removed. The text
@@ -171,7 +173,7 @@ into separate commands. This changes capture latency, not model inference speed.
 Deepgram configuration does not supply a text-to-speech voice; Arabic playback
 still requires an Arabic voice visible to the browser.
 
-- `npm test`: 1072 passing tests.
+- `npm test`: 1073 passing tests.
 - `node test/e2e/providers-voice.mjs` with `POSTORA_TEST_DOWNLOAD=1`:
   grouped connection routes, account/API switching, independent speech keys,
   real checksum-verified download, native transport and local inference passed.
