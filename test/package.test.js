@@ -19,6 +19,16 @@ test('the uploaded manifest drops the development key', () => {
   assert.equal(out.name, 'x');
 });
 
+test('native messaging stays private and the store build has no native command tool', async () => {
+  const out = storeManifest({ permissions: ['storage', 'nativeMessaging'] });
+  assert.deepEqual(out.permissions, ['storage']);
+  const { packageEntries } = await import('../scripts/package.mjs');
+  const entries = packageEntries();
+  const tools = entries.find((entry) => entry.name === 'src/agent/tools.js').data.toString();
+  assert.doesNotMatch(tools, /run_terminal|runNativeCommand/);
+  assert.equal(entries.some((entry) => entry.name.startsWith('native/')), false);
+});
+
 test('every locale description fits the store limit', () => {
   assert.deepEqual(overlongDescriptions(), []);
 });

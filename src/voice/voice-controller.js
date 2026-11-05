@@ -87,13 +87,14 @@ export function createVoiceController({
     rec.interimResults = true;
     rec.continuous = prefs.handsFree;
     rec.maxAlternatives = 1;
+    rec.onprocessing = () => { if (myGeneration === generation) onState('transcribing'); };
     rec.onresult = (event) => {
       if (myGeneration !== generation) return; // a retired recognizer
       onResult(event);
     };
     rec.onerror = (event) => {
       if (myGeneration !== generation) return;
-      onError(event?.error);
+      onError(event?.error, event?.message);
     };
     rec.onend = () => {
       if (myGeneration !== generation) return;
@@ -163,7 +164,7 @@ export function createVoiceController({
     enqueue(text);
   }
 
-  function onError(code) {
+  function onError(code, detail) {
     if (!code || code === 'no-speech' || code === 'aborted') return;
     if (code === 'not-allowed' || code === 'service-not-allowed') {
       if (capture === 'window') {
@@ -194,7 +195,7 @@ export function createVoiceController({
     // A microphone that is not there, or a speech service that is not
     // reachable, is not something the screen can keep claiming to listen to.
     stopListening();
-    onFailure(code);
+    onFailure(code, detail);
   }
 
   function onEnd() {

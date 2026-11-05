@@ -8,7 +8,7 @@ import { heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey } from '../
 // or relay logic is duplicated in the test.
 const source = fs.readFileSync(new URL('../src/sidepanel/mic.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
 
-function microphone() {
+async function microphone() {
   const messages = [];
   const created = [];
   const opened = [];
@@ -31,7 +31,8 @@ function microphone() {
     }
   }
   const location = { search: '?epoch=42&continuous=1', href: 'chrome-extension://test/src/sidepanel/mic.html?epoch=42&continuous=1' };
-  vm.runInNewContext(source, {
+  await vm.runInNewContext(`(async () => { ${source}\n })()`, {
+    loadSettings: async () => ({ transcription: { mode: 'browser' } }),
     heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey,
     setLanguage() {}, t: (key) => key,
     URL, URLSearchParams, location,
@@ -59,8 +60,8 @@ function microphone() {
   };
 }
 
-test('microphone pause and replacement retire late results from the old capture', () => {
-  const mic = microphone();
+test('microphone pause and replacement retire late results from the old capture', async () => {
+  const mic = await microphone();
   mic.start();
   const old = mic.created[0];
   mic.relay('pause');
@@ -74,7 +75,7 @@ test('microphone pause and replacement retire late results from the old capture'
 });
 
 test('a permission popup moving into a tab does not finish the new capture', async () => {
-  const mic = microphone();
+  const mic = await microphone();
   mic.start();
   const rec = mic.created[0];
   rec.onerror({ error: 'not-allowed' });
@@ -87,8 +88,8 @@ test('a permission popup moving into a tab does not finish the new capture', asy
   assert.equal(mic.closes(), 1, 'only the obsolete popup closes');
 });
 
-test('a different microphone epoch cannot pause, cancel or restart this window', () => {
-  const mic = microphone();
+test('a different microphone epoch cannot pause, cancel or restart this window', async () => {
+  const mic = await microphone();
   mic.start();
   mic.relay('pause', 99);
   mic.created[0].final('still listening');
@@ -100,8 +101,8 @@ test('a different microphone epoch cannot pause, cancel or restart this window',
   mic.relay('cancel');
 });
 
-test('a microphone that keeps hearing something is not given up on', () => {
-  const mic = microphone();
+test('a microphone that keeps hearing something is not given up on', async () => {
+  const mic = await microphone();
   mic.start();
   // Chrome ends the recognizer after every phrase: the window starts it again
   // and again, and it is not a broken microphone.
@@ -114,8 +115,8 @@ test('a microphone that keeps hearing something is not given up on', () => {
   assert.equal(mic.messages.some((m) => m.kind === 'error' && m.code === 'restart-limit'), false);
 });
 
-test('a microphone that keeps failing is stopped, and the panel is told why', () => {
-  const mic = microphone();
+test('a microphone that keeps failing is stopped, and the panel is told why', async () => {
+  const mic = await microphone();
   mic.start();
   for (let i = 0; i < 8; i += 1) mic.created[mic.created.length - 1].onend();
   const errors = mic.messages.filter((m) => m.kind === 'error');

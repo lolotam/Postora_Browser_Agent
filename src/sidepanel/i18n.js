@@ -16,7 +16,12 @@ export function resolveLanguage(preference, browserLanguage) {
 }
 
 export function t(key, vars = {}) {
-  const text = MESSAGES[current][key] ?? MESSAGES.en[key] ?? key;
+  return translateFor(current, key, vars);
+}
+
+/** Translate a voice reply without changing the interface language. */
+export function translateFor(language, key, vars = {}) {
+  const text = MESSAGES[language]?.[key] ?? MESSAGES.en[key] ?? key;
   return text.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? ''));
 }
 

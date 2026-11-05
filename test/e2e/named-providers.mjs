@@ -115,7 +115,7 @@ export async function runNamedProvidersScenario(context, extensionId) {
     await task('MOONSHOT-EXECUTED');
 
     await openSettings();
-    await panel.selectOption('#mainProvider [data-field="kimiAuth"]', 'account');
+    await panel.selectOption('#provider', 'kimi-account');
     await panel.click('#mainProvider [data-provider="kimi"] [data-auth="login"]');
     await panel.waitForSelector('#mainProvider [data-provider="kimi"] [data-auth="device"]:not([hidden])');
     assert.equal(await panel.textContent('#mainProvider [data-provider="kimi"] [data-auth="deviceCode"]'), 'KIMI-TEST');
@@ -153,6 +153,7 @@ export async function runNamedProvidersScenario(context, extensionId) {
     console.log('\n== scenario: named-providers ==\nGemini first-key catalog/test/execution, Moonshot API, Kimi Code sign-in/cancel/logout and backup configuration behaved (synthetic HTTP)');
     return [];
   } catch (error) {
+    console.error('named providers failure:', error.stack ?? error.message);
     return [`named providers: ${error.stack ?? error.message}`];
   } finally {
     if (previousSettings) await panel.evaluate((settings) => chrome.storage.local.set({ settings }), previousSettings).catch(() => {});
@@ -165,6 +166,7 @@ export async function runNamedProvidersScenario(context, extensionId) {
     await target?.close();
     for (const page of context.pages()) if (page.url().startsWith('https://www.kimi.com/code/postora-test')) await page.close();
     await context.unroute(verificationRoute, verificationHandler);
+    server.closeAllConnections(); // Chromium may leave a speculative connection open.
     await new Promise((resolve) => server.close(resolve));
   }
 }

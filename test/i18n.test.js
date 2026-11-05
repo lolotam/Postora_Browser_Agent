@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MESSAGES } from '../src/sidepanel/messages.js';
-import { resolveLanguage, t } from '../src/sidepanel/i18n.js';
+import { resolveLanguage, t, translateFor } from '../src/sidepanel/i18n.js';
+
+test('spoken replies can use Arabic without changing an English interface', () => {
+  assert.equal(translateFor('ar', 'voice.doneSpoken'), MESSAGES.ar['voice.doneSpoken']);
+  assert.equal(translateFor('en', 'voice.doneSpoken'), MESSAGES.en['voice.doneSpoken']);
+  assert.notEqual(translateFor('ar', 'voice.doneSpoken'), translateFor('en', 'voice.doneSpoken'));
+});
 
 test('every language translates every key with the same placeholders', () => {
   const placeholders = (text) => [...text.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();

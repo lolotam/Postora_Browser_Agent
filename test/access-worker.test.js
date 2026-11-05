@@ -218,6 +218,32 @@ test('a port of another session may not change this one', async () => {
   }
 });
 
+test('accepted mode changes add one replayable informational note', async () => {
+  const runner = await newRunner('Mode note');
+  try {
+    const panel = attachPanel(runner);
+    panel.send(elevation(runner));
+    panel.send(elevation(runner));
+    const notes = runner.transcript.filter((event) => event.type === 'access-mode-note');
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].mode, 'full-access');
+    assert.equal(runner.transcriptForReplay().filter((event) => event.type === 'access-mode-note').length, 1);
+  } finally { runner.dispose(); }
+});
+
+test('enabling Full access keeps the task running', async () => {
+  const runner = await newRunner('Upgrade');
+  try {
+    const panel = attachPanel(runner);
+    runner.abort = new AbortController();
+    panel.send(elevation(runner));
+    assert.equal(runner.access.mode, 'full-access');
+    assert.equal(runner.abort.signal.aborted, false);
+  } finally {
+    runner.dispose();
+  }
+});
+
 test('a mode that moves stops the task and withdraws what it allowed', async () => {
   const runner = await newRunner('Downgrade');
   try {

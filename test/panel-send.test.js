@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { speechLocale } from '../src/voice/transcription.js';
+import { translateFor } from '../src/sidepanel/i18n.js';
 
 // Execute the actual panel send functions with a mocked port boundary. This
 // verifies returned promises and session/cancellation behavior, not source text.
@@ -20,7 +22,7 @@ const connectSource = source.slice(source.indexOf('function connect('), source.i
 function panel({ postMessage = () => {}, picking = null } = {}) {
   const elements = new Map();
   const context = vm.createContext({
-    Promise, DOMException,
+    Promise, DOMException, speechLocale,
     picking, sessionId: 'original', port: { postMessage },
     attachments: [], settings: {}, ui: { running: false, question: null, questionId: 0, answering: null },
     voiceViewToken: 0, voiceController: null, voiceApproval: null,
@@ -121,7 +123,7 @@ function voicePanel({ question = null, engine = 'postora', running = false } = {
   const posted = [];
   const elements = new Map();
   const context = vm.createContext({
-    Promise, DOMException,
+    Promise, DOMException, speechLocale,
     ui: { running, question, questionId: question ? 1 : 0, answering: null },
     settings: { voiceEngine: engine },
     sessionId: 'session-a',
@@ -177,6 +179,7 @@ test('a voice command is a message of its own: the files and the draft are left 
     text: 'scroll down',
     display: 'scroll down',
     images: [],
+    voiceLanguage: 'en',
     tabId: 5,
   }], 'the message carries the voice text and nothing else');
 });
@@ -449,7 +452,7 @@ function fastPanel({ fail = null, result = { ok: true, say: 'voice.success' } } 
   const errors = [];
   const spoken = [];
   const context = vm.createContext({
-    Promise, DOMException,
+    Promise, DOMException, speechLocale, translateFor,
     settings: { voiceEngine: 'fast_only', fast: { apiKey: 'k', baseUrl: 'https://provider.test' } },
     sessionId: 'session-a',
     voicePanelId: 'panel-a',

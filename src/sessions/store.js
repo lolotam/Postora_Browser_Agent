@@ -40,8 +40,8 @@ export async function loadSession(id) {
   return { meta, ...body };
 }
 
-export async function saveSession(id, { transcript, log, groupId, notebook = null, pending = [] }) {
-  await chrome.storage.local.set({ [bodyKey(id)]: { transcript, log, groupId, notebook, pending } });
+export async function saveSession(id, { transcript, log, groupId, notebook = null, pending = [], project = null }) {
+  await chrome.storage.local.set({ [bodyKey(id)]: { transcript, log, groupId, notebook, pending, project } });
   await updateIndex((index) => index.map((s) => (s.id === id ? { ...s, groupId, updatedAt: Date.now() } : s)));
 }
 

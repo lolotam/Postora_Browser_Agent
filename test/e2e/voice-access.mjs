@@ -167,6 +167,7 @@ async function openPanel(context, extensionId, base) {
   await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
   await panel.evaluate((baseUrl) => chrome.storage.local.set({
     settings: {
+        transcription: { mode: 'browser' },
       provider: 'compatible',
       compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
       fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },

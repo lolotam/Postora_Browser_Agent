@@ -391,6 +391,16 @@ test('the authority is asked before the action runs, and the answer is awaited',
   assert.equal(questions.length, 1);
 });
 
+test('enabling Full access while a click waits resumes that exact click', async () => {
+  const browser = fakeBrowser();
+  const { access } = authority({ decision: null, onRequest: () => {
+    access.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision: access.revision });
+  } });
+  const result = await executor(browser, access)('click', { index: 2 });
+  assert.equal(result.isError, undefined, result.output);
+  assert.equal(named(browser.calls, 'clickAt').length, 1);
+});
+
 test('Full access asks no question at all', async () => {
   const browser = fakeBrowser();
   const { access, questions } = authority({ mode: 'full-access' });
