@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_extName__",
   "short_name": "__MSG_extName__",
-  "version": "0.2.0",
+  "version": "0.4.2",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnrGC37DRq+6w/GsE4OlpYRQBYO9qaq4uKn256W5ge5OU0C8zcHnx9KTI7pjrRHp+QfVP60Bd/c1gARLci/aLmPt5JsKOqcLFbC1uJVynOsFDggvstGjcuUIZ2EndlYPWQjn4rEFZf8vqWFZxkb3mpVR3yNBsA/Tmeifyic7em/U7LjBgsIyCM+M4p4Q1vAk9XEaiagwRqHP3bxBJ2GNPjDZffDM1jAYnkIfzgVIZYlqTV8Q0/JHl8RNwsT35PJ2pm9v5QJEp/aX6Ei7B+teNlpBpagR2mPNVJjVEYTWKRetEnCsN5FphXhax9eiujhzDFI3x+JFXEJo4qU3hibDAlQIDAQAB",
   "default_locale": "en",
   "description": "__MSG_extDescription__",
@@ -22,6 +22,7 @@
     "tabGroups",
     "scripting",
     "debugger",
+    "nativeMessaging",
     "declarativeNetRequestWithHostAccess"
   ],
   "optional_permissions": [

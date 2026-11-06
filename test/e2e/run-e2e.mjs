@@ -36,6 +36,7 @@ process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = '1';
 
 // E2E_EXTENSION_DIR runs the same scenarios on another copy, such as the unpacked store build.
 const EXTENSION_DIR = process.env.E2E_EXTENSION_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const ONLY = new Set((process.env.E2E_FILTER || '').split(',').filter(Boolean));
 
 const PAGE = `<!doctype html><html><body>
 <h1>Agent test page</h1>
@@ -532,6 +533,7 @@ async function enableFullAccess(panel) {
 }
 
 async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null, needsFullAccess = true }) {
+  if (ONLY.size && !ONLY.has(name)) return [];
   const { server, counts, base } = await startServer(handlers);
   const panel = await context.newPage();
   const pageErrors = [];
@@ -578,6 +580,7 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     }
     await panel.evaluate(([baseUrl, fastConfig, fallback]) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         ...(fallback ? { fallback: { enabled: true, provider: 'compatible', compatible: { preset: 'custom', baseUrl: `${baseUrl}/b1`, apiKey: '', model: 'mock-backup', effort: '' } } } : {}),
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
@@ -587,6 +590,10 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
       },
     }), [base, fast?.(base), Boolean(handlers.backup)]);
     await panel.reload();
+    // The prior scenario's settings can briefly be visible while init loads
+    // this fixture. Wait for this model and its chat surface before acting.
+    await panel.waitForFunction(() => document.getElementById('modelQuickLabel')?.textContent.includes('mock-model'));
+    await panel.waitForSelector('#chatView:not([hidden])');
     await panel.click('#newChatBtn');
 
     const target = await context.newPage();
@@ -660,6 +667,15 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     failures.push(...check({ counts, steps, report, notices, threads, duringResult, panel }));
     await target.close();
     return failures;
+  } catch (error) {
+    const state = await panel.evaluate(() => ({
+      chatHidden: document.getElementById('chatView')?.hidden,
+      settingsHidden: document.getElementById('settingsView')?.hidden,
+      dialogs: [...document.querySelectorAll('dialog[open]')].map((dialog) => dialog.id),
+      model: document.getElementById('modelQuickLabel')?.textContent,
+      access: document.getElementById('accessSelect')?.value,
+    })).catch(() => null);
+    throw new Error(`${name}: ${error.message}; UI: ${JSON.stringify(state)}; setup: ${setupFailures.join('; ')}`);
   } finally {
     await panel.close();
     server.close();
@@ -875,6 +891,7 @@ async function runVoiceScenario(context, extensionId) {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
         fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
@@ -1056,6 +1073,7 @@ async function runVoiceWindowScenario(context, extensionId) {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
         fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
@@ -1136,6 +1154,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
         fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
@@ -1236,6 +1255,7 @@ async function runVoiceSwitchScenario(context, extensionId) {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
         fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
@@ -1340,6 +1360,7 @@ async function runVoiceReplayScenario(context, extensionId) {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
         fast: { enabled: false },
@@ -1436,6 +1457,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
         fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },
@@ -1495,6 +1517,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     }
 
     // A twin that carries the same mark is not the element that was approved.
+    await panel.bringToFront();
     await panel.click('#voiceBackBtn');
     await target.goto(`${base}/safety?replace`);
     before = await entries();
@@ -1511,6 +1534,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
 
     // Equal hrefs can have different handlers: the named title must target
     // its own DOM element, never the earlier matching address.
+    await panel.bringToFront();
     await panel.click('#voiceBackBtn');
     await target.goto(`${base}/safety?duplicate-links`);
     before = await entries();
@@ -1520,6 +1544,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     if (await target.textContent('#out') !== 'correct detailed handler') failures.push('the duplicate-href click reached the wrong DOM handler');
 
     // Enter on the body: it is a page action, and it has to be real.
+    await panel.bringToFront();
     await panel.click('#voiceBackBtn');
     await target.goto(`${base}/safety?body`);
     await target.evaluate(() => document.body.focus());
@@ -1543,6 +1568,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
     // A body Enter that was approved on another document: the page goes
     // somewhere else while the question is open, and the consent does not
     // travel with it.
+    await panel.bringToFront();
     await panel.click('#voiceBackBtn');
     await target.goto(`${base}/safety?body`);
     await target.evaluate(() => document.body.focus());
@@ -1557,6 +1583,7 @@ async function runVoiceSafetyScenario(context, extensionId) {
 
     // A command that is cancelled while the mouse is still moving must not
     // press the button.
+    await panel.bringToFront();
     await panel.click('#voiceBackBtn');
     await target.goto(`${base}/safety?cancel`);
     await worker.evaluate(() => {
@@ -1581,7 +1608,10 @@ async function runVoiceSafetyScenario(context, extensionId) {
     const moved = worker.evaluate(() => globalThis.__qaMoveReached);
     await panel.click('#approvals .permission-allow');
     await moved;
-    await panel.click('#voiceBackBtn');
+    // Mouse input is deliberately held above. Cancel through the real button
+    // with keyboard input so the test cannot deadlock on a second mouse move.
+    await panel.focus('#voiceBackBtn');
+    await panel.keyboard.press('Enter');
     // The revocation has to reach the worker before the move is let go.
     await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'sessions-list' }));
     await worker.evaluate(() => globalThis.__qaReleaseMove());
@@ -1841,6 +1871,7 @@ async function main() {
     await bootstrap.close();
 
     const verify = async (scenario) => {
+      if (ONLY.size && !ONLY.has(scenario.name)) return [];
       console.log(`\nSTART ${scenario.name}`);
       try {
         const failures = await scenario(context, extensionId);
@@ -2022,6 +2053,7 @@ async function main() {
  * with the same extension and the same browser as the suite.
  */
 async function runStandalone(script) {
+  if (ONLY.size && !ONLY.has(path.basename(script))) return [];
   const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', script);
   console.log(`\n== scenario: ${path.basename(script)} ==`);
   const child = spawn(process.execPath, [file], {

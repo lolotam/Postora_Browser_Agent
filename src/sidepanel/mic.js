@@ -4,9 +4,13 @@
 
 import { heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey } from './voice.js';
 import { setLanguage, t } from './i18n.js';
+import { loadSettings } from '../lib/settings.js';
+import { createAudioRecognition } from '../voice/audio-recognition.js';
+import { transcribeAudio, validateTranscription } from '../voice/transcription.js';
 
 const params = new URLSearchParams(location.search);
 const language = params.get('lang') === 'ar' ? 'ar' : 'en';
+const settings = await loadSettings();
 const epoch = Number(params.get('epoch')) || 0;
 // The voice screen listens on: every finished phrase is sent on its own and
 // the window stays open until the panel closes it.
@@ -81,7 +85,9 @@ async function onRecognizeError(code) {
 }
 
 function start() {
-  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const Ctor = settings.transcription.mode !== 'browser'
+    ? function () { return createAudioRecognition({ endSilenceMs: settings.transcription.endSilenceMs, checkConfiguration: () => validateTranscription(settings.transcription), transcribe: (blob, signal) => transcribeAudio(blob, settings.transcription, { signal }) }); }
+    : window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Ctor) {
     live.textContent = t('composer.micMissing');
     post('error', { code: 'not-supported' });
@@ -97,6 +103,11 @@ function start() {
   rec.lang = speechLang(language);
   rec.interimResults = true;
   rec.continuous = continuous;
+  rec.onprocessing = () => {
+    if (finished || paused || recognition !== rec) return;
+    live.textContent = t('voice.stateTranscribing');
+    post('processing');
+  };
   rec.onstart = () => {
     if (finished || paused || recognition !== rec) return;
     started = true;
@@ -130,6 +141,12 @@ function start() {
   };
   rec.onerror = (event) => {
     if (finished || paused || recognition !== rec) return;
+    if (event.error === 'transcription-failed') {
+      live.textContent = `${t('voice.transcriptionError')} ${event.message || ''}`;
+      post('error', { code: event.error, detail: event.message });
+      started = false;
+      return;
+    }
     // A real failure also ends the session. Leave it unstarted so onend does not
     // send an empty task over the error the panel is already showing.
     if (voiceErrorKey(event.error)) started = false;

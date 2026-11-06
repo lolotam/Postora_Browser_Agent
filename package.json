@@ -1,6 +1,6 @@
 {
   "name": "browser-controle",
-  "version": "0.2.0",
+  "version": "0.4.2",
   "private": true,
   "description": "Chrome extension: an AI agent that operates the browser using a ChatGPT subscription or an OpenAI-compatible API.",
   "type": "module",
@@ -9,6 +9,7 @@
     "build:vendor": "node scripts/build-vendor.mjs",
     "e2e": "node test/e2e/run-e2e.mjs",
     "package": "node scripts/package.mjs",
+    "package:private": "node scripts/package-private.mjs",
     "store-screenshots": "node scripts/store-screenshots.mjs",
     "showcase": "node showcase/run.mjs",
     "showcase:preflight": "node showcase/run.mjs --preflight"

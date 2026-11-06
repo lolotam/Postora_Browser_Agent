@@ -53,6 +53,7 @@ const MAX_FIELD = 300;
 
 /** The actions that can type into a terminal that runs inside a web page. */
 const TERMINAL_ACTIONS = new Set(['insert_text', 'press_key', 'type_text']);
+const COMMAND_ACTIONS = new Set(['project_run', 'run_terminal']);
 
 /**
  * The panel helper for dedicated approvals.
@@ -131,6 +132,8 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
       kind: typeof raw.kind === 'string' ? raw.kind : '',
       origin: typeof raw.origin === 'string' ? raw.origin : '',
       label: typeof raw.label === 'string' ? raw.label : '',
+      command: COMMAND_ACTIONS.has(raw.action) && typeof raw.command === 'string' ? raw.command.slice(0, 16000) : '',
+      commandTruncated: COMMAND_ACTIONS.has(raw.action) && (raw.commandTruncated === true || (typeof raw.command === 'string' && raw.command.length > 16000)),
     };
   }
 
@@ -174,6 +177,11 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
 
     const terminal = doc.createElement('p');
     terminal.className = 'permission-terminal';
+    const command = doc.createElement('pre');
+    command.className = 'permission-command';
+    command.dir = 'ltr';
+    const commandWarning = doc.createElement('p');
+    commandWarning.className = 'permission-command-warning';
 
     const actions = doc.createElement('div');
     actions.className = 'permission-actions';
@@ -196,9 +204,9 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     error.hidden = true;
 
     actions.append(allow, deny);
-    card.append(title, action, site, target, terminal, actions, status, error);
+    card.append(title, action, site, target, terminal, command, commandWarning, actions, status, error);
 
-    record.node = { card, title, action, site, target, terminal, allow, deny, status, error };
+    record.node = { card, title, action, site, target, terminal, command, commandWarning, allow, deny, status, error };
     allow.addEventListener('click', () => { respond(record, 'allow'); });
     deny.addEventListener('click', () => { respond(record, 'deny'); });
     return record;
@@ -216,6 +224,10 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     node.target.hidden = !record.label;
     node.terminal.textContent = translator('access.approval.terminal');
     node.terminal.hidden = !TERMINAL_ACTIONS.has(record.action);
+    node.command.textContent = record.command;
+    node.command.hidden = !record.command;
+    node.commandWarning.textContent = translator('access.approval.commandTruncated');
+    node.commandWarning.hidden = !record.commandTruncated;
     node.allow.textContent = translator('access.approval.allow');
     node.deny.textContent = translator('access.approval.deny');
     node.status.textContent = translator(record.sending ? 'access.approval.answering' : 'access.approval.waiting');
@@ -251,6 +263,8 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
       kind: request.kind,
       origin: request.origin,
       label: request.label,
+      command: request.command,
+      commandTruncated: request.commandTruncated,
       port,
       sending: false,
       errorKey: null,
@@ -479,6 +493,8 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
         kind: record.kind,
         origin: record.origin,
         label: record.label,
+        command: record.command,
+        commandTruncated: record.commandTruncated,
         sending: record.sending,
         errorKey: record.errorKey,
       }));

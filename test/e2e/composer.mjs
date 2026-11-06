@@ -20,7 +20,8 @@ export async function runComposerScenario(context, extensionId) {
     await panel.reload();
     await panel.waitForFunction(() => document.getElementById('modelQuickLabel').textContent.startsWith('a-deliberately'));
     await panel.waitForSelector('#chatView:not([hidden])');
-    assert.deepEqual(await panel.locator('#emptyState > *').evaluateAll((nodes) => nodes.map((node) => node.tagName)), ['IMG']);
+    assert.equal(await panel.locator('#emptyState img').count(), 0);
+    assert.equal(await panel.locator('#modelQuickBtn').evaluate((el) => getComputedStyle(el).borderTopWidth), '0px');
     assert.equal(await panel.locator('.examples li').count(), 0);
 
     // Exercise the real Full access consent path, not a locally forged mode.
@@ -87,7 +88,7 @@ export async function runComposerScenario(context, extensionId) {
     const tall = await panel.locator('#input').evaluate((input) => ({ height: input.getBoundingClientRect().height, scroll: input.scrollHeight, client: input.clientHeight }));
     assert.ok(tall.height > short && tall.height <= 200 && tall.scroll > tall.client, 'long drafts expand, then scroll');
     await panel.fill('#input', 'short draft');
-    assert.equal(await panel.locator('#input').evaluate((input) => input.getBoundingClientRect().height), short);
+    assert.equal(await panel.locator('#input').evaluate((input) => input.getBoundingClientRect().height), short, `short draft sizing: ${JSON.stringify(await panel.locator('#input').evaluate((input) => ({ value: input.value, style: input.style.height, min: getComputedStyle(input).minHeight, font: getComputedStyle(input).font, rows: input.rows })))}`);
     await panel.press('#input', 'Shift+Enter');
     assert.equal(await panel.inputValue('#input'), 'short draft\n');
     // Native select Enter must never submit the surrounding form.
@@ -111,7 +112,7 @@ export async function runComposerScenario(context, extensionId) {
     await panel.click('#fileChips button');
     await panel.waitForSelector('#fileChips', { state: 'hidden' });
     assert.deepEqual(errors, []);
-    console.log('\n== scenario: composer ==\nlogo-only empty state, inline controls, Full access, RTL/themes at 320/360/400px, sizing, shortcuts and attachments passed');
+    console.log('\n== scenario: composer ==\nempty canvas, borderless model control, Full access, RTL/themes at 320/360/400px, sizing, shortcuts and attachments passed');
     return [];
   } catch (error) {
     return [`Composer: ${error.stack ?? error.message}`];

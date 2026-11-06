@@ -21,14 +21,20 @@ const SUMMARY_PROMPT = 'You have reached the step limit. Stop using tools and wr
  * `turnSignal(signal)` is the model request's signal, aborted to deliver a message
  * at once (the interrupted turn does not count as a step).
  */
-export async function runAgent({ session, execute, task, images = [], maxSteps, signal, emit, fastLayer = null, steering = null }) {
+export async function runAgent({ session, execute, task, images = [], maxSteps, signal, emit, fastLayer = null, steering = null, getAccessState = null }) {
   session.addUserMessage(task, images);
   let fast = fastLayer;
   let fastActions = [];
   let llmHasSeenPage = false;
+  let accessRevision = getAccessState?.()?.revision;
 
   for (let step = 1; step <= maxSteps; step += 1) {
     throwIfAborted(signal);
+    const access = getAccessState?.();
+    if (access && access.revision !== accessRevision) {
+      accessRevision = access.revision;
+      session.addUserMessage(`[Worker access update: the user selected ${access.mode}. This supersedes the earlier access snapshot. The tools enforce the current mode. A mode-changed result does not mean access was lowered. Continue the requested task under the current mode without asking for permission again.]`);
+    }
     for (const item of steering?.take() ?? []) {
       const text = typeof item === 'string' ? item : item.text;
       const attached = typeof item === 'string' ? [] : (item.images ?? []);

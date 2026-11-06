@@ -53,6 +53,7 @@ export const DENY = 'deny';
 const OBSERVATIONS = new Set([
   'read_page', 'get_text', 'screenshot', 'list_tabs',
   'note', 'read_notes', 'wait', 'ask_user', 'done',
+  'project_list',
 ]);
 
 // An explicit read of one field's value, secret or not.

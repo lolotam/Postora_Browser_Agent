@@ -22,6 +22,23 @@ function scriptedSession(turns) {
 
 const call = (id, name, args = {}) => ({ id, name, args });
 
+test('the next model turn receives a worker mode change after pending tool results', async () => {
+  let state = { mode: 'ask-first', revision: 1 };
+  const session = scriptedSession([
+    { toolCalls: [call('1', 'click', { index: 1 })] },
+    { toolCalls: [call('2', 'done', { report: 'ok' })] },
+  ]);
+  const original = session.addUserMessage;
+  session.addUserMessage = (text) => {
+    if (text.includes('[Worker access update:')) assert.equal(session.results[0].id, '1');
+    original(text);
+  };
+  await runAgent({ session, task: 'click', maxSteps: 2, emit() {}, getAccessState: () => state,
+    execute: async () => { state = { mode: 'full-access', revision: 2 }; return { output: 'Clicked' }; },
+  });
+  assert.match(session.users[1], /Worker access update.*full-access/);
+});
+
 test('an attached picture is sent with the task', async () => {
   const seen = [];
   const session = {

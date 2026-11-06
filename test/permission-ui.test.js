@@ -120,6 +120,16 @@ function makeRequest(overrides = {}) {
   };
 }
 
+test('native command approvals show literal LTR commands and flag truncation', () => {
+  const scene = makeScene();
+  scene.ui.apply(makeRequest({ action: 'project_run', command: 'Write-Output "<fixture>"', commandTruncated: true }));
+  assert.deepEqual(scene.texts('permission-command'), ['Write-Output "<fixture>"']);
+  assert.deepEqual(scene.texts('permission-command-warning'), ['access.approval.commandTruncated']);
+  assert.equal(scene.ui.requests[0].commandTruncated, true);
+  const preview = scene.card().all().find((node) => node.className === 'permission-command');
+  assert.equal(preview.dir, 'ltr');
+});
+
 /** A translator that says what it was asked for, so a test can read it. */
 function makeTranslator() {
   const keys = [];

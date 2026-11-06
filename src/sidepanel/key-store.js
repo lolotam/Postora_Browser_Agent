@@ -95,6 +95,7 @@ export function createKeyStore() {
       values = { ...keys };
     },
     snapshot: () => ({ ...values }),
+    set: (provider, value) => set(provider, value),
     /** Shared-key edits (including Sign out), after every matching input is updated. */
     subscribe(listener) {
       listeners.add(listener);

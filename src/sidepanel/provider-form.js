@@ -8,6 +8,7 @@ import { escapeAttr } from './model-picker.js';
 import { bindTestButton } from './test-button.js';
 import { ANTHROPIC_GROUP } from '../lib/keys.js';
 import { ACCOUNT_PROVIDERS, kimiEfforts, slotSettings as slotOf } from '../lib/settings.js';
+import { CONNECTION_ROUTES, connectionRoute, routeForSettings } from './provider-routes.js';
 
 const TRANSLATED_EFFORTS = { '': 'effort.default', off: 'effort.off', on: 'effort.on' };
 // The efforts a model list does not name. MiniMax cannot stop thinking, so it
@@ -27,6 +28,12 @@ const FALLBACK_EFFORTS = {
 
 export function createProviderForm(root, { request, getPresets, keyStore, onChange = null, onModels = null }) {
   const f = (name) => root.querySelector(`[data-field="${name}"]`);
+  const route = () => connectionRoute(f('provider').value);
+  const provider = () => route().provider;
+  function renderRoutes(selected) {
+    f('provider').innerHTML = ['auth', 'api'].map((group) => `<optgroup label="${escapeAttr(t(`connection.${group}`))}">${CONNECTION_ROUTES.filter((r) => r.group === group).map((r) => `<option value="${r.id}">${escapeAttr(r.labelKey ? t(r.labelKey) : r.label || getPresets()[r.preset].label)}</option>`).join('')}</optgroup>`).join('');
+    f('provider').value = selected;
+  }
   // Hides a field this form does not have: the backup frame has no sign-in
   // sections, only the note that the account is the one above.
   const hide = (name, hidden) => { const el = f(name); if (el) el.hidden = hidden; };
@@ -49,6 +56,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     listLoading = false;
     listError = '';
     saved = {
+      connectionRoute: s.connectionRoute,
       provider: s.provider,
       chatgpt: { ...s.chatgpt },
       claude: { ...s.claude },
@@ -58,7 +66,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       compatible: { ...s.compatible },
     };
     f('preset').innerHTML = Object.entries(getPresets()).map(([id, p]) => `<option value="${id}">${escapeAttr(p.label)}</option>`).join('');
-    f('provider').value = s.provider;
+    renderRoutes(routeForSettings(s));
     f('preset').value = s.compatible.preset;
     f('baseUrl').value = s.compatible.baseUrl;
     f('apiKey').value = s.compatible.apiKey;
@@ -88,7 +96,8 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
 
   function read() {
     const next = structuredClone(saved);
-    next.provider = f('provider').value;
+    next.provider = provider();
+    next.connectionRoute = f('provider').value;
     Object.assign(next.compatible, compatibleFields());
     Object.assign(next.claude, claudeFields());
     Object.assign(next.gemini, geminiFields());
@@ -105,13 +114,19 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   const kimiFields = () => ({ auth: f('kimiAuth')?.value ?? saved.kimi.auth ?? 'apiKey', apiKey: f('kimiApiKey')?.value.trim() ?? saved.kimi.apiKey ?? '' });
 
   function syncSections() {
-    const provider = f('provider').value;
-    hide('chatgptSection', provider !== 'chatgpt');
-    hide('claudeSection', provider !== 'claude');
-    hide('grokSection', provider !== 'grok');
-    hide('compatibleSection', provider !== 'compatible');
-    hide('geminiSection', provider !== 'gemini');
-    hide('kimiSection', provider !== 'kimi');
+    const current = provider();
+    hide('chatgptSection', current !== 'chatgpt');
+    hide('claudeSection', current !== 'claude');
+    hide('grokSection', current !== 'grok');
+    hide('compatibleSection', current !== 'compatible');
+    hide('geminiSection', current !== 'gemini');
+    hide('kimiSection', current !== 'kimi');
+    hide('claudeAccount', claudeFields().auth !== 'account');
+    f('claudeAuth')?.closest?.('label')?.setAttribute('hidden', '');
+    f('kimiAuth')?.closest?.('label')?.setAttribute('hidden', '');
+    const claudeKeyLabel = f('claudeApiKey')?.closest?.('label');
+    if (claudeKeyLabel) claudeKeyLabel.hidden = claudeFields().auth === 'account';
+    hide('openrouterLogin', route().id !== 'openrouter-auth');
     hide('kimiAccount', kimiFields().auth !== 'account');
     hide('kimiKeyField', kimiFields().auth === 'account');
   }
@@ -128,8 +143,8 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
 
   /** The thinking style of the chosen provider: its own, or the preset's. */
   function effortStyle() {
-    const provider = f('provider').value;
-    if (['chatgpt', 'claude', 'grok', 'gemini', 'kimi'].includes(provider)) return provider;
+    const current = provider();
+    if (['chatgpt', 'claude', 'grok', 'gemini', 'kimi'].includes(current)) return current;
     return getPresets()[f('preset').value]?.thinkingStyle ?? 'reasoning_effort';
   }
 
@@ -200,7 +215,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     if (changed) showTestStatus('', '');
     // A model id that is not in the list is asked about again, so the efforts
     // Anthropic's own table gives it arrive.
-    if (f('provider').value === 'claude') loadModels();
+    if (provider() === 'claude') loadModels();
   }
 
   // Switching provider keeps each provider's own model instead of copying one into the other.
@@ -212,7 +227,22 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     Object.assign(saved.claude, claudeFields());
     Object.assign(saved.gemini, geminiFields());
     Object.assign(saved.kimi, kimiFields());
-    saved.provider = f('provider').value;
+    saved.provider = provider();
+    saved.connectionRoute = f('provider').value;
+    if (route().auth) {
+      if (saved.provider === 'kimi' && saved.kimi.auth !== route().auth) saved.kimi.model = '';
+      saved[saved.provider].auth = route().auth;
+      f(saved.provider === 'claude' ? 'claudeAuth' : 'kimiAuth').value = route().auth;
+    }
+    if (route().preset && f('preset').value !== route().preset) {
+      if (preset === 'custom') customKey = f('apiKey').value.trim();
+      preset = route().preset;
+      const defaults = getPresets()[preset];
+      f('preset').value = preset;
+      f('baseUrl').value = defaults.baseUrl;
+      keyStore.show(f('apiKey'), preset);
+      saved.compatible = { ...saved.compatible, ...compatibleFields(), model: defaults.model, effort: '' };
+    }
     f('modelInput').value = slotOf(saved).model;
     models = [];
     syncSections();
@@ -221,6 +251,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     onChange?.(saved.provider);
   });
   f('preset').addEventListener('change', () => {
+    if (route().preset !== f('preset').value) f('provider').value = 'compatible';
     if (preset === 'custom') customKey = f('apiKey').value.trim();
     preset = f('preset').value;
     const defaults = getPresets()[preset];
@@ -228,20 +259,24 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     keyStore.show(f('apiKey'), preset, customKey);
     f('modelInput').value = defaults.model;
     models = [];
+    syncSections();
     renderEfforts('');
     loadModels();
   });
   f('modelInput').addEventListener('change', () => {
-    if (f('provider').value === 'claude') loadModels();
+    if (provider() === 'claude') loadModels();
   });
   // Switching between a Claude account and an Anthropic key changes what the
   // model list needs, so it is loaded again.
   f('claudeAuth')?.addEventListener('change', () => {
+    f('provider').value = claudeFields().auth === 'account' ? 'claude' : 'claude-api';
     saved.claude = { ...saved.claude, ...claudeFields() };
+    syncSections();
     loadModels();
     onChange?.(saved.provider);
   });
   f('kimiAuth')?.addEventListener('change', () => {
+    f('provider').value = kimiFields().auth === 'account' ? 'kimi-account' : 'kimi';
     // The products have different catalogs/IDs. Do not carry a Moonshot model
     // into the subscription (or the reverse) merely because auth changed.
     f('modelInput').value = '';
@@ -252,6 +287,20 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     onChange?.(saved.provider);
   });
   f('refresh')?.addEventListener('click', () => loadModels(true));
+  f('openrouterSignIn')?.addEventListener('click', async () => {
+    const button = f('openrouterSignIn');
+    button.disabled = true;
+    f('openrouterStatus').textContent = t('connection.signingIn');
+    try {
+      const key = await request('openrouter-login');
+      keyStore.set('openrouter', key);
+      f('openrouterStatus').textContent = t('connection.connected');
+      if (provider() === 'compatible' && f('preset').value === 'openrouter') await loadModels(true);
+      onChange?.(provider());
+      button.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (error) { f('openrouterStatus').textContent = error.message; }
+    finally { button.disabled = false; }
+  });
   keyStore.register(f('apiKey'), () => f('preset').value);
   if (f('claudeApiKey')) keyStore.register(f('claudeApiKey'), () => ANTHROPIC_GROUP);
   if (f('geminiApiKey')) keyStore.register(f('geminiApiKey'), () => 'gemini');
@@ -266,7 +315,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     },
   });
   keyStore.subscribe?.((group, value) => {
-    const gemini = f('provider').value === 'gemini' || (f('provider').value === 'compatible' && f('preset').value === 'gemini');
+    const gemini = provider() === 'gemini' || (provider() === 'compatible' && f('preset').value === 'gemini');
     if (!saved || !gemini || group !== 'gemini') return;
     // Invalidate immediately, before the debounce, so a response for the old
     // key cannot repaint this form. Shared main/backup key edits count too.
@@ -286,7 +335,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     read,
     loadModels,
     model: () => f('modelInput').value.trim(),
-    provider: () => f('provider').value,
+    provider,
     /** The list the provider serves, for the shared model dialog. */
     list: () => models,
     /** What this slot's list request is doing right now. */
@@ -296,6 +345,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     claude: () => claudeFields(),
     kimi: () => kimiFields(),
     rerender() {
+      renderRoutes(f('provider').value);
       renderEfforts(f('effort').value);
     },
   };

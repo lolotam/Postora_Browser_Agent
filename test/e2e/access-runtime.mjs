@@ -253,6 +253,7 @@ async function openPanel(context, extensionId, base, { fast = false } = {}) {
   await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
   await panel.evaluate(([baseUrl, fastOn]) => chrome.storage.local.set({
     settings: {
+        transcription: { mode: 'browser' },
       provider: 'compatible',
       compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
       fast: fastOn
@@ -567,7 +568,7 @@ async function webTerminalAsksForEachStep(panel, target, failures) {
 }
 
 /**
- * The mode that changes takes the approval with it, and nothing runs later.
+ * Enabling Full access withdraws the old card and resumes the exact action.
  */
 async function modeChangeClearsTheApproval(panel, target, failures) {
   await resetPage(target);
@@ -582,8 +583,9 @@ async function modeChangeClearsTheApproval(panel, target, failures) {
   // the question of the old mode, and the card goes with it.
   await enableFullAccess(panel);
   await noCards(panel);
+  await panel.waitForSelector('.msg.final', { timeout: 90000 });
   const typed = await target.evaluate(() => document.getElementById('message')?.value);
-  if (typed !== 'original message') failures.push(`the action ran although the mode changed: ${typed}`);
+  if (typed !== 'STOPPED-TEXT') failures.push(`the action did not resume after enabling Full access: ${typed}`);
   return typed;
 }
 
@@ -798,6 +800,7 @@ export async function runAccessRuntimeScenario(context, extensionId) {
     // The fast layer asks as well: it runs the same executor.
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
       settings: {
+        transcription: { mode: 'browser' },
         provider: 'compatible',
         compatible: { preset: 'custom', baseUrl: `${baseUrl}/v1`, apiKey: '', model: 'mock-model', effort: '' },
         fast: { enabled: true, mode: 'auto', provider: 'typesafe', apiKey: 'jev-key', model: 'jev-latest', baseUrl: baseUrl },

@@ -8,6 +8,7 @@ import { fastClientFor } from '../fast/clients.js';
 import { fastRequestConfig } from '../fast/provider-config.js';
 import { listFastModels } from '../fast/catalog.js';
 import { accountsIn, exportBackup, importBackup } from '../lib/backup.js';
+import { signInOpenRouter } from '../providers/openrouter-auth.js';
 import { errorResponse } from '../lib/errors.js';
 import { COMPATIBLE_PRESETS, FAST_PRESETS, loadSettings, modelListRoute, saveSettings, slotModels } from '../lib/settings.js';
 import { ACCOUNT_STORAGE_KEYS, accountStatus, signOut } from '../providers/account-auth.js';
@@ -28,6 +29,9 @@ import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
 import { isMicRelay } from '../sidepanel/voice.js';
+// @store-strip-start
+import { nativeRequest, runNativeCommand } from '../native/client.js';
+// @store-strip-end
 
 const GROUP_COLORS = ['cyan', 'blue', 'green', 'yellow', 'purple', 'pink', 'orange', 'red'];
 const runners = new Map(); // sessionId → SessionRunner
@@ -204,6 +208,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 async function handleRequest(msg, sender) {
   switch (msg.type) {
+    case 'openrouter-login':
+      if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Sign-in requires the extension settings panel.');
+      return withKeepAlive(() => signInOpenRouter());
+    // @store-strip-start
+    case 'project-list-ui': {
+      if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Project listing requires the extension panel.');
+      const runner = await runnerFor(msg.sessionId);
+      if (!runner.project) throw new Error('No project is linked.');
+      return (await nativeRequest({ type: 'project-list', root: runner.project.root, path: msg.path ?? '.' })).result;
+    }
+    case 'project-pick': {
+      if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Project selection requires the extension panel.');
+      const result = await runNativeCommand({ command: "Add-Type -AssemblyName System.Windows.Forms; $picker = New-Object System.Windows.Forms.FolderBrowserDialog; $picker.Description = 'Select a Postora project'; if ($picker.ShowDialog() -eq 'OK') { Write-Output $picker.SelectedPath }; $picker.Dispose()", timeout_ms: 60000 });
+      if (result.exitCode !== 0) throw new Error(result.output || 'Folder selection failed.');
+      return result.output.trim();
+    }
+    // @store-strip-end
     case 'overlay-stop':
       return stopFromPage(sender);
     case 'get-settings':

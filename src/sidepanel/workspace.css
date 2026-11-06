@@ -1,0 +1,93 @@
+/* The user's reference: an open canvas, quiet chrome, one rounded composer. */
+@font-face {
+  font-family: Cairo;
+  src: url('../assets/fonts/Cairo.ttf') format('truetype');
+  font-weight: 200 1000;
+  font-display: swap;
+  unicode-range: U+0600-06FF,U+0750-077F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF;
+}
+:root { --font: Cairo, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; --accent: #287cf7; --on-accent: #fff; --accent-text: #2366c6; --accent-soft: #edf4ff; }
+body { font-size: 13px; line-height: 1.65; }
+html[dir="rtl"] body { letter-spacing: 0; }
+.bar { border: 0; padding: 12px; gap: 6px; }
+.brand strong { font-weight: 600; }
+.bar button { border-radius: 12px; }
+.session-btn { font-size: 13px; }
+#messages { padding: 18px 16px; gap: 6px; }
+.empty { display: none; }
+.msg.user { padding: 9px 14px; border-radius: 20px; margin-block-end: 8px; }
+.msg.final { background: transparent; border: 0; padding: 6px 0; margin-block-start: 10px; }
+.msg.mode-note { align-self: center; font-size: 11px; color: var(--muted); padding: 3px 8px; text-align: center; }
+.thread, .thread[open] { border: 0; background: transparent; border-radius: 0; }
+.thread > summary { padding: 3px 0; align-items: center; gap: 9px; font-size: 13px; }
+.thread > summary::before { content: '◉'; font-size: 15px; transform: none !important; }
+.thread > summary::after, .step > summary::after { content: '›'; color: var(--muted); flex: none; transition: transform .12s; }
+.thread[open] > summary::after, .step[open] > summary::after { transform: rotate(90deg); }
+.thread > summary .meta { font-size: 10px; max-width: 32%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-body { padding: 6px 0 7px 22px; gap: 5px; }
+.thread-body .msg.reasoning { border: 0; padding: 0; }
+.trace { border: 0; border-radius: 0; overflow: visible; }
+.step, .step + .step { display: block; border: 0; padding: 0; font: 12px/1.6 var(--font); }
+.step > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; padding: 3px 0; color: var(--text-2); }
+.step > summary::-webkit-details-marker { display: none; }
+.step .name { color: var(--text-2); font-size: 12px; }
+.step .args { flex: 1; min-width: 0; }
+.step .time { margin-left: 0; padding-left: 0; font-size: 10px; }
+.step-details { margin: 3px 0 7px 22px; overflow-wrap: anywhere; }
+.step-input { white-space: pre-wrap; font: 11px/1.6 var(--mono); padding: 8px; background: var(--surface-2); border-radius: 6px; }
+.step-result { text-align: start; white-space: pre-wrap; }
+.thread > summary:focus-visible, .step > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.msg[dir="rtl"] { text-align: right; }
+.msg[dir="rtl"] :is(ul, ol) { padding-inline-start: 24px; padding-inline-end: 0; }
+.msg code { direction: ltr; unicode-bidi: isolate; }
+.msg :not(pre) > code { display: inline-block; max-width: 100%; vertical-align: baseline; }
+.msg pre, .msg pre code { direction: ltr; text-align: left; }
+.permission-command { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow-y: auto; text-align: left; font: 11px/1.5 var(--mono); }
+.permission-command-warning { color: var(--danger); }
+.totals { direction: ltr; text-align: start; }
+@media (prefers-reduced-motion: reduce) { .thread > summary::after, .step > summary::after { transition: none; } }
+#composer { padding: 4px 12px 10px; }
+.composer-box { border-radius: 25px; padding: 10px; gap: 6px; border-color: var(--border); box-shadow: 0 2px 12px #00000007; }
+.composer-box:focus-within { border-color: var(--border-strong); }
+.composer-box textarea { font-size: 13px; min-height: 38px; padding: 3px 4px; line-height: 1.65; }
+.composer-toolbar { gap: 3px; }
+.access-row { gap: 2px; }
+.quick-control { border: 0; border-radius: 9px; color: var(--text-2); height: 28px; padding: 3px 4px; max-width: 118px; min-width: 30px; font-size: 10.5px; flex: 1 1 auto; }
+.quick-control > svg:first-child { display: none; }
+.quick-control:hover { border: 0; background: var(--surface-2); }
+.quick-control svg { width: 10px; }
+.access-select { border-color: transparent; max-width: 105px; height: 28px; font-size: 10.5px; padding-inline: 18px 13px; }
+.access-control > svg { width: 10px; inset-inline-start: 5px; }
+.access-control > .chev-down { inset-inline-start: auto; inset-inline-end: 3px; }
+.access-select.risk { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
+.access-control:has(.access-select.risk) > svg { color: var(--danger); }
+.composer-tools { gap: 0; }
+.tool { height: 28px; width: 28px; border-radius: 50%; }
+.tool svg { width: 16px; height: 16px; }
+.hint { min-height: 8px; font-size: 10px; }
+.project-chip { display: flex; align-items: center; gap: 8px; margin: 0 6px 5px; min-width: 0; color: var(--muted); }
+.project-chip button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 65%; padding: 2px 6px; font-size: 11px; }
+.project-chip small { font-size: 10px; }
+.project-dialog { border-radius: 20px; padding: 18px; }
+.project-dialog h2 { font-size: 15px; margin: 0 0 8px; }
+.project-dialog .row { margin-top: 12px; flex-wrap: wrap; }
+.project-close { float: inline-end; }
+.project-files { max-height: 45vh; overflow-y: auto; }
+.project-files button { direction: ltr; overflow-wrap: anywhere; }
+.settings-menu { gap: 8px; }
+.settings-page h2 { font-size: 18px; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #171717; --surface: #202020; --surface-2: #2a2a2a; --border: #333; --border-strong: #484848; --accent: #6b9eff; --on-accent: #101010; --accent-text: #93b8ff; --accent-soft: #202d43; }
+}
+@media (max-width: 359px) {
+  .bar { padding: 9px; }
+  #composer { padding-inline: 8px; }
+  .composer-box { padding: 8px; }
+  .quick-control { max-width: 90px; }
+  .access-select { max-width: 93px; }
+  .project-chip small { display: none; }
+}
+/* Native progress values come from verified download byte counts. */
+#localModelProgress { width: 100%; height: 8px; border: 0; border-radius: 8px; overflow: hidden; }
+#localModelProgress::-webkit-progress-value { background: var(--accent, #397bf6); transition: width .2s linear; }
+@media (prefers-reduced-motion: reduce) { #localModelProgress::-webkit-progress-value { transition: none; } }

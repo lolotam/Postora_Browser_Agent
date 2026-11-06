@@ -14,6 +14,9 @@ import { effectiveSettings, loadSettings } from '../lib/settings.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
+// @store-strip-start
+import { nativeRequest } from '../native/client.js';
+// @store-strip-end
 
 const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
@@ -96,6 +99,8 @@ export class SessionRunner {
   constructor({ meta, body, color, isTakenByOther, onSessionsChanged }) {
     this.id = meta.id;
     this.title = meta.title;
+    this.project = body.project ?? null;
+    this.projectRequest = 0;
     this.titled = meta.titled;
     // The access mode is the state of the worker, not a moment of the
     // conversation: it is never a part of the transcript, and an event of
@@ -158,7 +163,7 @@ export class SessionRunner {
   /** `early` holds what the panel sent before this session finished loading. */
   attach(port, early = []) {
     try {
-      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), permissions: this.currentPermissions() });
+      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), permissions: this.currentPermissions(), project: this.project });
     } catch {
       // The panel closed or moved on while this session loaded. Keeping its closed
       // port would make every later emit throw before reaching the next panel.
@@ -214,7 +219,7 @@ export class SessionRunner {
 
   receive(msg, port = null) {
     if (this.disposed) return; // a session that is gone answers nothing
-    if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images, tabId: msg.tabId });
+    if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images, tabId: msg.tabId, voiceLanguage: msg.voiceLanguage });
     else if (msg.type === 'steer') this.steer(msg.text, msg.mode, { display: msg.display, images: msg.images });
     else if (msg.type === 'steer-now') this.sendNow(msg.id);
     else if (msg.type === 'steer-cancel') this.dropMessage(msg.id);
@@ -223,7 +228,27 @@ export class SessionRunner {
     else if (msg.type === 'dismiss-notice') this.emit({ type: 'notice-dismissed', id: msg.id });
     else if (msg.type === 'access-mode') this.setAccessMode(msg, port);
     else if (msg.type === 'access-approval') this.answerAccessRequest(msg, port);
+    // @store-strip-start
+    else if (msg.type === 'project-set') this.setProject(msg, port).catch((error) => this.broadcast({ type: 'project-state', project: this.project, error: error.message }));
+    // @store-strip-end
   }
+
+  // @store-strip-start
+  async setProject(msg, port) {
+    if (!this.livePort(port) || !ownSidePanel(port) || !portBoundToSession(port, this.id) || msg.sessionId !== this.id) return;
+    if (this.running) throw new Error('Stop the current task before changing its project.');
+    const request = ++this.projectRequest;
+    let project = null;
+    if (msg.root) {
+      project = (await nativeRequest({ type: 'project-info', root: msg.root })).result;
+    }
+    if (this.disposed || !this.livePort(port) || request !== this.projectRequest) return;
+    if (this.running) throw new Error('A task started before the project was changed.');
+    this.project = project;
+    this.scheduleSave();
+    this.broadcast({ type: 'project-state', project });
+  }
+  // @store-strip-end
 
   /**
    * The access mode of this session.
@@ -263,6 +288,7 @@ export class SessionRunner {
     // The panel shows the mode that is really in force, whether the request
     // was accepted or refused. A mode that moved has already been told.
     if (!result.changed) this.broadcastAccess();
+    else this.emit({ type: 'access-mode-note', mode: this.access.mode });
     return result;
   }
 
@@ -291,7 +317,9 @@ export class SessionRunner {
   /**
    * What a panel may show about a question.
    *
-   * The arguments are left out: the text that was going to be typed, the
+   * Arguments are left out except the bounded command preview for project_run
+   * and run_terminal, which must be visible before approving execution. The
+   * text that was going to be typed, the
    * value that was going to be read and the permit itself never belong in a
    * preview that may be on screen. What is left is the action, its kind, the
    * site it happens on and the name the page itself gave the target — enough
@@ -309,7 +337,11 @@ export class SessionRunner {
       action: request.action,
       kind: request.kind,
       origin: safeOrigin(destination) ?? safeOrigin(request.target?.url),
-      label: safeLabel(request.target?.element?.label),
+      label: safeLabel(request.target?.element?.label) ?? (request.action.startsWith('project_') ? safeLabel(request.args?.path || this.project?.name) : null),
+      ...(['project_run', 'run_terminal'].includes(request.action) ? {
+        command: String(request.args?.command ?? '').slice(0, 16000),
+        commandTruncated: String(request.args?.command ?? '').length > 16000,
+      } : {}),
     });
   }
 
@@ -381,13 +413,14 @@ export class SessionRunner {
   }
 
   /**
-   * The mode moved: the task that ran under the old mode does not go on, the
+   * The mode moved: lowering access stops the task; raising it lets it go on. The
    * approvals and the permits of the old mode are withdrawn, and every panel
    * of this session is told what is now in force.
    */
   onAccessChanged() {
-    this.access.cancel('mode-changed'); // nothing approved under the old mode survives it
-    this.stop(); // the running task does not continue under a new mode
+    // setMode already withdrew old approvals and permits. An explicit upgrade
+    // must not abort the task whose pending action the user wants to release.
+    if (this.access.mode !== FULL_ACCESS) this.stop();
     this.broadcastAccess();
   }
 
@@ -505,7 +538,7 @@ export class SessionRunner {
     };
   }
 
-  async start(text, { display, images, tabId } = {}) {
+  async start(text, { display, images, tabId, voiceLanguage } = {}) {
     if (this.running) {
       this.emit({ type: 'error', message: 'A task is already running in this session. Stop it first.' });
       return;
@@ -525,12 +558,13 @@ export class SessionRunner {
       if (!this.titled) await this.nameAfter(shown);
       this.onSessionsChanged(); // after naming, so other panels list it with its title
       const settings = await loadSettings();
+      if (voiceLanguage === 'ar' || voiceLanguage === 'en') settings.replyLanguage = { enabled: true, language: voiceLanguage };
       this.settings = settings;
       this.prepareModelSession(settings);
       this.browser.overlay.begin({ enabled: settings.showCursor, uiLanguage: settings.uiLanguage });
       this.browser.tabId = null; // each task starts on the tab the user is looking at
       const tab = await this.browser.startOn(tabId);
-      const execute = createToolExecutor(this.browser, { askUser: (q) => this.askUser(q, abort.signal), signal: abort.signal, notebook: this.notebook, onNotebookChange: () => this.scheduleSave(), allowed: new Set(toolDefinitions(effectiveSettings(settings)).map((t) => t.name)), access: this.access });
+      const execute = createToolExecutor(this.browser, { askUser: (q) => this.askUser(q, abort.signal), signal: abort.signal, notebook: this.notebook, onNotebookChange: () => this.scheduleSave(), allowed: new Set(toolDefinitions(effectiveSettings(settings)).map((t) => t.name)), access: this.access, getProject: () => this.project });
       const fastLayer = settings.fast.enabled && settings.fast.apiKey
         ? createFastLayer({ config: settings.fast, browser: this.browser, execute, task: text, ask: createFastAsk(settings.fast, this.notify) })
         : null;
@@ -538,12 +572,13 @@ export class SessionRunner {
         fastLayer,
         session: this.session,
         execute,
-        task: text + describeTabContext(tab) + replyLanguageReminder(settings.replyLanguage),
+        task: text + (this.project ? `\n\n[Selected project: ${this.project.name}. Use project_list/read/write/run for its files and commands. File paths are relative to the selected root.]` : '') + describeTabContext(tab) + replyLanguageReminder(settings.replyLanguage),
         images: attached,
         maxSteps: Math.max(1, Number(settings.maxSteps) || 40),
         signal: abort.signal,
         emit: (event) => this.emit(event),
         steering: this.steering(),
+        getAccessState: () => this.access.state(),
       });
       finished = true;
     } catch (err) {
@@ -677,6 +712,6 @@ export class SessionRunner {
   async save() {
     clearTimeout(this.saveTimer);
     if (this.disposed) return;
-    await store.saveSession(this.id, { transcript: this.transcript, log: this.session?.log ?? this.storedLog, groupId: this.browser.groupId, notebook: this.notebook.toJSON(), pending: this.inbox });
+    await store.saveSession(this.id, { transcript: this.transcript, log: this.session?.log ?? this.storedLog, groupId: this.browser.groupId, notebook: this.notebook.toJSON(), pending: this.inbox, project: this.project });
   }
 }

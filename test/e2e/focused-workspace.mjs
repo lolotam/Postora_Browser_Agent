@@ -51,7 +51,7 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.evaluate(async (settings) => {
       const { mergeSettings } = await import(chrome.runtime.getURL('src/lib/settings.js'));
       await chrome.storage.local.set({ settings: mergeSettings(settings) });
-    }, { ...slot, fallback: { ...slot, enabled: false }, fast: { enabled: false }, maxSteps: 40, uiLanguage: 'en', ...overrides });
+    }, { ...slot, fallback: { ...slot, enabled: false }, fast: { enabled: false }, transcription: { mode: 'browser' }, maxSteps: 40, uiLanguage: 'en', ...overrides });
     await panel.reload();
     await panel.waitForFunction(() => document.getElementById('modelQuickLabel')?.textContent.startsWith('mock-current'));
     await panel.waitForFunction(() => document.getElementById('sessionTitle')?.textContent.trim());

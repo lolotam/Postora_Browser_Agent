@@ -34,7 +34,7 @@ export function packageFiles(root = ROOT) {
 /** The manifest as uploaded: no "key". */
 export function storeManifest(manifest) {
   const { key, ...rest } = manifest;
-  return rest;
+  return { ...rest, ...(rest.permissions ? { permissions: rest.permissions.filter((permission) => permission !== 'nativeMessaging') } : {}) };
 }
 
 /** Locale descriptions longer than the store accepts, as "lang: n chars". */

@@ -1,5 +1,13 @@
 # Chat permission modes
 
+> Owner amendment, 2026-11-05: the private build now includes a per-user Windows
+> Native Messaging host and `run_terminal` for local PowerShell, files, and clipboard.
+> Enabling Full access keeps a running task alive and reauthorizes a pending action
+> against its original target; lowering access still stops the task. These decisions
+> supersede the browser-only scope and stop-on-every-mode-change rules below.
+> See [private installation and current behavior](../PRIVATE-ACCESS.md). The original
+> plan remains below as the implementation history.
+
 ## User decisions
 
 - Add an access-mode control in chat: **Ask first** and **Full access**.

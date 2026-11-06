@@ -1,7 +1,9 @@
 import { renderMarkdown, reportFileName } from './markdown.js';
+import { contentDirection } from './content-direction.js';
 import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
-import { currentLanguage, resolveLanguage, setLanguage, t } from './i18n.js';
+import { currentLanguage, resolveLanguage, setLanguage, t, translateFor } from './i18n.js';
 import { createAccessUi } from './access.js';
+import { createProjectUi } from './project.js';
 import { createPermissionUi } from './permissions.js';
 import { bindComposerSize } from './composer-size.js';
 import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
@@ -23,6 +25,10 @@ import { FILE_LIMITS, readLocalFile } from './attach.js';
 import { createFastAsk } from '../fast/clients.js';
 import { approvalText as approvalMessage } from '../voice/voice-approval.js';
 import { createVoiceController } from '../voice/voice-controller.js';
+import { createAudioRecognition } from '../voice/audio-recognition.js';
+import { transcribeAudio, speechLocale, validateTranscription } from '../voice/transcription.js';
+import { createTranscriptionForm } from './transcription-form.js';
+import { playReply } from '../voice/playback.js';
 import { runFastCommand } from '../voice/voice-runner.js';
 import { SECRET_TOKENS } from '../voice/voice-safety.js';
 import { createChromeBrowser } from '../voice/voice-browser.js';
@@ -60,6 +66,9 @@ setLanguage(resolveLanguage('auto', chrome.i18n.getUILanguage()));
 // so it reconnects lazily on the next message instead of looping on restarts.
 let port = null;
 let sessionId = null;
+const projectUi = createProjectUi({ getSessionId: () => sessionId, send: (...args) => send(...args), request,
+  input: $('input'), isRunning: () => ui.running, t, resize: resizeComposer });
+$('projectBtn').hidden = STORE_BUILD;
 let sessionList = [];
 let sessionListRefresh = 0;
 // The worker was gone and the panel is connected again: its sign-in state may
@@ -426,7 +435,11 @@ function resetApprovals() {
 
 function onEvent(event) {
   switch (event.type) {
+    case 'access-mode-note':
+      add('msg mode-note', `${t('access.changed')}: ${t(event.mode === FULL_ACCESS ? 'access.full' : 'access.askFirst')}`);
+      break;
     case 'replay':
+      projectUi.apply(event.project ?? null);
       // A restarted worker replays the transcript. It is history: it is drawn
       // again, but it does not act on what is on screen now.
       if (!ui.replayed || event.events?.length) {
@@ -453,6 +466,9 @@ function onEvent(event) {
       applyAccessState(event);
       // A mode that moved takes the approvals of the old mode with it.
       refreshApprovals();
+      break;
+    case 'project-state':
+      projectUi.apply(event.project, event.error);
       break;
     case 'access-request':
       // The worker asks for one action to be allowed. Only the connection that
@@ -507,6 +523,7 @@ function onEvent(event) {
     case 'reasoning-delta':
       ui.liveReasoning ??= threadPart('msg reasoning');
       ui.liveReasoning.textContent += event.delta;
+      ui.liveReasoning.dir = contentDirection(ui.liveReasoning.textContent);
       if (ui.thread) {
         ui.thread.reasoning += event.delta;
         ui.thread.title.textContent = threadTitle(ui.thread);
@@ -516,6 +533,7 @@ function onEvent(event) {
     case 'text-delta':
       ui.liveText ??= threadPart('msg assistant');
       ui.liveText.textContent += event.delta;
+      ui.liveText.dir = contentDirection(ui.liveText.textContent);
       scrollDown();
       break;
     case 'text-reset':
@@ -523,7 +541,11 @@ function onEvent(event) {
       ui.liveText = null;
       break;
     case 'assistant-text':
-      (ui.liveText ?? threadPart('msg assistant')).innerHTML = renderMarkdown(event.text);
+      {
+        const node = ui.liveText ?? threadPart('msg assistant');
+        node.innerHTML = renderMarkdown(event.text);
+        node.dir = contentDirection(event.text);
+      }
       ui.liveText = null;
       if (ui.thread) {
         ui.thread.text = event.text;
@@ -554,8 +576,9 @@ function onEvent(event) {
       if (row) {
         row.classList.toggle('fail', !event.ok);
         row.querySelector('.mark').textContent = event.ok ? '✓' : '✗';
-        row.title = event.summary;
-        if (Number.isFinite(event.ms)) row.append(span('time', formatDuration(event.ms)));
+        row.querySelector('.step-result').textContent = event.summary || '';
+        row.querySelector('.step-result').dir = contentDirection(event.summary);
+        if (Number.isFinite(event.ms)) row.querySelector('summary').append(span('time', formatDuration(event.ms)));
       }
       const voiceEntry = voiceEntryFor(event);
       if (voiceEntry) {
@@ -588,6 +611,7 @@ function onEvent(event) {
       ui.liveText = null;
       const node = add(`msg final${event.success ? '' : ' partial'}`, '');
       node.innerHTML = renderMarkdown(event.report);
+      node.dir = contentDirection(event.report);
       const heading = document.createElement('h3');
       heading.textContent = t(event.success ? 'report.final' : 'report.partial');
       node.prepend(heading);
@@ -597,13 +621,14 @@ function onEvent(event) {
       if (ui.replayed) askForRating(); // live finals only, not the history replayed on open
       const voiceEntry = voiceEntryFor(event);
       if (voiceEntry) {
+        const voiceT = (key) => translateFor(speechLocale(voiceTask?.text || event.report).slice(0, 2), key);
         // A report that says the task failed is never shown as a success.
         if (event.success) {
           voiceEntry.setOk(t('voice.success'));
-          voiceController?.speak(t('voice.doneSpoken'));
+          voiceController?.speak(voiceT('voice.doneSpoken'));
         } else {
           voiceEntry.setErr(t('voice.partial'));
-          voiceController?.speak(t('voice.partialSpoken'));
+          voiceController?.speak(voiceT('voice.partialSpoken'));
         }
         finishVoiceTask();
       }
@@ -675,7 +700,7 @@ function add(className, text) {
   ui.trace = null;
   const node = document.createElement('div');
   node.className = className;
-  node.dir = 'auto';
+  node.dir = contentDirection(text);
   node.textContent = text;
   $('messages').append(node);
   scrollDown();
@@ -713,7 +738,7 @@ function openThread(step) {
   closeThread();
   $('emptyState').hidden = true;
   ui.trace = null;
-  const box = Object.assign(document.createElement('details'), { className: 'thread', open: true });
+  const box = Object.assign(document.createElement('details'), { className: 'thread', open: false });
   const summary = document.createElement('summary');
   const title = span('title', t('thread.thinking'));
   title.dir = 'auto';
@@ -747,12 +772,13 @@ function threadTitle(thread) {
 }
 
 function addStep({ step, callId, name, args, fast }) {
-  const row = document.createElement('div');
+  const row = document.createElement('details');
   row.className = fast ? 'step fast' : 'step';
   const compact = JSON.stringify(args ?? {}).replace(/^\{|\}$/g, '');
-  row.innerHTML = '<span class="mark">…</span><span class="name"></span><span class="args"></span>';
-  row.querySelector('.name').textContent = `${step}. ${name}`;
-  row.querySelector('.args').textContent = compact;
+  row.innerHTML = '<summary><span class="mark">…</span><span class="name"></span><span class="args" dir="auto"></span></summary><div class="step-details"><pre class="step-input" dir="ltr"></pre><div class="step-result" dir="auto"></div></div>';
+  row.querySelector('.name').textContent = name;
+  row.querySelector('.args').textContent = typeof args?.command === 'string' ? args.command : compact;
+  row.querySelector('.step-input').textContent = JSON.stringify(args ?? {}, null, 2);
   traceBlock().append(row);
   ui.steps.set(callId ?? step + name, row);
   scrollDown();
@@ -1139,7 +1165,7 @@ function sendVoiceMessage(text, { tabId, signal, expectedSessionId } = {}) {
   signal?.throwIfAborted();
   const value = String(text ?? '').trim();
   if (!value) return Promise.resolve(false);
-  const message = { text: value, display: value, images: [] };
+  const message = { text: value, display: value, images: [], ...(!ui.question && !ui.running ? { voiceLanguage: speechLocale(value).slice(0, 2) } : {}) };
   const options = { signal, expectedSessionId };
   let sent;
   // The question that is answered is remembered by its number: it is only
@@ -1325,6 +1351,7 @@ function onMicMessage(message) {
     voiceController?.handlePartial(message.text || '');
     return;
   }
+  if (message.kind === 'processing') { setVoiceState('transcribing'); return; }
   if (message.kind === 'moved') {
     // The window moved to a tab, where Chrome can ask for the microphone.
     $('voiceLive').textContent = t('composer.micAsk');
@@ -1347,7 +1374,7 @@ function onMicMessage(message) {
     return;
   }
   if (message.kind === 'error') {
-    voiceController?.handleError(message.code);
+    voiceController?.handleError(message.code, message.detail);
   }
 }
 
@@ -1416,7 +1443,11 @@ function setVoiceState(state) {
 }
 
 /** What the microphone could not do, said in the panel's language. */
-function voiceFailure(code) {
+function voiceFailure(code, detail) {
+  if (code === 'transcription-failed') {
+    $('voiceLive').textContent = `${t('voice.transcriptionError')} ${detail || ''}`;
+    return;
+  }
   const key = code === 'not-supported' ? 'composer.micMissing'
     : code === 'restart-limit' ? 'voice.micRestarts'
       : voiceErrorKey(code);
@@ -1424,23 +1455,20 @@ function voiceFailure(code) {
   $('voiceLive').textContent = t(key);
 }
 
+let speechGeneration = 0;
 /** The voice output, spoken by the browser. It is never a command of its own. */
-function speakNow(text, { onEnd } = {}) {
-  const synth = window.speechSynthesis;
-  if (!synth) {
-    onEnd?.();
-    return;
-  }
-  try {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.05;
-    utterance.lang = currentLanguage() === 'ar' ? 'ar-EG' : 'en-US';
-    utterance.onend = () => onEnd?.();
-    utterance.onerror = () => onEnd?.();
-    synth.speak(utterance);
-  } catch {
-    onEnd?.();
-  }
+async function speakNow(text, { onEnd } = {}) {
+  const generation = ++speechGeneration;
+  return playReply(text, { onEnd, isCurrent: () => generation === speechGeneration,
+    onStatus: (code) => {
+      const message = t(code === 'noArabicVoice' ? 'voice.noArabicVoice' : `voice.playback.${code}`);
+      for (const id of ['voicePlaybackStatus', 'speechTestStatus']) { $(id).textContent = message; }
+    },
+  });
+}
+
+for (const [id, text] of [['testSpeechArabic', 'مرحبًا، هذا اختبار للصوت العربي.'], ['testSpeechEnglish', 'Hello, this is a voice playback test.']]) {
+  $(id).addEventListener('click', () => { window.speechSynthesis?.cancel(); void speakNow(text); });
 }
 
 const VOICE_PREF_KEYS = ['voiceHandsfree', 'voiceSpeak'];
@@ -1460,6 +1488,10 @@ async function saveVoicePrefs(prefs) {
 function createVoice() {
   return createVoiceController({
     createRecognition: () => {
+      if (settings?.transcription?.mode !== 'browser') {
+        const config = structuredClone(settings?.transcription);
+        return createAudioRecognition({ endSilenceMs: config.endSilenceMs, checkConfiguration: () => validateTranscription(config), transcribe: (blob, signal) => transcribeAudio(blob, config, { signal }) });
+      }
       const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!Ctor) return null;
       const rec = new Ctor();
@@ -1474,7 +1506,7 @@ function createVoice() {
     pauseCapture: () => { if (micCaptureOpen) relayMic('pause'); },
     resumeCapture: () => { if (micCaptureOpen) relayMic('resume'); },
     say: speakNow,
-    stopSpeech: () => { try { window.speechSynthesis?.cancel(); } catch { /* no speech */ } },
+    stopSpeech: () => { speechGeneration += 1; try { window.speechSynthesis?.cancel(); } catch { /* no speech */ } },
     speaking: () => Boolean(window.speechSynthesis?.speaking),
     onState: setVoiceState,
     onTranscript: (text, { final }) => {
@@ -1712,7 +1744,7 @@ async function runFastVoiceCommand(text, { signal, entry }) {
       approve: askVoiceApproval,
       signal,
       secretTokens: SECRET_TOKENS,
-      t,
+      t: (key, vars) => translateFor(speechLocale(text).slice(0, 2), key, vars),
     });
   } catch (err) {
     // A command that was cancelled is not a failure of the page: the screen
@@ -1938,6 +1970,7 @@ async function openSession(id) {
   port?.disconnect();
   port = null;
   sessionId = id;
+  projectUi.reset();
   ui.replayed = false;
   ui.running = false;
   // The mode belonged to the chat that is left: it goes with it, so a warning
@@ -2100,7 +2133,7 @@ $('sessionSearch').addEventListener('input', renderSessionList);
 // past, and nothing is closed twice by one keypress.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if ($('modelDialog').open || $('accessWarning').open) return;
+  if ($('modelDialog').open || $('accessWarning').open || $('projectDialog').open || $('projectFilesDialog').open) return;
   if (!$('sessionMenu').hidden) { closeSessionMenu(); $('sessionBtn').focus(); return; }
   if (!$('overflowMenu').hidden) { closeOverflowMenu(); $('overflowBtn').focus(); return; }
   if (!$('accountMenu').hidden) { closeAccountMenu(); return; }
@@ -2452,6 +2485,7 @@ function applyLanguage(language) {
   permissionUi.updateLanguage(approvalWords);
   renderAccessError();
   renderFiles();
+  projectUi.render();
   if (!settings) return;
   for (const provider of ACCOUNT_PROVIDERS) if (authState[provider]) showAuth(provider, authState[provider]);
   syncAuthFrames();
@@ -2511,6 +2545,7 @@ function syncHeaderContext() {
 }
 
 const keyStore = createKeyStore();
+const transcriptionForm = createTranscriptionForm();
 const saveSettings = createSettingsSaver({
   getSettings: () => settings,
   onSaved: (saved) => { settings = saved; },
@@ -2748,6 +2783,7 @@ function fillForm() {
   syncReplyLanguage();
   fillFastForm(settings.fast);
   if ($('voiceEngine')) $('voiceEngine').value = settings.voiceEngine ?? 'postora';
+  transcriptionForm.fill(settings.transcription);
   $('uiLanguage').value = settings.uiLanguage ?? 'auto';
   syncRecommended();
   markClean();
@@ -2766,6 +2802,7 @@ function syncRecommended(open = false) {
 
 // The store build has no run-JavaScript tool, so it has no switch for it either.
 $('allowJavascript').closest('label').hidden = STORE_BUILD;
+$('projectBtn').hidden = STORE_BUILD;
 
 $('keyLinkMain').href = RECOMMENDED_SETUP.main.keyUrl;
 $('keyLinkBackup').href = RECOMMENDED_SETUP.backup.keyUrl;
@@ -2799,6 +2836,7 @@ function readForm() {
   next.notify = $('notify').checked;
   next.replyLanguage = { enabled: $('replyLangEnabled').checked, language: $('replyLang').value };
   next.voiceEngine = $('voiceEngine')?.value || 'postora';
+  next.transcription = transcriptionForm.read();
   next.keys = keyStore.snapshot();
   return next;
 }

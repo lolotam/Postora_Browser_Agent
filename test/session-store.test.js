@@ -18,6 +18,13 @@ beforeEach(() => {
   for (const k of Object.keys(store)) delete store[k];
 });
 
+test('linked project survives a session save/load round trip', async () => {
+  const meta = await sessions.createStoredSession();
+  const project = { root: 'C:/fixture/project', name: 'project' };
+  await sessions.saveSession(meta.id, { project, transcript: [], log: null });
+  assert.deepEqual((await sessions.loadSession(meta.id)).project, project);
+});
+
 test('a session keeps its transcript, its neutral log and its tab group', async () => {
   const meta = await sessions.createStoredSession();
   await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'hi' }], log: { task: 'hi', notes: [], steps: [], last: null }, groupId: 7 });

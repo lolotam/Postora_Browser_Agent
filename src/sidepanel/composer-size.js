@@ -6,7 +6,9 @@ export function bindComposerSize(input) {
     const transition = input.style.transition;
     input.style.transition = 'none';
     input.style.height = '0px';
-    const height = input.scrollHeight;
+    // A wrapped placeholder must not make an empty draft taller than its
+    // minimum. Measure actual text only; CSS owns the empty-state height.
+    const height = input.value === '' ? 0 : input.scrollHeight;
     input.style.height = `${previous}px`;
     // Commit the old height before the CSS transition to the content height.
     void input.offsetHeight;
@@ -21,6 +23,9 @@ export function bindComposerSize(input) {
     resize();
   });
   observer.observe(input);
+  const fonts = input.ownerDocument?.fonts;
+  fonts?.ready.then(resize);
+  fonts?.addEventListener('loadingdone', resize);
   resize();
   return resize;
 }

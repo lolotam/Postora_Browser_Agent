@@ -1,6 +1,7 @@
 // Side panel copy in every supported language. Keys must exist in all of them;
 // test/i18n.test.js enforces that.
 
+import { WORKSPACE_MESSAGES } from './workspace-messages.js';
 export const MESSAGES = {
   ar: {
     'header.newChat': 'جلسة جديدة',
@@ -19,7 +20,7 @@ export const MESSAGES = {
     'empty.ex1': 'ابحث عن أرخص 3 لابتوبات RTX 4060 في أمازون مصر وقارن بينهم في جدول',
     'empty.ex2': 'افتح Hacker News ولخّص أهم 5 مواضيع النهارده مع الروابط',
     'empty.ex3': 'اقرأ الصفحة المفتوحة وطلّع منها كل الإيميلات وأرقام التليفون',
-    'composer.placeholder': 'اكتب المهمة… (Enter للإرسال، Shift+Enter لسطر جديد)',
+    'composer.placeholder': 'اسأل Postora…',
     'composer.attach': 'إرفاق ملف',
     'composer.removeFile': 'شيل الملف',
     'composer.fileMany': 'تقدر ترفق لحد {n} ملفات.',
@@ -443,12 +444,12 @@ export const MESSAGES = {
     'access.warning.desc': 'سيعمل الوكيل على الصفحات بدون أن يسألك عن كل إجراء. اقرأ ما يلي قبل أن توافق.',
     'access.warning.forms': 'يملأ النماذج في صفحات الويب.',
     'access.warning.data': 'يرسل البيانات أو يحذفها.',
-    'access.warning.terminal': 'يشغّل أوامر في طرفية تعمل داخل صفحة ويب.',
+    'access.warning.terminal': 'يشغّل أوامر في طرفية الويب، وفي PowerShell المحلي عند تثبيت الجسر الخاص. يستطيع الجسر قراءة الملفات وكتابتها واستخدام الحافظة بصلاحيات حساب Windows الحالي.',
     'access.warning.fields': 'يقرأ الحقول الحساسة المكتوبة في الصفحة ويكتب فيها.',
     'access.warning.providers': 'ما تطلبه من قيم قد يذهب إلى مزوّدي الذكاء الاصطناعي الذين ضبطتهم: الأساسي والبديل ومسار القرار الصوتي.',
     'access.warning.history': 'القيم المطلوبة قد تبقى في سجل المحادثة المحفوظ.',
-    'access.warning.limits': 'هذا المتصفح فقط: لا يصل إلى أوامر نظام التشغيل، ولا إلى الصفحات التي يحميها Chrome، ولا إلى خزنة كلمات المرور، ولا إلى حدود الإضافة نفسها.',
-    'access.warning.stops': 'تغيير الوضع يوقف العمل الجاري. لكنه لا يرجع ما أُرسل فعلاً، ولا يمحو ما مضى في السجل.',
+    'access.warning.limits': 'PowerShell المحلي يحتاج الجسر في النسخة الخاصة. تبقى الصفحات التي يحميها Chrome وخزنة كلمات المرور وحدود حساب Windows خارج صلاحيات الإضافة.',
+    'access.warning.stops': 'الرجوع إلى «اسأل أولاً» يوقف العمل الجاري؛ تفعيل الوصول الكامل يسمح باستمراره. الإيقاف لا يرجع ما أُرسل فعلاً، ولا يمحو ما مضى في السجل.',
     'access.warning.acknowledge': 'فهمت ما يسمح به الوصول الكامل، وأريده لهذه المحادثة فقط.',
     'access.warning.confirm': 'تشغيل الوصول الكامل',
     'access.warning.cancel': 'أبقِ على «اسأل أولاً»',
@@ -507,7 +508,7 @@ export const MESSAGES = {
     'empty.ex1': 'Find the 3 cheapest RTX 4060 laptops on Amazon and compare them in a table',
     'empty.ex2': 'Open Hacker News and summarize today’s top 5 stories with links',
     'empty.ex3': 'Read the open page and extract every email address and phone number',
-    'composer.placeholder': 'Describe a task… (Enter to send, Shift+Enter for a new line)',
+    'composer.placeholder': 'Ask Postora…',
     'composer.attach': 'Attach a file',
     'composer.removeFile': 'Remove file',
     'composer.fileMany': 'You can attach up to {n} files.',
@@ -931,12 +932,12 @@ export const MESSAGES = {
     'access.warning.desc': 'The agent will work on pages without asking you about every action. Read this before you agree.',
     'access.warning.forms': 'It can fill forms on web pages.',
     'access.warning.data': 'It can send data and delete data.',
-    'access.warning.terminal': 'It can run commands in a terminal that runs inside a web page.',
+    'access.warning.terminal': 'It can run commands in a web terminal and in local PowerShell when the private bridge is installed. The bridge can read and write files and use the clipboard as your current Windows user.',
     'access.warning.fields': 'It can read and write sensitive fields that are already filled in.',
     'access.warning.providers': 'Values you ask for can go to the AI providers you set up: the primary, the backup and the voice decision route.',
     'access.warning.history': 'Requested values may stay in your saved chat history.',
-    'access.warning.limits': 'This is the browser only: it does not reach native OS terminals, the pages Chrome protects, the password vault, or the extension build limits.',
-    'access.warning.stops': 'Changing the mode stops the work that is running. It cannot undo input that was already sent, and it cannot erase earlier history.',
+    'access.warning.limits': 'Local PowerShell requires the bridge in the private build. Chrome protected pages, the password vault, and Windows account restrictions remain outside the extension permissions.',
+    'access.warning.stops': 'Returning to Ask first stops the work that is running; enabling Full access lets it continue. Stopping cannot undo input that was already sent, and it cannot erase earlier history.',
     'access.warning.acknowledge': 'I understand what Full access allows, and I want it for this chat only.',
     'access.warning.confirm': 'Turn on Full access',
     'access.warning.cancel': 'Keep Ask first',
@@ -981,3 +982,4 @@ export const MESSAGES = {
     // @store-strip-end
   },
 };
+for (const [language, copy] of Object.entries(WORKSPACE_MESSAGES)) Object.assign(MESSAGES[language], copy);

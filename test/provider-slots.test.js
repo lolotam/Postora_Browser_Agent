@@ -64,6 +64,22 @@ test('a new install has a Claude and a Grok slot, in the main settings and in th
   assert.deepEqual(settings.fallback.grok, { model: '', effort: '' });
 });
 
+test('legacy voice stays usable without a transcription key; configured services remain opt-in', () => {
+  assert.equal(mergeSettings({}).transcription.mode, 'browser');
+  assert.equal(mergeSettings({ transcription: { mode: 'auto', provider: 'deepgram', apiKey: 'fixture' } }).transcription.mode, 'auto');
+  assert.equal(mergeSettings({ transcription: { apiKey: 'fixture' } }).transcription.mode, 'auto');
+});
+
+test('custom endpoint key survives switching via a provider route', () => {
+  const { root, el } = fakeRoot(MAIN_FIELDS);
+  const form = formFor(root);
+  form.fill(mergeSettings({ provider: 'compatible', compatible: { preset: 'custom', apiKey: 'original' } }));
+  el('apiKey').value = 'edited-custom-key';
+  el('provider').value = 'api:openrouter'; el('provider').dispatch('change');
+  el('preset').value = 'custom'; el('preset').dispatch('change');
+  assert.equal(form.read().compatible.apiKey, 'edited-custom-key');
+});
+
 test('the factory builds the session of the provider the slot names', () => {
   const claude = createModelSession(mergeSettings({ provider: 'claude', claude: { model: 'claude-sonnet-4-6' } }), {});
   assert.ok(claude.active instanceof AnthropicSession, 'a Claude slot speaks the Anthropic Messages API');
