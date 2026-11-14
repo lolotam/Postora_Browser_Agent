@@ -21,11 +21,14 @@ const SUMMARY_PROMPT = 'You have reached the step limit. Stop using tools and wr
  * `turnSignal(signal)` is the model request's signal, aborted to deliver a message
  * at once (the interrupted turn does not count as a step).
  */
-export async function runAgent({ session, execute, task, images = [], maxSteps, signal, emit, fastLayer = null, steering = null, getAccessState = null, compaction = null }) {
+export async function runAgent({ session, execute, task, images = [], maxSteps, signal, emit, fastLayer = null, steering = null, getAccessState = null, compaction = null, untrustedContext = null }) {
   // A conversation that was already too long when the task came is compacted
   // before the task is added: the task is never part of what gets summarized.
   if (compaction) await compaction.beforeTurn({ session, inputTokens: 0, signal, task, images, start: true });
   session.addUserMessage(task, images);
+  // Untrusted file text is not part of the task: it is a message of its own, so
+  // it cannot be read as something the user asked for.
+  session.addUntrustedContext?.(untrustedContext);
   let fast = fastLayer;
   let fastActions = [];
   let llmHasSeenPage = false;

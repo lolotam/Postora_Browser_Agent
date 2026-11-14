@@ -44,6 +44,19 @@ export class FallbackSession {
     this.active.addUserMessage(text, images);
   }
 
+  /**
+   * Untrusted file text: it reaches the model as a message of its own and never
+   * becomes the task.
+   *
+   * The log is not touched on purpose. The task stays the user's task and the
+   * notes stay the user's messages, so neither the handoff to the backup nor
+   * the summary of a compaction can carry the file text forward with them.
+   */
+  addUntrustedContext(text) {
+    if (!text) return;
+    this.active.addUserMessage(text);
+  }
+
   addToolResult(callId, output, images = []) {
     const call = this.openCalls.get(callId);
     if (call) {
@@ -83,7 +96,9 @@ export class FallbackSession {
    * with the log restarted from it, so a later handoff to the backup carries it.
    * `carry` is what the summary must not shorten: the task being worked on, with
    * its images, goes into the new session word for word, and so do the notes.
-   * `accessState` is the mode in force now: the session may have been built under another.
+   * `accessState` is the mode in force now: the session may have been built under
+   * another. It may be a getter, which is read when the new conversation is
+   * built: the summary takes a while, and the mode may have moved in the mean time.
    * Returns `{ summary, usage }`.
    */
   async compact({ prompt, signal, continueTask = false, carry = null, accessState }) {
