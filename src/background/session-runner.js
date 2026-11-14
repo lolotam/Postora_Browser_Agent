@@ -622,7 +622,10 @@ export class SessionRunner {
   async runCompaction(session, { focus = '', auto = false, continueTask = false, carry = null, signal, size = 0 }) {
     this.emit({ type: 'compacting', auto });
     try {
-      const { summary, usage } = await session.compact({ prompt: compactPrompt(focus), signal, continueTask, carry, accessState: this.access.state() });
+      // The mode in force when the new conversation is built, not a snapshot of
+      // it from before the summary: the summary takes a while, and the user may
+      // have changed the mode in the mean time.
+      const { summary, usage } = await session.compact({ prompt: compactPrompt(focus), signal, continueTask, carry, accessState: () => this.access.state() });
       this.emit({ type: 'compacted', auto, focus, summary, tokensBefore: size, usage: normalizeUsage(usage) });
       if (auto) this.awaitingShrink = true;
       return true;
@@ -817,7 +820,9 @@ export class SessionRunner {
    * mode that is really in force, and the key of the session includes it, so
    * a mode that moved is described by the next task. The snapshot is read
    * from the authority and from nowhere else: a setting, a message or a
-   * transcript never names a mode.
+   * transcript never names a mode. A session that is built later reads the
+   * mode again, so a backup that takes over later describes the mode that is
+   * in force then.
    */
   prepareModelSession(settings) {
     const accessState = this.access.state();
@@ -829,7 +834,7 @@ export class SessionRunner {
       : this.session.switched ? 'the previous task was finished by the backup provider'
         : modeMoved ? 'the access mode in force changed'
           : 'the model was changed in settings';
-    this.session = createModelSession(settings, { notify: this.notify, seed: log ? { log, reason } : null, conversationId: this.id, notebook: this.notebook, accessState, history: conversationHistory(this.transcript) });
+    this.session = createModelSession(settings, { notify: this.notify, seed: log ? { log, reason } : null, conversationId: this.id, notebook: this.notebook, accessState: () => this.access.state(), history: conversationHistory(this.transcript) });
     this.sessionKey = key;
     this.sessionMode = accessState.mode;
   }

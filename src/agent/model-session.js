@@ -17,6 +17,14 @@ import { planAccountProvider, PlanAccountSession } from '../providers/plan-accou
 export { createFastAsk };
 
 /**
+ * The access mode a session is built with. It may be a snapshot or a getter:
+ * a session that is built later (after a compaction, or after the main model
+ * failed) must describe the mode that is in force then, not the one that was
+ * in force when the session started.
+ */
+const accessOf = (state) => (typeof state === 'function' ? state() : state);
+
+/**
  * A provider session for one model slot: the main one or settings.fallback.
  * `conversationId` is the saved session's id, so a provider that tracks
  * conversations (OpenCode) sees the same one after the worker restarts.
@@ -96,20 +104,21 @@ function slotLabel(slot) {
  * reaches the new primary as a handoff message: after a task the backup
  * finished, after a settings change, or when a saved session is reopened.
  *
- * `accessState` is the worker's runtime snapshot of the access mode. Both
- * slots get it, so the backup cannot describe a different mode than the main
- * model. Without a snapshot the prompt says Ask first, the mode a session
- * starts in.
+ * `accessState` is the worker's runtime snapshot of the access mode, or a
+ * getter that reads it when a session is built. Both slots get it, so the
+ * backup cannot describe a different mode than the main model, and a session
+ * built later describes the mode that is in force then. Without a snapshot the
+ * prompt says Ask first, the mode a session starts in.
  */
 export function createModelSession(settings, { notify, seed = null, conversationId, notebook = null, accessState = null, history = '' } = {}) {
-  const primary = createProviderSession(settings, settings, conversationId, notify, accessState);
+  const primary = createProviderSession(settings, settings, conversationId, notify, accessOf(accessState));
   if (history) primary.addUserMessage(history);
   if (seed?.log?.task) primary.addUserMessage(handoffMessage(seed.log, seed.reason, notebook));
   const backupEnabled = settings.fallback.enabled;
   return new FallbackSession({
     primary,
-    createPrimary: (current = accessState) => createProviderSession(settings, settings, conversationId, notify, current),
-    createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify, accessState) : null,
+    createPrimary: (current = accessState) => createProviderSession(settings, settings, conversationId, notify, accessOf(current)),
+    createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify, accessOf(accessState)) : null,
     labels: { primary: slotLabel(settings), backup: backupEnabled ? slotLabel(settings.fallback) : '' },
     notify,
     log: seed?.log ?? emptyLog(),

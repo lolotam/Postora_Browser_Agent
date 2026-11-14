@@ -213,7 +213,26 @@ test('the access mode in force now goes to the new conversation, not the one the
   const seen = [];
   const session = { compact: async (options) => { seen.push(options.accessState); return { summary: 'S', usage: null }; } };
   await runner.runCompaction(session, { signal: runner.abort.signal });
-  assert.deepEqual(seen, [runner.access.state()]);
+  assert.equal(seen.length, 1);
+  assert.equal(typeof seen[0], 'function', 'the mode is read when the new conversation is built');
+  assert.deepEqual(seen[0](), runner.access.state());
+});
+
+test('a mode that moved while the summary was written reaches the new conversation', async () => {
+  const { runner } = await busyRunner('Compact access moved');
+  let mode = { mode: 'ask-first', revision: 1 };
+  runner.access.state = () => mode;
+  let seen = null;
+  const session = {
+    compact: async (options) => {
+      // The summary takes a while, and the user changes the mode in the mean time.
+      mode = { mode: 'full-access', revision: 2 };
+      seen = options.accessState();
+      return { summary: 'S', usage: null };
+    },
+  };
+  await runner.runCompaction(session, { signal: runner.abort.signal });
+  assert.equal(seen.mode, 'full-access', 'the new conversation describes the mode that is in force now');
 });
 
 test('a task that is itself over the threshold is compacted once, not again at every turn', async () => {
