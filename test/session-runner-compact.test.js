@@ -1,0 +1,209 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+const store = {};
+globalThis.chrome = {
+  debugger: { onDetach: { addListener() {} }, detach: async () => {} },
+  tabs: { onRemoved: { addListener() {} } },
+  storage: {
+    local: {
+      get: async (keys) => Object.fromEntries([].concat(keys).filter((k) => k in store).map((k) => [k, structuredClone(store[k])])),
+      set: async (obj) => Object.assign(store, structuredClone(obj)),
+      remove: async (keys) => [].concat(keys).forEach((k) => delete store[k]),
+    },
+  },
+};
+
+const { SessionRunner } = await import('../src/background/session-runner.js');
+const sessions = await import('../src/sessions/store.js');
+const { mergeSettings } = await import('../src/lib/settings.js');
+
+/** A runner with a task "running" and its events collected. */
+async function busyRunner(title, steerMode = 'next-step') {
+  const meta = await sessions.createStoredSession(title);
+  const runner = new SessionRunner({ meta, body: await sessions.loadSession(meta.id), color: 'cyan', isTakenByOther: () => null, onSessionsChanged: () => {} });
+  const events = [];
+  runner.emit = (e) => events.push(e);
+  runner.abort = new AbortController();
+  runner.settings = mergeSettings({ steerMode, autoCompact: { enabled: true, thresholdTokens: 8000 } });
+  return { runner, events };
+}
+
+const compactingSession = (calls, { fail = false } = {}) => ({
+  compact: async (options) => {
+    calls.push(options);
+    if (fail) throw new Error('HTTP 500');
+    return { summary: 'THE SUMMARY', usage: { input: 3, output: 2 } };
+  },
+});
+
+test('/compact while a task runs waits like a message and is never read by the model as one', async () => {
+  const { runner, events } = await busyRunner('Compact steered');
+  const steering = runner.steering();
+  const signal = steering.turnSignal(runner.abort.signal);
+
+  runner.receive({ type: 'steer', text: '/compact keep the ids', mode: 'queue' });
+  runner.receive({ type: 'steer', text: '/compact', mode: 'next-step' });
+  assert.deepEqual(events.filter((e) => e.type === 'pending-added').map((e) => [e.item.text, e.item.mode]), [['/compact keep the ids', 'queue'], ['/compact', 'next-step']]);
+  assert.equal(steering.waiting(), false); // not a message for the model: the turn is not asked again for it
+  assert.deepEqual(steering.take(), []);
+  assert.equal(signal.aborted, false);
+
+  const calls = [];
+  const done = await runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 100, signal: runner.abort.signal });
+  assert.equal(done, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].continueTask, true); // in the middle of a task
+  assert.doesNotMatch(calls[0].prompt, /special attention/); // the queued one (with its focus) still waits
+  assert.deepEqual(runner.inbox.map((m) => m.text), ['/compact keep the ids']);
+  const compacted = events.find((e) => e.type === 'compacted');
+  assert.equal(compacted.summary, 'THE SUMMARY');
+  assert.equal(compacted.auto, false);
+  assert.equal(compacted.tokensBefore, 100);
+  assert.ok(events.some((e) => e.type === 'pending-removed'));
+  assert.ok(events.some((e) => e.type === 'compacting'));
+});
+
+test('/compact in interrupt mode cuts the current turn short', async () => {
+  const { runner } = await busyRunner('Compact interrupt', 'interrupt');
+  const signal = runner.steering().turnSignal(runner.abort.signal);
+  runner.receive({ type: 'steer', text: '/compact', mode: 'interrupt' });
+  assert.equal(signal.aborted, true);
+  const calls = [];
+  assert.equal(await runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 0, signal: runner.abort.signal }), true);
+  assert.equal(calls.length, 1);
+});
+
+test('automatic compaction follows the steering mode: now, or after the task with "queue"', async () => {
+  const calls = [];
+  const next = await busyRunner('Auto next-step', 'next-step');
+  assert.equal(await next.runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 7999, signal: next.runner.abort.signal }), false);
+  assert.equal(await next.runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 8000, signal: next.runner.abort.signal }), true);
+  assert.equal(calls.length, 1);
+  assert.equal(next.events.find((e) => e.type === 'compacted').auto, true);
+
+  const queued = await busyRunner('Auto queue', 'queue');
+  assert.equal(await queued.runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 11999, signal: queued.runner.abort.signal }), false);
+  assert.equal(calls.length, 1); // postponed: settle() does it when the task has ended
+  // ...unless the conversation has grown so far past the threshold that waiting would risk the model's limit.
+  assert.equal(await queued.runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 12000, signal: queued.runner.abort.signal }), true);
+  assert.equal(calls.length, 2);
+
+  const off = await busyRunner('Auto off', 'next-step');
+  off.runner.settings.autoCompact.enabled = false;
+  assert.equal(await off.runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 90000, signal: off.runner.abort.signal }), false);
+  assert.equal(calls.length, 2);
+});
+
+test('mid-task the task goes into the new conversation word for word; before a task there is nothing to continue', async () => {
+  const { runner } = await busyRunner('Compact carry');
+  const calls = [];
+  const images = ['data:image/png;base64,AA'];
+  await runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 9000, signal: runner.abort.signal, task: 'THE WHOLE TASK', images });
+  assert.deepEqual([calls[0].continueTask, calls[0].carry], [true, { task: 'THE WHOLE TASK', images }]);
+  runner.transcript.push({ type: 'turn-end', usage: { input: 9000, output: 1 } });
+  await runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 0, signal: runner.abort.signal, task: 'THE WHOLE TASK', images, start: true });
+  assert.deepEqual([calls[1].continueTask, calls[1].carry], [false, null]);
+});
+
+test('the first turn of a task counts the size the last task ended with', async () => {
+  const { runner } = await busyRunner('Carried size');
+  runner.transcript.push({ type: 'turn-end', usage: { input: 50000, output: 1 } });
+  const calls = [];
+  assert.equal(await runner.compaction().beforeTurn({ session: compactingSession(calls), inputTokens: 0, signal: runner.abort.signal }), true);
+  assert.equal(calls.length, 1);
+});
+
+test('a failed automatic compaction is shown, the task goes on, and it is not tried again in that task', async () => {
+  const { runner, events } = await busyRunner('Auto fails');
+  const calls = [];
+  const hook = runner.compaction();
+  assert.equal(await hook.beforeTurn({ session: compactingSession(calls, { fail: true }), inputTokens: 90000, signal: runner.abort.signal }), false);
+  assert.deepEqual(events.filter((e) => e.type === 'compact-failed').map((e) => [e.auto, e.message]), [[true, 'HTTP 500']]);
+  assert.equal(await hook.beforeTurn({ session: compactingSession(calls), inputTokens: 90000, signal: runner.abort.signal }), false);
+  assert.equal(calls.length, 1);
+  // A /compact the user asked for is tried whatever happened before.
+  runner.receive({ type: 'steer', text: '/compact', mode: 'next-step' });
+  assert.equal(await hook.beforeTurn({ session: compactingSession(calls), inputTokens: 0, signal: runner.abort.signal }), true);
+});
+
+test('Stop during a compaction is passed on, not shown as a failure', async () => {
+  const { runner, events } = await busyRunner('Compact stopped');
+  runner.abort.abort();
+  const session = { compact: async () => { throw new DOMException('aborted', 'AbortError'); } };
+  await assert.rejects(runner.runCompaction(session, { signal: runner.abort.signal }), { name: 'AbortError' });
+  assert.equal(events.some((e) => e.type === 'compact-failed'), false);
+});
+
+test('when the task has ended: waiting /compact requests first, then the messages that waited', async () => {
+  const { runner } = await busyRunner('Settle');
+  runner.abort = null; // the task is over
+  const order = [];
+  runner.compactIdle = async (options) => { order.push(['compact', options.focus, options.auto]); };
+  runner.drainInbox = () => order.push(['drain']);
+  runner.inbox.push({ id: 'a', text: '/compact keep ids', model: '', mode: 'queue', now: false, compact: { focus: 'keep ids' } });
+  runner.inbox.push({ id: 'b', text: 'then email me', model: 'then email me', mode: 'queue', now: false });
+  await runner.settle();
+  assert.deepEqual(order, [['compact', 'keep ids', false], ['drain']]);
+  assert.deepEqual(runner.inbox.map((m) => m.id), ['b']); // the message is not swallowed by the compaction
+});
+
+test('a Stop during the compaction after a task leaves the waiting messages for the user', async () => {
+  const { runner } = await busyRunner('Settle stopped');
+  runner.abort = null;
+  runner.compactIdle = async () => 'stopped';
+  let drained = false;
+  runner.drainInbox = () => { drained = true; };
+  runner.inbox.push({ id: 'a', text: '/compact', model: '', mode: 'queue', now: false, compact: { focus: '' } });
+  await runner.settle();
+  assert.equal(drained, false);
+});
+
+test('a /compact typed after a Stop leaves what the Stop left waiting, and reads what came during it', async () => {
+  const { runner } = await busyRunner('Compact after stop');
+  runner.abort = null;
+  runner.inbox.push({ id: 'left', text: 'left over', model: 'left over', mode: 'queue', now: false });
+  const started = [];
+  runner.start = (text) => started.push(text);
+  runner.compactIdle = async () => {
+    runner.inbox.push({ id: 'during', text: 'sent meanwhile', model: 'sent meanwhile', mode: 'next-step', now: false });
+    return 'done';
+  };
+  runner.requestCompact('', 'next-step');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(started, ['sent meanwhile']);
+  assert.deepEqual(runner.inbox.map((m) => m.id), ['left']);
+
+  // A compaction that is stopped reads nothing at all.
+  runner.compactIdle = async () => 'stopped';
+  runner.inbox.push({ id: 'again', text: 'x', model: 'x', mode: 'next-step', now: false });
+  runner.requestCompact('', 'next-step');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(started, ['sent meanwhile']);
+});
+
+test('when the task has ended with the conversation over the threshold, it is compacted before the next task', async () => {
+  const { runner } = await busyRunner('Settle auto', 'queue');
+  runner.abort = null;
+  runner.transcript.push({ type: 'turn-end', usage: { input: 9000, output: 1 } });
+  const order = [];
+  runner.compactIdle = async (options) => { order.push(['compact', options.auto]); };
+  runner.drainInbox = () => order.push(['drain']);
+  await runner.settle();
+  assert.deepEqual(order, [['compact', true], ['drain']]);
+
+  runner.transcript.push({ type: 'compacted', summary: 'S' });
+  order.length = 0;
+  await runner.settle();
+  assert.deepEqual(order, [['drain']]); // nothing left to compact
+});
+
+test('/compact with nothing in the chat says so instead of asking a model', async () => {
+  const meta = await sessions.createStoredSession('Empty compact');
+  const runner = new SessionRunner({ meta, body: await sessions.loadSession(meta.id), color: 'cyan', isTakenByOther: () => null, onSessionsChanged: () => {} });
+  const events = [];
+  runner.emit = (e) => events.push(e);
+  assert.equal(await runner.compactIdle({}), 'failed');
+  assert.deepEqual(events.map((e) => [e.type, e.code]), [['compact-failed', 'nothing']]);
+  assert.equal(runner.running, false);
+});

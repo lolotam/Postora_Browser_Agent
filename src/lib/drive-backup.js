@@ -57,7 +57,7 @@ async function writeBackupFile(token, data, id) {
  * sign-in, while the credential itself is what a refresh changes.
  */
 async function backupHash(data) {
-  const bytes = new TextEncoder().encode(JSON.stringify([data.settings, normaliseAccounts(data.accounts)]));
+  const bytes = new TextEncoder().encode(JSON.stringify([data.settings, normaliseAccounts(data.accounts), data.sessions ?? []]));
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -139,7 +139,7 @@ async function restore(getToken) {
   const settings = await importBackup(data);
   // Records what Drive holds, so restoring does not upload it straight back; a local
   // sign-in the file lacks (and the import keeps) still gets uploaded.
-  const held = { settings: mergeSettings(data.settings ?? {}), accounts: accountsIn(data) };
+  const held = { settings: mergeSettings(data.settings ?? {}), accounts: accountsIn(data), sessions: data.sessions ?? [] };
   await saveState({ fileId: file.id, at: Date.parse(file.modifiedTime) || Date.now(), hash: await backupHash(held), error: null });
   return settings;
 }

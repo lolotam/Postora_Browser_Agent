@@ -11,7 +11,7 @@ import { accountsIn, exportBackup, importBackup } from '../lib/backup.js';
 import { signInOpenRouter } from '../providers/openrouter-auth.js';
 import { errorResponse } from '../lib/errors.js';
 import { COMPATIBLE_PRESETS, FAST_PRESETS, loadSettings, modelListRoute, saveSettings, slotModels } from '../lib/settings.js';
-import { ACCOUNT_STORAGE_KEYS, accountStatus, signOut } from '../providers/account-auth.js';
+import { ACCOUNT_STORAGE_KEYS, accountStatus, getValidCredential, signOut } from '../providers/account-auth.js';
 import { importCodexAuthJson } from '../providers/chatgpt-auth.js';
 import { listChatgptModels } from '../providers/chatgpt.js';
 import { CLAUDE_CODE_IDENTITY, anthropicEfforts, listAnthropicModels } from '../providers/anthropic.js';
@@ -20,6 +20,7 @@ import { listCompatibleModels } from '../providers/openai-compatible.js';
 import { listGrokModels } from '../providers/responses.js';
 import { listGeminiModels } from '../providers/named-api.js';
 import { listKimiModels } from '../providers/kimi.js';
+import { planAccountProvider } from '../providers/plan-account.js';
 import { BrowserController } from '../browser/controller.js';
 import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
@@ -29,6 +30,8 @@ import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
 import { isMicRelay } from '../sidepanel/voice.js';
+import { installTabPanels } from './tab-panels.js';
+import { isSidePanelSender } from '../permissions/panel-sender.js';
 // @store-strip-start
 import { nativeRequest, runNativeCommand } from '../native/client.js';
 // @store-strip-end
@@ -71,7 +74,7 @@ const voiceAccess = createVoiceAccess({
 });
 
 
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+installTabPanels().catch(() => console.warn('Could not initialize tab panels.'));
 chrome.runtime.onInstalled.addListener(installHeaderRules);
 chrome.runtime.onStartup.addListener(installHeaderRules);
 // A worker that wakes after this file changes still has to install the rules.
@@ -83,7 +86,7 @@ chrome.tabs.onRemoved.addListener((tabId) => tabSessions.unbindTab(tabId));
 listenToNotifications();
 chrome.permissions.onAdded.addListener(listenToNotifications);
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !(changes.settings || ACCOUNT_STORAGE_KEYS.some((key) => changes[key]))) return;
+  if (area !== 'local' || !(changes.settings || changes.sessions || ACCOUNT_STORAGE_KEYS.some((key) => changes[key]))) return;
   clearTimeout(driveBackupTimer);
   driveBackupTimer = setTimeout(async () => {
     if (await googleAccount()) await backUpToDrive();
@@ -209,17 +212,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function handleRequest(msg, sender) {
   switch (msg.type) {
     case 'openrouter-login':
-      if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Sign-in requires the extension settings panel.');
+      if (!isSidePanelSender(sender)) throw new Error('Sign-in requires the extension settings panel.');
       return withKeepAlive(() => signInOpenRouter());
     // @store-strip-start
     case 'project-list-ui': {
-      if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Project listing requires the extension panel.');
+      if (!isSidePanelSender(sender)) throw new Error('Project listing requires the extension panel.');
       const runner = await runnerFor(msg.sessionId);
       if (!runner.project) throw new Error('No project is linked.');
       return (await nativeRequest({ type: 'project-list', root: runner.project.root, path: msg.path ?? '.' })).result;
     }
     case 'project-pick': {
-      if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/sidepanel/index.html')) throw new Error('Project selection requires the extension panel.');
+      if (!isSidePanelSender(sender)) throw new Error('Project selection requires the extension panel.');
       const result = await runNativeCommand({ command: "Add-Type -AssemblyName System.Windows.Forms; $picker = New-Object System.Windows.Forms.FolderBrowserDialog; $picker.Description = 'Select a Postora project'; if ($picker.ShowDialog() -eq 'OK') { Write-Output $picker.SelectedPath }; $picker.Dispose()", timeout_ms: 60000 });
       if (result.exitCode !== 0) throw new Error(result.output || 'Folder selection failed.');
       return result.output.trim();
@@ -234,12 +237,15 @@ async function handleRequest(msg, sender) {
     case 'auth-status':
       return authStatusFor(requestedProvider(msg));
     case 'backup-export':
+      await Promise.all([...runners.values()].map((runner) => runner.save()));
       return exportBackup();
     case 'backup-import': {
       // A sign-in still running would poll, keep its tab and overwrite the
       // record the file brings.
       for (const provider of Object.keys(accountsIn(msg.data))) await cancelAccountLogin(provider);
-      return importBackup(msg.data);
+      const restored = await importBackup(msg.data);
+      broadcastSessions();
+      return restored;
     }
     case 'auth-start':
       return startAccountLogin(requestedProvider(msg), { post: postToPanels });
@@ -289,6 +295,13 @@ async function handleRequest(msg, sender) {
       if (route === 'grok') return withKeepAlive(() => listGrokModels());
       if (route === 'gemini') return withKeepAlive(() => listGeminiModels(settings.gemini));
       if (route === 'kimi') return withKeepAlive(() => listKimiModels(settings.kimi));
+      const accountProvider = planAccountProvider(settings);
+      if (accountProvider) {
+        await getValidCredential(accountProvider, { signal: AbortSignal.timeout(30000) });
+        // These account catalogs are fixed by the supported coding product;
+        // account tokens must never be sent to a user-editable endpoint.
+        return [{ id: accountProvider === 'minimax' ? 'MiniMax-M3.1-Flash' : 'glm-5.3', efforts: accountProvider === 'minimax' ? ['low', 'medium', 'high', 'xhigh', 'max'] : ['on', 'off'] }];
+      }
       const preset = settings.compatible.preset;
       let list = [];
       try {
@@ -317,9 +330,13 @@ async function handleRequest(msg, sender) {
     case 'drive-after-sign-in':
       return afterGoogleSignIn();
     case 'drive-backup-now':
+      await Promise.all([...runners.values()].map((runner) => runner.save()));
       return backUpToDrive({ force: true });
-    case 'drive-restore':
-      return restoreFromDrive();
+    case 'drive-restore': {
+      const restored = await restoreFromDrive();
+      broadcastSessions();
+      return restored;
+    }
     case 'tab-session':
       return sessionForTab(await chrome.tabs.get(msg.tabId));
     case 'bind-tab':

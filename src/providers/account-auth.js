@@ -7,10 +7,11 @@
 import { anthropicOAuth, kimiCodingOAuth, openaiCodexOAuth, xaiOAuth } from '../vendor/pi-oauth.js';
 import { chatgptIdentity } from '../lib/jwt.js';
 import { legacyCredential } from '../lib/credentials.js';
-import { ACCOUNT_PROVIDERS } from '../lib/settings.js';
+import { ACCOUNT_PROVIDERS, KIMI_OAUTH_URL } from '../lib/settings.js';
+import { minimaxOAuth, zaiOAuth } from './plan-oauth.js';
 
 /** The pi-ai OAuth flow each account provider signs in with. */
-const ACCOUNT_FLOWS = { chatgpt: 'openaiCodexOAuth', claude: 'anthropicOAuth', grok: 'xaiOAuth', kimi: 'kimiCodingOAuth' };
+const ACCOUNT_FLOWS = { chatgpt: 'openaiCodexOAuth', claude: 'anthropicOAuth', grok: 'xaiOAuth', kimi: 'kimiCodingOAuth', minimax: 'minimaxOAuth', zai: 'zaiOAuth' };
 
 /** The storage key of every provider's credential record. */
 export const ACCOUNT_STORAGE_KEYS = ACCOUNT_PROVIDERS.map((provider) => `accountAuth.${provider}`);
@@ -52,7 +53,7 @@ export class AccountAuthError extends Error {
   }
 }
 
-let flows = { anthropicOAuth, kimiCodingOAuth, openaiCodexOAuth, xaiOAuth };
+let flows = { anthropicOAuth, kimiCodingOAuth, openaiCodexOAuth, xaiOAuth, minimaxOAuth, zaiOAuth };
 
 /** Replaces OAuth flows, for tests. */
 export function setAccountFlows(replacement) {
@@ -91,7 +92,12 @@ function enqueue(provider, task) {
 async function readRecord(provider) {
   const key = `accountAuth.${provider}`;
   const stored = await chrome.storage.local.get(key);
-  return stored[key] ?? null;
+  const record = stored[key] ?? null;
+  // Old .com/unscoped credentials remain stored, but may not cross into .ai.
+  if (provider === 'kimi' && record?.credential && record.credential.kimiAuthority !== KIMI_OAUTH_URL) {
+    return { ...record, credential: null };
+  }
+  return record;
 }
 
 async function writeRecord(provider, generation, credential) {
@@ -205,6 +211,7 @@ async function refreshCredential(provider, record, { signal }) {
   let refreshed;
   try {
     refreshed = await flow.refresh(record.credential, refreshSignal(signal));
+    if (provider === 'kimi') refreshed = { ...refreshed, kimiAuthority: record.credential.kimiAuthority };
   } catch (error) {
     throw await refreshError(provider, record, error);
   }
@@ -251,6 +258,7 @@ async function refreshError(provider, record, error) {
 
 /** True when pi-ai's error is a confirmed OAuth rejection. */
 function isDeadToken(error, provider) {
+  if (['minimax', 'zai'].includes(provider) && [401, 403].includes(error?.status)) return true;
   const text = String(error?.message ?? error ?? '');
   // pi's Kimi adapter emits this fixed prefix only on confirmed 401/403 or
   // invalid_grant rejection. A generic 403 from inference is not a dead token.
@@ -333,6 +341,7 @@ export async function signOut(provider) {
  */
 export async function storeCredential(provider, credential, { attemptId = null } = {}) {
   knownProvider(provider);
+  if (provider === 'kimi' && attemptId) credential = { ...credential, kimiAuthority: KIMI_OAUTH_URL };
   if (!attemptId) cancelAccountAttempt(provider);
   await ensureMigrated(provider);
   return enqueue(provider, async () => {

@@ -21,15 +21,25 @@ const SUMMARY_PROMPT = 'You have reached the step limit. Stop using tools and wr
  * `turnSignal(signal)` is the model request's signal, aborted to deliver a message
  * at once (the interrupted turn does not count as a step).
  */
-export async function runAgent({ session, execute, task, images = [], maxSteps, signal, emit, fastLayer = null, steering = null, getAccessState = null }) {
+export async function runAgent({ session, execute, task, images = [], maxSteps, signal, emit, fastLayer = null, steering = null, getAccessState = null, compaction = null }) {
+  // A conversation that was already too long when the task came is compacted
+  // before the task is added: the task is never part of what gets summarized.
+  if (compaction) await compaction.beforeTurn({ session, inputTokens: 0, signal, task, images, start: true });
   session.addUserMessage(task, images);
   let fast = fastLayer;
   let fastActions = [];
   let llmHasSeenPage = false;
   let accessRevision = getAccessState?.()?.revision;
+  let inputTokens = 0; // what the last model turn read: the size of the conversation
 
   for (let step = 1; step <= maxSteps; step += 1) {
     throwIfAborted(signal);
+    // Between turns every tool call has its result, so the conversation can be
+    // replaced by a summary here. `compaction` decides whether it is due (a
+    // /compact request, or the size) and does it; it says whether it did. This
+    // comes before the new messages below are added, so they reach the model
+    // as they were written, after the summary.
+    if (compaction && await compaction.beforeTurn({ session, inputTokens, signal, task, images })) inputTokens = 0;
     const access = getAccessState?.();
     if (access && access.revision !== accessRevision) {
       accessRevision = access.revision;
@@ -67,7 +77,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
     }
 
     const turnId = `turn-${step}`;
-    emit({ type: 'thinking', step, turnId });
+    emit({ type: 'thinking', step, turnId, model: session.model ?? '' });
     let turn;
     try {
       turn = await timedTurn(session, { signal: steering ? steering.turnSignal(signal) : signal, onEvent: emit }, turnId, emit);
@@ -80,6 +90,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
       continue;
     }
     if (turn.text) emit({ type: 'assistant-text', text: turn.text });
+    inputTokens = normalizeUsage(turn.usage)?.input ?? inputTokens;
 
     // A message arrived while the model wrote its answer: it reads that first.
     if (!turn.toolCalls.length && steering?.waiting()) continue;
@@ -136,7 +147,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
 
   const unseen = fastActions.length ? `\n\nSteps executed by the fast layer you have not seen yet:\n${fastActions.join('\n')}` : '';
   session.addUserMessage(SUMMARY_PROMPT + unseen);
-  emit({ type: 'thinking', step: maxSteps + 1, turnId: 'summary' });
+  emit({ type: 'thinking', step: maxSteps + 1, turnId: 'summary', model: session.model ?? '' });
   const summary = await timedTurn(session, { signal, onEvent: emit, toolChoice: 'none' }, 'summary', emit);
   emit({ type: 'final', report: summary.text || 'Step limit reached before the task was finished.', success: false });
 }

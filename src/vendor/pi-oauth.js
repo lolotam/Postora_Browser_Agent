@@ -1129,7 +1129,7 @@ function sleep(ms, signal) {
 
 // node_modules/@earendil-works/pi-ai/dist/auth/oauth/kimi-coding.js
 var CLIENT_ID3 = "17e5f671-d194-4dfb-9706-5516cb48c098";
-var DEFAULT_OAUTH_HOST = "https://auth.kimi.com";
+var DEFAULT_OAUTH_HOST = "https://auth.kimi.ai";
 var DEVICE_CODE_TIMEOUT_SECONDS2 = 15 * 60;
 var DEFAULT_POLL_INTERVAL_SECONDS2 = 5;
 var REQUEST_TIMEOUT_MS = 30 * 1e3;

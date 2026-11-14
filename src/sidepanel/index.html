@@ -129,6 +129,7 @@
          guards, while the chat is the active screen. The same single region
          re-docks beside the voice input and returns above settings when the
          user is configuring, so one authority is always on the screen. -->
+    <div id="resumeRow" class="resume-row" hidden><button type="button" id="resumeBtn" class="ghost" data-i18n="session.resume"></button></div>
     <div id="approvalsChatDock" class="approvals-dock"></div>
     <form id="composer">
       <ul id="pending" class="pending" hidden></ul>
@@ -250,7 +251,13 @@
        page's header (back, title); the forms keep their fields while the user
        moves between pages, so an unsaved edit survives navigation. -->
   <section id="settingsView" hidden>
+    <p class="settings-version muted"><span data-i18n="settings.version"></span> <bdi id="extensionVersion" dir="ltr"></bdi></p>
     <p class="error" id="settingsError" hidden></p>
+    <div id="workerUpdateNotice" class="inset" hidden>
+      <p data-i18n="connection.workerOutdated"></p>
+      <p class="muted" data-i18n="connection.reloadWarning"></p>
+      <button type="button" id="reloadExtension" data-i18n="connection.reload"></button>
+    </div>
 
     <div class="settings-page" id="settingsIndex">
       <div class="search-field">
@@ -431,19 +438,41 @@
             <small class="error" data-auth="message" hidden></small>
           </div>
         </div>
+        <div class="inset" data-field="minimaxOAuthAccount" data-provider="minimax" hidden>
+          <p class="muted" data-i18n="connection.minimaxOAuthHelp"></p>
+          <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.minimax"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+        </div>
+        <div class="inset" data-field="zaiOAuthAccount" data-provider="zai" hidden>
+          <p class="muted" data-i18n="connection.zaiOAuthHelp"></p>
+          <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.zai"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+        </div>
         <div id="compatibleSection" class="fields" data-field="compatibleSection" hidden>
           <div data-field="openrouterLogin" hidden><p class="muted" data-i18n="connection.openrouterHelp"></p><button type="button" data-field="openrouterSignIn" data-i18n="connection.signIn"></button><small role="status" data-field="openrouterStatus"></small></div>
-          <p class="muted" data-i18n="connection.planHelp"></p>
-          <label class="field">
+          <p class="muted" data-field="planHelp" data-i18n="connection.planHelp"></p>
+          <a data-field="planAccount" href="https://platform.minimax.io/subscribe/coding-plan" target="_blank" rel="noopener noreferrer" data-i18n="connection.minimaxAccount" hidden></a>
+          <a data-field="zaiAccount" href="https://z.ai/manage-apikey/apikey-list" target="_blank" rel="noopener noreferrer" data-i18n="connection.zaiAccount" hidden></a>
+          <label class="field" data-field="presetField">
             <span data-i18n="compat.preset"></span>
             <select id="preset" data-field="preset"></select>
           </label>
-          <label class="field">
+          <label class="field" data-field="baseUrlField">
             <span>Base URL</span>
             <input id="baseUrl" data-field="baseUrl" dir="ltr" />
           </label>
-          <label class="field">
-            <span>API Key</span>
+          <label class="field" data-field="apiKeyField">
+            <span data-field="apiKeyLabel">API Key</span>
             <input id="apiKey" data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
         </div>
@@ -480,13 +509,13 @@
             <option value="compatible" data-i18n="settings.provider.compatible"></option>
           </select>
         </label>
-        <p class="muted" data-field="accountNote" data-i18n="fallback.sameLogin" hidden></p>
-        <div class="inset" data-field="fallbackAuth" data-provider="" hidden>
+
+        <div class="inset" data-field="chatgptSection" data-provider="chatgpt">
           <div class="row between">
             <span data-auth="status"></span>
             <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
           </div>
-          <button type="button" class="primary" data-auth="login"></button>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.chatgpt"></button>
           <div class="device" data-auth="device" hidden>
             <p data-i18n="auth.deviceHelp"></p>
             <code data-auth="deviceCode" dir="ltr"></code>
@@ -495,14 +524,29 @@
               <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
             </div>
           </div>
+          <small class="error" data-auth="message" hidden></small>
+          <details>
+            <summary data-i18n="auth.importSummary"></summary>
+            <p class="muted"><span data-i18n="auth.importRun"></span> <code dir="ltr">codex login</code> <span data-i18n="auth.importThen"></span> <code dir="ltr">~/.codex/auth.json</code> <span data-i18n="auth.importHere"></span></p>
+            <textarea id="backupAuthJson" rows="4" dir="ltr" placeholder='{"tokens": {...}}'></textarea>
+            <button type="button" id="backupImportBtn" data-i18n="auth.import"></button>
+          </details>
+        </div>
+
+        <div class="inset" data-field="claudeSection" data-provider="claude" hidden>
+          <div data-field="claudeAccount">
+          <div class="row between">
+            <span data-auth="status"></span>
+            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+          </div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.claude"></button>
           <div class="device" data-auth="code" hidden>
             <p data-i18n="auth.codeHelp"></p>
             <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
             <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
           </div>
           <small class="error" data-auth="message" hidden></small>
-        </div>
-        <div class="inset" data-field="claudeSection" hidden>
+          </div>
           <label class="field">
             <span data-i18n="claude.auth"></span>
             <select data-field="claudeAuth">
@@ -515,22 +559,84 @@
             <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
         </div>
+
+        <div class="inset" data-field="grokSection" data-provider="grok" hidden>
+          <div class="row between">
+            <span data-auth="status"></span>
+            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
+          </div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.grok"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p>
+            <code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between">
+              <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
+              <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
+            </div>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+        </div>
+
         <div class="fields" data-field="geminiSection" hidden>
           <label class="field"><span data-i18n="gemini.apiKey"></span><input data-field="geminiApiKey" type="password" dir="ltr" autocomplete="off" /></label>
-          <p class="muted" data-i18n="gemini.keyHelp"></p>
+          <p class="muted"><span data-i18n="gemini.keyHelp"></span> <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" data-i18n="provider.createKey"></a></p>
         </div>
         <div class="fields" data-field="kimiSection" hidden>
           <label class="field"><span data-i18n="kimi.auth"></span><select data-field="kimiAuth"><option value="apiKey" data-i18n="kimi.authApiKey"></option><option value="account" data-i18n="kimi.authAccount"></option></select></label>
-          <div data-field="kimiKeyField"><label class="field"><span data-i18n="kimi.apiKey"></span><input data-field="kimiApiKey" type="password" dir="ltr" autocomplete="off" /></label><p class="muted" data-i18n="kimi.apiHelp"></p></div>
-          <p class="muted" data-field="kimiAccount" data-i18n="kimi.accountHelp" hidden></p>
+          <div data-field="kimiKeyField">
+            <label class="field"><span data-i18n="kimi.apiKey"></span><input data-field="kimiApiKey" type="password" dir="ltr" autocomplete="off" /></label>
+            <p class="muted"><span data-i18n="kimi.apiHelp"></span> <a href="https://platform.kimi.ai/console/api-keys" target="_blank" rel="noopener" data-i18n="provider.createKey"></a></p>
+          </div>
+          <div class="inset" data-field="kimiAccount" data-provider="kimi" hidden>
+            <p class="muted" data-i18n="kimi.accountHelp"></p>
+            <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
+            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.kimi"></button>
+            <div class="device" data-auth="device" hidden>
+              <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
+              <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
+            </div>
+            <small class="error" data-auth="message" hidden></small>
+          </div>
         </div>
-        <div class="fields" data-field="compatibleSection">
+        <div class="inset" data-field="minimaxOAuthAccount" data-provider="minimax" hidden>
+          <p class="muted" data-i18n="connection.minimaxOAuthHelp"></p>
+          <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.minimax"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+        </div>
+        <div class="inset" data-field="zaiOAuthAccount" data-provider="zai" hidden>
+          <p class="muted" data-i18n="connection.zaiOAuthHelp"></p>
+          <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
+          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.zai"></button>
+          <div class="device" data-auth="device" hidden>
+            <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
+            <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
+          </div>
+          <small class="error" data-auth="message" hidden></small>
+        </div>
+        <div class="fields" data-field="compatibleSection" hidden>
           <div data-field="openrouterLogin" hidden><p class="muted" data-i18n="connection.openrouterHelp"></p><button type="button" data-field="openrouterSignIn" data-i18n="connection.signIn"></button><small role="status" data-field="openrouterStatus"></small></div>
-          <p class="muted" data-i18n="connection.planHelp"></p>
-          <label class="field"><span data-i18n="compat.preset"></span><select data-field="preset"></select></label>
-          <label class="field"><span>Base URL</span><input data-field="baseUrl" dir="ltr" /></label>
-          <label class="field"><span>API Key</span><input data-field="apiKey" type="password" dir="ltr" autocomplete="off" /></label>
+          <p class="muted" data-field="planHelp" data-i18n="connection.planHelp"></p>
+          <a data-field="planAccount" href="https://platform.minimax.io/subscribe/coding-plan" target="_blank" rel="noopener noreferrer" data-i18n="connection.minimaxAccount" hidden></a>
+          <a data-field="zaiAccount" href="https://z.ai/manage-apikey/apikey-list" target="_blank" rel="noopener noreferrer" data-i18n="connection.zaiAccount" hidden></a>
+          <label class="field" data-field="presetField">
+            <span data-i18n="compat.preset"></span>
+            <select data-field="preset"></select>
+          </label>
+          <label class="field" data-field="baseUrlField">
+            <span>Base URL</span>
+            <input data-field="baseUrl" dir="ltr" />
+          </label>
+          <label class="field" data-field="apiKeyField">
+            <span data-field="apiKeyLabel">API Key</span>
+            <input data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
+          </label>
         </div>
+
         <div class="field model-field">
           <span data-i18n="model.label"></span>
           <button type="button" class="model-button" id="modelBtnBackup">
@@ -540,7 +646,10 @@
           <input data-field="modelInput" type="text" dir="ltr" hidden />
           <small class="muted" id="modelBackupInfo" data-field="modelInfo"></small>
         </div>
-        <label class="field"><span data-i18n="effort.label"></span><select data-field="effort"></select></label>
+        <label class="field">
+          <span data-i18n="effort.label"></span>
+          <select data-field="effort"></select>
+        </label>
         <div class="row"><button type="button" class="test-btn" data-field="test" data-i18n="provider.test"></button><small class="muted test-result" data-field="testResult"></small></div>
       </div>
     </div>
@@ -574,7 +683,7 @@
             </button>
             <input id="fastModel" type="text" dir="ltr" hidden />
           </div>
-          <label class="field"><span>Base URL</span><input id="fastBaseUrl" dir="ltr" /></label>
+          <label class="field" data-field="baseUrlField"><span>Base URL</span><input id="fastBaseUrl" dir="ltr" /></label>
           <div class="row">
             <label class="field grow"><span data-i18n="fast.minProb"></span><input id="fastMinProb" type="number" min="0.3" max="0.99" step="0.05" /></label>
             <label class="field grow"><span data-i18n="fast.riskyMax"></span><input id="fastRiskyMax" type="number" min="0.05" max="0.9" step="0.05" /></label>
@@ -658,6 +767,12 @@
             <option value="queue" data-i18n="steer.queue"></option>
           </select>
         </label>
+        <label class="check"><input type="checkbox" id="autoCompact" /> <span data-i18n="settings.autoCompact"></span></label>
+        <label class="field" id="autoCompactField">
+          <span data-i18n="settings.autoCompactTokens"></span>
+          <input id="autoCompactTokens" type="number" min="8000" max="1000000" step="1000" dir="ltr" />
+        </label>
+        <p class="muted" data-i18n="settings.autoCompactHint"></p>
       </div>
     </div>
 

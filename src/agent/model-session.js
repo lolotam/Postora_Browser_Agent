@@ -12,6 +12,7 @@ import { ChatgptSession } from '../providers/chatgpt.js';
 import { CompatibleSession } from '../providers/openai-compatible.js';
 import { GrokAccountSession } from '../providers/responses.js';
 import { KimiSession } from '../providers/kimi.js';
+import { planAccountProvider, PlanAccountSession } from '../providers/plan-account.js';
 
 export { createFastAsk };
 
@@ -51,6 +52,8 @@ function createProviderSession(slot, settings, conversationId, notify = null, ac
   const c = slot.compatible;
   if (!c.model) throw new Error('Choose a model in settings first.');
   const preset = COMPATIBLE_PRESETS[c.preset] ?? COMPATIBLE_PRESETS.custom;
+  const accountProvider = planAccountProvider(slot);
+  if (accountProvider) return new PlanAccountSession({ ...c, accountProvider, thinkingStyle: accountProvider === 'minimax' ? 'minimax' : 'glm', systemPrompt, tools, sessionId: conversationId, notify });
   return new CompatibleSession({ ...c, thinkingStyle: preset.thinkingStyle, systemPrompt, tools, sessionId: conversationId, notify, textToolCalls: Boolean(preset.textToolCalls), usage: Boolean(preset.usage) });
 }
 
@@ -98,17 +101,20 @@ function slotLabel(slot) {
  * model. Without a snapshot the prompt says Ask first, the mode a session
  * starts in.
  */
-export function createModelSession(settings, { notify, seed = null, conversationId, notebook = null, accessState = null } = {}) {
+export function createModelSession(settings, { notify, seed = null, conversationId, notebook = null, accessState = null, history = '' } = {}) {
   const primary = createProviderSession(settings, settings, conversationId, notify, accessState);
+  if (history) primary.addUserMessage(history);
   if (seed?.log?.task) primary.addUserMessage(handoffMessage(seed.log, seed.reason, notebook));
   const backupEnabled = settings.fallback.enabled;
   return new FallbackSession({
     primary,
+    createPrimary: () => createProviderSession(settings, settings, conversationId, notify, accessState),
     createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify, accessState) : null,
     labels: { primary: slotLabel(settings), backup: backupEnabled ? slotLabel(settings.fallback) : '' },
     notify,
     log: seed?.log ?? emptyLog(),
     notebook,
+    history,
   });
 }
 
@@ -122,5 +128,5 @@ export function createModelSession(settings, { notify, seed = null, conversation
  * can never be anything else.
  */
 export function modelSessionKey(settings, { accessState } = {}) {
-  return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.gemini, settings.kimi, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage, normalizeMode(accessState?.mode)]);
+  return JSON.stringify([settings.provider, settings.connectionRoute, settings.chatgpt, settings.claude, settings.grok, settings.gemini, settings.kimi, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage, normalizeMode(accessState?.mode)]);
 }

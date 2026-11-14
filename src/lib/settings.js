@@ -4,16 +4,17 @@ import { keyGroup, shareKeys } from './keys.js';
 import { STORE_BUILD } from './build.js';
 
 /** The providers that sign in with an account, in the order they are listed. */
-export const ACCOUNT_PROVIDERS = ['chatgpt', 'claude', 'grok', 'kimi'];
+export const ACCOUNT_PROVIDERS = ['chatgpt', 'claude', 'grok', 'kimi', 'minimax', 'zai'];
 
 /** The name each account provider is shown under. */
-export const PROVIDER_LABELS = { chatgpt: 'ChatGPT', claude: 'Claude', grok: 'Grok', gemini: 'Google Gemini', kimi: 'Kimi' };
+export const PROVIDER_LABELS = { chatgpt: 'ChatGPT', claude: 'Claude', grok: 'Grok', gemini: 'Google Gemini', kimi: 'Kimi', minimax: 'MiniMax', zai: 'Z.ai' };
 
 // Fixed first-party endpoints. Account tokens never go to the separately billed
 // Moonshot API, nor are .com account tokens silently sent to another region.
 export const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 export const MOONSHOT_API_URL = 'https://api.moonshot.ai/v1';
-export const KIMI_CODE_URL = 'https://api.kimi.com/coding/v1';
+export const KIMI_CODE_URL = 'https://api.kimi.ai/coding/v1';
+export const KIMI_OAUTH_URL = 'https://auth.kimi.ai';
 
 /** K3 effort levels are not a valid parameter for the older Moonshot K2 APIs. */
 export function kimiEfforts(model, auth = 'apiKey') {
@@ -138,6 +139,9 @@ export const DEFAULT_SETTINGS = {
   notify: false, // desktop notifications; also needs the optional permission
   // A message sent while a task runs: 'next-step', 'interrupt' or 'queue' (see SessionRunner.steer).
   steerMode: 'next-step',
+  // Shorten the conversation by itself once a turn read this many input tokens (see sessions/compaction.js).
+  // The /compact command always works, whatever this says.
+  autoCompact: { enabled: true, thresholdTokens: 80000 },
   uiLanguage: 'auto',
   // Voice control execution engine: 'postora' or 'fast_only'. The voice
   // screen's own preferences (hands-free, spoken replies) live in their own
@@ -213,6 +217,18 @@ export async function saveSettings(settings) {
   return merged;
 }
 
+const AUTO_COMPACT_LIMITS = { min: 8000, max: 1000000 };
+
+/** On or off, and a threshold inside sane limits: a typo must not compact every turn or never. */
+function normalizeAutoCompact(stored) {
+  const base = DEFAULT_SETTINGS.autoCompact;
+  const tokens = Math.round(Number(stored?.thresholdTokens));
+  return {
+    enabled: typeof stored?.enabled === 'boolean' ? stored.enabled : base.enabled,
+    thresholdTokens: Number.isFinite(tokens) && tokens > 0 ? Math.min(AUTO_COMPACT_LIMITS.max, Math.max(AUTO_COMPACT_LIMITS.min, tokens)) : base.thresholdTokens,
+  };
+}
+
 export function mergeSettings(stored = {}) {
   return shareKeys({
     ...DEFAULT_SETTINGS,
@@ -229,6 +245,7 @@ export function mergeSettings(stored = {}) {
       fallback: { ...DEFAULT_SETTINGS.fast.fallback, ...(stored.fast?.fallback ?? {}) },
     },
     replyLanguage: { ...DEFAULT_SETTINGS.replyLanguage, ...(stored.replyLanguage ?? {}) },
+    autoCompact: normalizeAutoCompact(stored.autoCompact),
     transcription: {
       ...DEFAULT_SETTINGS.transcription, ...(stored.transcription ?? {}),
       mode: stored.transcription?.mode ?? (stored.transcription ? 'auto' : 'browser'),

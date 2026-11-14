@@ -33,6 +33,7 @@ export const TOOL_KINDS = {
   close_tab: 'reader',
   // @store-strip-start
   project_list: 'reader',
+  project_context: 'reader',
   project_read: 'reader',
   project_write: 'boundary',
   project_run: 'boundary',

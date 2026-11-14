@@ -7,6 +7,7 @@
 
 import { MESSAGES } from '../sidepanel/messages.js';
 import { resolveLanguage } from '../sidepanel/i18n.js';
+import { openTabPanel } from './tab-panels.js';
 
 // One storage key per notification: two sessions notifying at once never overwrite
 // each other's route, as a shared map read and written back could.
@@ -63,7 +64,7 @@ export async function openFromNotification(id, { sessionExists, bindTab }) {
   await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
   try {
     // Chrome may refuse outside a user gesture; the tab is in front either way.
-    await chrome.sidePanel.open({ tabId: tab.id });
+    await openTabPanel(tab.id);
     return 'opened';
   } catch {
     return 'focused';

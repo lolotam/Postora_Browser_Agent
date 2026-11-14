@@ -40,8 +40,8 @@ export async function loadSession(id) {
   return { meta, ...body };
 }
 
-export async function saveSession(id, { transcript, log, groupId, notebook = null, pending = [], project = null }) {
-  await chrome.storage.local.set({ [bodyKey(id)]: { transcript, log, groupId, notebook, pending, project } });
+export async function saveSession(id, { transcript, log, groupId, notebook = null, pending = [], project = null, continuation = null }) {
+  await chrome.storage.local.set({ [bodyKey(id)]: { transcript, log, groupId, notebook, pending, project, continuation } });
   await updateIndex((index) => index.map((s) => (s.id === id ? { ...s, groupId, updatedAt: Date.now() } : s)));
 }
 
@@ -60,4 +60,59 @@ export async function titleFromFirstTask(id, task) {
 export async function deleteSession(id) {
   await chrome.storage.local.remove(bodyKey(id));
   await updateIndex((index) => index.filter((s) => s.id !== id));
+}
+
+/** A portable archive; browser tab/group IDs are not meaningful after reinstall. */
+export async function exportSessions() {
+  await indexQueue;
+  const index = await listSessions();
+  const bodies = await chrome.storage.local.get(index.map((meta) => bodyKey(meta.id)));
+  return index.map((meta) => {
+    const body = bodies[bodyKey(meta.id)];
+    if (!body) throw new Error('A session is missing its history. Backup was not created.');
+    return { meta: { ...meta, groupId: null }, body: { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null } };
+  });
+}
+
+/** Validate the entire archive before any settings or session are changed. */
+export function validateSessions(archive) {
+  if (!Array.isArray(archive)) throw new Error('This backup is damaged: its sessions cannot be read.');
+  const ids = new Set();
+  for (const entry of archive) {
+    const { meta, body } = entry ?? {};
+    if (!meta || !/^[a-zA-Z0-9_-]{1,128}$/.test(meta.id) || ids.has(meta.id)
+      || typeof meta.title !== 'string' || !Number.isFinite(meta.createdAt) || !Number.isFinite(meta.updatedAt)
+      || !body || !Array.isArray(body.transcript) || body.transcript.some((e) => !e || typeof e.type !== 'string')
+      || (body.log != null && (typeof body.log !== 'object' || Array.isArray(body.log)))
+      || (body.continuation != null && (typeof body.continuation.task !== 'string' || !body.continuation.task.trim()))) {
+      throw new Error('This backup is damaged: a session cannot be read.');
+    }
+    ids.add(meta.id);
+  }
+  return structuredClone(archive);
+}
+
+/** Merge safely. Existing histories survive a collision with an imported ID. */
+export async function importSessions(archive) {
+  const entries = validateSessions(archive);
+  await indexQueue;
+  const existing = await listSessions();
+  const used = new Set(existing.map((meta) => meta.id));
+  const writes = {};
+  const added = [];
+  for (const { meta, body } of entries) {
+    const portable = { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
+    if (used.has(meta.id)) {
+      const current = await loadSession(meta.id);
+      const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.project, value?.continuation ? { ...value.continuation, tabId: null } : null];
+      if (JSON.stringify(historyFields(current)) === JSON.stringify(historyFields(portable))) continue;
+    }
+    const id = used.has(meta.id) ? crypto.randomUUID() : meta.id;
+    used.add(id);
+    added.push({ ...meta, id, groupId: null });
+    writes[bodyKey(id)] = portable;
+  }
+  await chrome.storage.local.set(writes);
+  await updateIndex((index) => [...index, ...added]);
+  return added.length;
 }

@@ -42,6 +42,6 @@ test('browser Kimi OAuth pins the authority and refuses token-bearing redirects'
   assert.ok(!code.includes('KIMI_CODE_OAUTH_HOST'));
   assert.ok(!code.includes('KIMI_OAUTH_HOST'));
   const kimi = code.slice(code.indexOf('// node_modules/@earendil-works/pi-ai/dist/auth/oauth/kimi-coding.js'));
-  assert.ok(kimi.includes('https://auth.kimi.com'));
+  assert.ok(kimi.includes('https://auth.kimi.ai'));
   assert.equal((kimi.match(/redirect: "error"/g) ?? []).length, 3);
 });

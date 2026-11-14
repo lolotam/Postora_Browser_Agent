@@ -6,6 +6,25 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { projectOperation, projectPath } from '../native/project.mjs';
 
+test('initial project context descends into folders, reads text and omits common secrets', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'postora-context-'));
+  try {
+    await fs.mkdir(path.join(root, 'nested', 'deep'), { recursive: true });
+    await fs.writeFile(path.join(root, 'README.md'), 'ROOT-CONTEXT');
+    await fs.writeFile(path.join(root, 'nested', 'deep', 'prompt.md'), 'NESTED-CONTEXT');
+    await fs.writeFile(path.join(root, 'auth.json'), 'SYNTHETIC-SECRET');
+    const result = await projectOperation({ type: 'project-context', root });
+    assert.ok(result.paths.some((entry) => entry.path === 'nested/deep/prompt.md'));
+    assert.ok(result.documents.some((entry) => entry.text === 'NESTED-CONTEXT'));
+    assert.ok(result.documents.some((entry) => entry.text === 'ROOT-CONTEXT'));
+    assert.equal(JSON.stringify(result).includes('SYNTHETIC-SECRET'), false);
+    await fs.writeFile(path.join(root, 'large.md'), 'x'.repeat(9000));
+    const bounded = await projectOperation({ type: 'project-context', root });
+    assert.equal(bounded.documents.find((doc) => doc.path === 'large.md').truncated, true);
+    assert.ok(bounded.characters <= 48000);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('concurrent native processes cannot both replace the same file revision', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'postora-write-race-'));
   try {

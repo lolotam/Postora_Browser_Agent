@@ -157,6 +157,25 @@ test('a navigation preview identifies its destination without disclosing URL sec
   }
 });
 
+test('a tab-specific panel can answer Ask first and activate Full access', async () => {
+  const runner = await newRunner('Tab panel permissions');
+  const panel = attachPanel(runner, { sender: { id: EXTENSION_ID, url: `${PANEL_URL}?tabId=7` } });
+  try {
+    assert.equal(runner.trustedPorts.has(panel.port), true);
+    const operation = { action: 'navigate', args: { url: 'https://example.test/' }, tabId: 7, target: checkoutTarget() };
+    const pending = runner.access.authorize(operation);
+    const shown = panel.requests().at(-1).request;
+    assert.equal(panel.settled().length, 0, 'the live request must not be withdrawn as no-panel');
+    panel.send(approval(runner, shown));
+    assert.ok((await pending).permit);
+    panel.send(elevation(runner));
+    assert.equal(runner.access.mode, 'full-access');
+    const before = panel.requests().length;
+    assert.ok((await runner.access.authorize(operation)).permit);
+    assert.equal(panel.requests().length, before, 'Full access does not ask again');
+  } finally { runner.dispose(); }
+});
+
 /** A browser that behaves like the controller, for one page and one button. */
 function fakeBrowser() {
   const calls = [];

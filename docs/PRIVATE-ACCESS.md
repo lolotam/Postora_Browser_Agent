@@ -50,7 +50,7 @@ the user may remove that specific lock and retry after reading the file again.
 Editors outside Postora do not participate in this lock protocol.
 
 This is a local, unpacked extension. Nothing is uploaded to the Chrome Web Store.
-Run `npm run package:private` to create `dist/postora-private-v0.4.2.zip`.
+Run `npm run package:private` to create `dist/postora-private-v0.4.4.zip`.
 Extract it into a permanent directory and load that directory with **Load unpacked**
 in `chrome://extensions`. When updating an existing installation, use **Reload**;
 removing it deletes its stored settings and credentials.
@@ -157,6 +157,24 @@ Re-run `node native/install.mjs` when updating from 0.3.0, then reload the exten
 
 ## Verification (2026-11-05)
 
+Version 0.4.4 uses Kimi's international service: `auth.kimi.ai` for device login
+and token refresh, `api.kimi.ai/coding/v1` for inference. The browser bundle and
+verification-URL allowlist are updated together. Old `.com` or unscoped stored
+credentials are retained but cannot be sent to the international service; users
+must sign in again. New credentials include their authority, preserved in backups.
+Provider forms normalize legacy settings and disable routes missing from an old
+background catalog, avoiding crashes while the full extension is updated.
+
+Version 0.4.3 adds an explicit recovery notice for an older background worker
+rejecting OpenRouter/Kimi routes. Reload is a user action and is blocked during
+a running task; save draft settings first. The archive must be extracted as a
+complete build before reloading the extension. Kimi's device-code flow returns
+focus to the original tab after successful authorization and closes only the
+authorization tab it opened, provided that tab is still on a trusted Kimi URL.
+OpenRouter uses its PKCE redirect; MiniMax exposes its account/plan-key page,
+not an unsupported OAuth flow. Authentication transport tests use synthetic
+responses and do not claim that a live subscription was authenticated.
+
 Version 0.4.2 renders model turns as compact borderless text rows, collapsed by
 default, with keyboard-accessible expansion. Tool rows expand independently to
 show their original arguments and result summary; hidden details remain in the
@@ -179,7 +197,7 @@ into separate commands. This changes capture latency, not model inference speed.
 Deepgram configuration does not supply a text-to-speech voice; Arabic playback
 still requires an Arabic voice visible to the browser.
 
-- `npm test`: 1078 passing tests.
+- `npm test`: 1082 passing tests.
 - `node test/e2e/providers-voice.mjs` with `POSTORA_TEST_DOWNLOAD=1`:
   grouped connection routes, account/API switching, independent speech keys,
   real checksum-verified download, native transport and local inference passed.
@@ -198,3 +216,87 @@ still requires an Arabic voice visible to the browser.
   its hash, ran a native command, and transcribed through a mock multilingual
   endpoint. Composer geometry passed at 320/360/400 px in both languages/themes.
 - Private and store packaging and `git diff --check`: passed. No publishing.
+
+### Private version 0.4.7: account routes and backup parity
+
+The main and backup provider forms now expose the same account/API/plan routes,
+model controls, and sign-in UI. Account state is shared between the two slots.
+Older partial settings (including absent Claude/Kimi objects) are normalized
+before either form reads authentication fields.
+
+MiniMax browser sign-in uses the device authorization protocol published by
+the [official MiniMax CLI](https://github.com/MiniMax-AI/cli/blob/main/src/auth/oauth.ts).
+Z.ai uses the [official ZCode CLI authorization protocol](https://github.com/zai-org/ZCode/blob/main/apps/zcode-cli/packages/adapters/src/auth/cli-oauth.ts),
+then exchanges the account token for a short-lived project token. It creates
+or reuses a `postora-coding-plan` key under the account's default project.
+Endpoints are fixed, redirects on credential requests are rejected, and
+manual API keys are not used by either account route. MiniMax refreshes its
+OAuth token; Z.ai renews project tokens while the account authorization lasts.
+Expired Z.ai account authorization requires another browser sign-in.
+
+Both real services accepted authorization initiation during validation.
+Completed login, refresh, cancellation, and authenticated inference are tested
+with synthetic credentials; a live paid-account end-to-end run is not verified.
+The provider may reject account entitlement or unsupported client access;
+the separate manual plan-key connection remains available in that case.
+
+Install by updating the whole unpacked extension and pressing Reload. Updating
+only the panel can leave an older worker unable to handle new account routes.
+
+### Private version 0.4.9: tab-specific panels
+
+The toolbar and Alt+Shift+A open only the current tab's panel. Other tabs stay
+closed until explicitly opened; each opened tab retains its panel and chat when
+switching away and back. The panel URL carries its owning tab ID, so a hidden
+panel cannot switch its conversation to whichever tab becomes active. Notification
+clicks use the same tab-specific opening path. The global window panel is disabled.
+
+Version 0.4.10 fixes the toolbar's user-gesture lifetime: tab entries are prepared
+before clicks, and `sidePanel.open` runs directly in the click handler without
+waiting for worker initialization or `setOptions`. Preparing an entry does not
+open it. Regression checks include a click while initialization remains pending.
+
+Version 0.4.11 fixes trusted-panel validation for per-tab URLs. The access
+authority, voice executor, OpenRouter login and project UI all accept the exact
+extension panel path with its single numeric `tabId` parameter. Foreign origins,
+unexpected query parameters and malformed IDs remain rejected. Regression tests
+cover an Ask first decision, Full access activation and voice from tab panels.
+
+### Private version 0.4.12: session backups and continuation
+
+Backup format 3 includes saved conversations, neutral execution logs, notebooks,
+pending messages, project links and interrupted-task checkpoints. Browser tab and
+group IDs are cleared on import. Import validates sessions before changing settings,
+merges histories without replacing conflicting local sessions, and still accepts
+settings-only format 1/2 backups. Older files cannot recover sessions they never
+contained; export a new backup before removing the extension.
+
+A stopped task offers Resume task below the chat. Resume reconstructs the model
+session from saved context and checks the current page before continuing; it does
+not add a fabricated user message to the visible chat. A final report removes the
+resume action. Completed sends and other external effects must be verified rather
+than repeated just because a run stopped.
+
+Reconstructed sessions include all saved user/assistant conversational text, plus
+the existing bounded tool-progress handoff and notebook. The previous handoff alone
+retained the original task, 10 follow-up notes and 40 recent steps. Text history is
+no longer limited to a message count, but providers still impose context/token
+limits; a very large conversation can exceed those limits. This does not promise
+unlimited context or verbatim retention of every historical tool observation.
+
+Version 0.4.13 reduces the agent cursor from 24×30 to 16×20 px. Target outlines
+and the smaller pulse appear only on clicks and never change the page element's
+geometry. Reduced-motion mode uses a static flash rather than an expanding ring.
+
+Version 0.4.14 loads selected-project context before the first model turn of each
+task, through the same approval boundary as explicit file reads. It inventories
+up to 1,000 entries across 12 levels and reads up to 48,000 text characters
+(8,000 per file), prioritizing README/AGENTS/package files. Results report limits,
+truncated files and omissions; `project_read` can fetch additional chunks. Common
+secret files, dependencies, build outputs, symlinks and binary files are omitted.
+The updated native host is required. Invalid/untrusted project-link requests now
+report an error instead of silently leaving the folder unlinked.
+
+Version 0.4.15 registers the same private native host for Comet as well as Chrome,
+Edge and Chromium. The host remains restricted to the stable private extension
+ID. A real isolated Comet instance successfully completed a project-info request.

@@ -36,13 +36,13 @@ import * as claims from '../sessions/voice-claims.js';
 import { pageError, pageErrorKey, selectAllChord } from '../voice/voice-input.js';
 import * as page from '../voice/voice-page.js';
 import { secretRule } from '../voice/voice-safety.js';
+import { isSidePanelSender } from '../permissions/panel-sender.js';
 
 const RESTRICTED = /^(chrome|chrome-extension|edge|about|devtools|view-source):/;
 
 // The one page of this extension that may act for the voice path. The check
 // is exact: the side panel of this extension, and nothing else. The
 // microphone window, a content script and a website are all refused.
-const ACCESS_PANEL_PATH = 'src/sidepanel/index.html';
 
 /**
  * The actions the voice path may ask for, and the policy action each of them
@@ -121,10 +121,7 @@ function stripHash(url) {
  * merely starts with the same words.
  */
 function ownSidePanel(sender) {
-  const runtime = globalThis.chrome?.runtime;
-  if (!runtime?.id) return false;
-  if (!sender || sender.id !== runtime.id) return false;
-  return sender.url === runtime.getURL(ACCESS_PANEL_PATH);
+  return isSidePanelSender(sender);
 }
 
 /** The name of the connection of one panel of one session. */
