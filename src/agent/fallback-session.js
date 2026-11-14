@@ -83,9 +83,10 @@ export class FallbackSession {
    * with the log restarted from it, so a later handoff to the backup carries it.
    * `carry` is what the summary must not shorten: the task being worked on, with
    * its images, goes into the new session word for word, and so do the notes.
+   * `accessState` is the mode in force now: the session may have been built under another.
    * Returns `{ summary, usage }`.
    */
-  async compact({ prompt, signal, continueTask = false, carry = null }) {
+  async compact({ prompt, signal, continueTask = false, carry = null, accessState }) {
     if (!this.createPrimary) throw new Error('This session cannot be compacted.');
     const lastObservation = this.log.last?.text ?? '';
     const images = [...(carry?.images ?? []), ...(this.log.last?.images ?? [])];
@@ -101,7 +102,7 @@ export class FallbackSession {
       throw err;
     }
     const message = compactedMessage(summary, { lastObservation, continueTask, task: carry?.task ?? '', notes: this.notebook?.format() ?? '' });
-    const fresh = this.createPrimary();
+    const fresh = this.createPrimary(accessState);
     fresh.addUserMessage(message, continueTask ? images : []);
     this.active = fresh;
     this.switched = false;

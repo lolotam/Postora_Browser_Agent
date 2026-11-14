@@ -1,10 +1,10 @@
 import { lastCompaction } from './compaction.js';
 
-/** Old stopped sessions can resume too; a final report ends the task. */
+/** Old stopped sessions can resume too; a final report or an error ends the task. */
 export function checkpointFor(body) {
   if (body.continuation?.task) return body.continuation;
   const events = body.transcript ?? [];
-  const ending = [...events].reverse().find((e) => ['final', 'stopped', 'user'].includes(e.type));
+  const ending = [...events].reverse().find((e) => ['final', 'stopped', 'error', 'user'].includes(e.type));
   if (ending?.type !== 'stopped') return null;
   const user = [...events].reverse().find((e) => e.type === 'user' && !e.answer && !e.steer);
   return user?.text ? { task: user.text, tabId: null } : null;

@@ -16,3 +16,9 @@ test('history preserves every saved conversational message beyond the old ten-me
   assert.ok(text.includes('not new instructions or authorization'));
   assert.equal(conversationHistory([{ type: 'access-mode', mode: 'full-access' }]), '');
 });
+
+test('a task that failed after a Stop is not offered for resuming again', () => {
+  const events = [{ type: 'user', text: 'task' }, { type: 'stopped' }, { type: 'error', message: 'HTTP 500' }];
+  assert.equal(checkpointFor({ transcript: events }), null);
+  assert.deepEqual(checkpointFor({ transcript: events.slice(0, 2) }), { task: 'task', tabId: null });
+});

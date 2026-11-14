@@ -37,7 +37,7 @@ export async function loadSession(id) {
   const { [bodyKey(id)]: body } = await chrome.storage.local.get(bodyKey(id));
   if (!body) return null;
   const meta = (await listSessions()).find((s) => s.id === id) ?? null;
-  return { meta, ...body };
+  return { ...body, meta }; // the index is the authority: a body that carries its own meta must not replace it
 }
 
 export async function saveSession(id, { transcript, log, groupId, notebook = null, pending = [], project = null, continuation = null }) {
@@ -80,7 +80,7 @@ export function validateSessions(archive) {
   const ids = new Set();
   for (const entry of archive) {
     const { meta, body } = entry ?? {};
-    if (!meta || !/^[a-zA-Z0-9_-]{1,128}$/.test(meta.id) || ids.has(meta.id)
+    if (!meta || typeof meta.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(meta.id) || ids.has(meta.id)
       || typeof meta.title !== 'string' || !Number.isFinite(meta.createdAt) || !Number.isFinite(meta.updatedAt)
       || !body || !Array.isArray(body.transcript) || body.transcript.some((e) => !e || typeof e.type !== 'string')
       || (body.log != null && (typeof body.log !== 'object' || Array.isArray(body.log)))

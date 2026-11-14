@@ -207,3 +207,60 @@ test('/compact with nothing in the chat says so instead of asking a model', asyn
   assert.deepEqual(events.map((e) => [e.type, e.code]), [['compact-failed', 'nothing']]);
   assert.equal(runner.running, false);
 });
+
+test('the access mode in force now goes to the new conversation, not the one the session started with', async () => {
+  const { runner } = await busyRunner('Compact access');
+  const seen = [];
+  const session = { compact: async (options) => { seen.push(options.accessState); return { summary: 'S', usage: null }; } };
+  await runner.runCompaction(session, { signal: runner.abort.signal });
+  assert.deepEqual(seen, [runner.access.state()]);
+});
+
+test('a task that is itself over the threshold is compacted once, not again at every turn', async () => {
+  const { runner } = await busyRunner('Compact no shrink');
+  const calls = [];
+  const hook = runner.compaction();
+  const turn = (inputTokens) => hook.beforeTurn({ session: compactingSession(calls), inputTokens, signal: runner.abort.signal });
+  assert.equal(await turn(9000), true); // over the 8,000 threshold: compacted
+  assert.equal(await turn(0), false); // nothing read since: nothing to judge
+  assert.equal(await turn(9500), false); // read after it, still over: it did not help
+  assert.equal(await turn(9600), false); // so it is not tried again in this task
+  assert.equal(calls.length, 1);
+
+  const { runner: helped } = await busyRunner('Compact shrinks');
+  const again = [];
+  const second = helped.compaction();
+  const next = (inputTokens) => second.beforeTurn({ session: compactingSession(again), inputTokens, signal: helped.abort.signal });
+  assert.equal(await next(9000), true);
+  assert.equal(await next(2000), false); // it helped
+  assert.equal(await next(9000), true); // and a long task may need it again
+  assert.equal(again.length, 2);
+});
+
+test('an idle compaction keeps the session that holds the conversation, even the backup\'s', async () => {
+  const { runner, events } = await busyRunner('Compact keeps session');
+  runner.abort = null;
+  runner.transcript.push({ type: 'user', text: 'task' });
+  const calls = [];
+  runner.session = { switched: true, ...compactingSession(calls) };
+  runner.prepareModelSession = () => assert.fail('the session must not be rebuilt on the provider that failed');
+  assert.equal(await runner.compactIdle({}), 'done');
+  assert.equal(calls.length, 1);
+  assert.ok(events.some((e) => e.type === 'compacted'));
+});
+
+test('a /compact that arrives while one runs is done after it', async () => {
+  const { runner } = await busyRunner('Compact during compact');
+  runner.abort = null;
+  const focuses = [];
+  runner.compactIdle = async ({ focus }) => {
+    focuses.push(focus);
+    if (focuses.length === 1) runner.inbox.push({ id: 'late', text: '/compact more', model: '', mode: 'next-step', now: false, compact: { focus: 'more' } });
+    return 'done';
+  };
+  runner.drainInbox = () => focuses.push('drained');
+  runner.inbox.push({ id: 'first', text: '/compact', model: '', mode: 'queue', now: false, compact: { focus: '' } });
+  await runner.settle();
+  assert.deepEqual(focuses, ['', 'more', 'drained']);
+  assert.deepEqual(runner.inbox, []);
+});

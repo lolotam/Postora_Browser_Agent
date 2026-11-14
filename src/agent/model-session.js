@@ -108,7 +108,7 @@ export function createModelSession(settings, { notify, seed = null, conversation
   const backupEnabled = settings.fallback.enabled;
   return new FallbackSession({
     primary,
-    createPrimary: () => createProviderSession(settings, settings, conversationId, notify, accessState),
+    createPrimary: (current = accessState) => createProviderSession(settings, settings, conversationId, notify, current),
     createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify, accessState) : null,
     labels: { primary: slotLabel(settings), backup: backupEnabled ? slotLabel(settings.fallback) : '' },
     notify,
