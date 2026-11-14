@@ -211,3 +211,26 @@ test('a named provider model prevents automatic restore over this computer\'s se
 test('restoring when Drive has no backup says so', async () => {
   await assert.rejects(restoreFromDrive({ getToken }), /no backup in Google Drive/);
 });
+
+test('a session that is only touched uploads nothing; a new message in it does', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  local.settings = setUp;
+  const meta = await sessions.createStoredSession('Chat');
+  const { transcript, log, groupId } = await sessions.loadSession(meta.id);
+  await sessions.saveSession(meta.id, { transcript, log, groupId }); // the shape a saved session has
+  await backUpToDrive({ getToken });
+  assert.equal(drive.content.sessions.length, 1);
+
+  // Opening a panel or moving a tab group saves the session again, only its time moves.
+  const before = (await sessions.listSessions())[0].updatedAt;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await sessions.saveSession(meta.id, { transcript, log, groupId });
+  assert.ok((await sessions.listSessions())[0].updatedAt > before, 'the time did move');
+  calls = [];
+  await backUpToDrive({ getToken });
+  assert.deepEqual(calls, [], 'same conversation: no Drive call');
+
+  await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'hello' }], log, groupId });
+  await backUpToDrive({ getToken });
+  assert.equal(drive.content.sessions[0].body.transcript[0].text, 'hello');
+});

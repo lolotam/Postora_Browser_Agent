@@ -52,12 +52,15 @@ async function writeBackupFile(token, data, id) {
 }
 
 /**
- * Settings and the signed-in accounts, without the export time, so unchanged
- * settings hash the same. The local generation is left out: it moves on every
- * sign-in, while the credential itself is what a refresh changes.
+ * Settings, the signed-in accounts and the sessions, without the export time, so
+ * unchanged settings hash the same. The local generation is left out: it moves on every
+ * sign-in, while the credential itself is what a refresh changes. A session's
+ * `updatedAt` is left out too: opening a panel or moving a tab group touches it
+ * with nothing in the conversation changed, and that must not upload the backup again.
  */
 async function backupHash(data) {
-  const bytes = new TextEncoder().encode(JSON.stringify([data.settings, normaliseAccounts(data.accounts), data.sessions ?? []]));
+  const sessions = (data.sessions ?? []).map(({ meta, body }) => ({ meta: { ...meta, updatedAt: 0 }, body }));
+  const bytes = new TextEncoder().encode(JSON.stringify([data.settings, normaliseAccounts(data.accounts), sessions]));
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
