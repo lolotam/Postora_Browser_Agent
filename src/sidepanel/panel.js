@@ -11,7 +11,7 @@ import { escapeAttr } from './model-picker.js';
 import { createModelDialog } from './model-dialog.js';
 import { createSettingsNav } from './settings-nav.js';
 import { createSettingsSaver, settingsEdits } from './settings-save.js';
-import { authMessage, authView, backupAuthView, changedProviders, withLoginEvent } from './auth-ui.js';
+import { authMessage, authView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
 import { request } from './request.js';
@@ -34,13 +34,14 @@ import { SECRET_TOKENS } from '../voice/voice-safety.js';
 import { createChromeBrowser } from '../voice/voice-browser.js';
 
 const $ = (id) => document.getElementById(id);
+$('extensionVersion').textContent = `v${chrome.runtime.getManifest().version}`;
 const resizeComposer = bindComposerSize($('input'));
 
 // The question that waits for an answer, and its number: a question that
 // arrives while another one is being answered is a different question.
 // `answering` is the number of the question whose answer is on its way: the
 // question is answered once, and a second answer to it is refused.
-const ui = { thread: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
+const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -451,6 +452,7 @@ function onEvent(event) {
         replaying = false;
       }
       setRunning(event.running);
+      $('resumeRow').hidden = event.running || !event.resumable;
       if (event.question) setQuestion(event.question);
       ui.pending = event.pending ?? [];
       renderPending();
@@ -484,6 +486,12 @@ function onEvent(event) {
       break;
     case 'status':
       setRunning(event.running);
+      if (!event.running && ui.compacting) {
+        // A compaction that was stopped leaves no "compacting…" line behind.
+        ui.compacting.remove();
+        ui.compacting = null;
+      }
+      $('resumeRow').hidden = event.running || !event.resumable;
       if (!event.running) {
         // The task ended without a report: it did not succeed.
         const entry = voiceEntryFor(event);
@@ -518,7 +526,7 @@ function onEvent(event) {
       }
       break;
     case 'thinking':
-      openThread(event.step);
+      openThread(event.step, event.model);
       break;
     case 'reasoning-delta':
       ui.liveReasoning ??= threadPart('msg reasoning');
@@ -639,6 +647,20 @@ function onEvent(event) {
       voiceEntryFor(event)?.setErr(event.message);
       if (!replaying) finishVoiceTask();
       break;
+    case 'compacting':
+      ui.compacting?.remove();
+      ui.compacting = add('msg compact working', t(event.auto ? 'compact.workingAuto' : 'compact.working'));
+      break;
+    case 'compacted':
+      ui.compacting?.remove();
+      ui.compacting = null;
+      addCompacted(event);
+      break;
+    case 'compact-failed':
+      ui.compacting?.remove();
+      ui.compacting = null;
+      add('msg error', event.code ? t(`compact.${event.code}`) : t('compact.failed', { reason: event.message }));
+      break;
     case 'stopped':
       add('msg error', t('msg.stopped'));
       voiceEntryFor(event)?.setErr(t('voice.cancelled'));
@@ -657,6 +679,11 @@ function onEvent(event) {
       break;
     case 'session-missing':
       showTabSession();
+      break;
+    case 'tab-session-changed':
+      // A notification brought a session back to a tab. The panel Chrome keeps
+      // for that tab shows it; another tab's panel keeps its own session.
+      if (ownerTabId !== null && ownerTabId === event.tabId) showTabSession(event.tabId).catch(() => {});
       break;
     case 'auth-success':
       authNote[event.provider] = '';
@@ -691,6 +718,21 @@ function threadPart(className) {
   else ui.thread.body.append(node);
   scrollDown();
   return node;
+}
+
+/** The line a compaction leaves: when and how big it was, with the summary behind it. */
+function addCompacted(event) {
+  closeThread();
+  $('emptyState').hidden = true;
+  ui.trace = null;
+  const box = Object.assign(document.createElement('details'), { className: 'msg compact' });
+  const head = document.createElement('summary');
+  const size = event.tokensBefore ? t('compact.tokens', { n: number(event.tokensBefore) }) : '';
+  head.textContent = [t(event.auto ? 'compact.doneAuto' : 'compact.done'), size].filter(Boolean).join(' · ');
+  const body = Object.assign(document.createElement('div'), { className: 'compact-summary', textContent: event.summary ?? '', dir: 'auto' });
+  box.append(head, body);
+  $('messages').append(box);
+  scrollDown();
 }
 
 /** A message in the chat itself (the user, a report, an error): the open thread closes. */
@@ -734,7 +776,7 @@ function traceBlock() {
  * while the turn works; it closes when the next turn starts or the task ends,
  * unless the user opened or closed it by hand.
  */
-function openThread(step) {
+function openThread(step, model = '') {
   closeThread();
   $('emptyState').hidden = true;
   ui.trace = null;
@@ -742,15 +784,28 @@ function openThread(step) {
   const summary = document.createElement('summary');
   const title = span('title', t('thread.thinking'));
   title.dir = 'auto';
+  const modelTag = span('model', '');
+  modelTag.dir = 'ltr';
+  showThreadModel(modelTag, model);
   const meta = span('meta', '');
-  summary.append(title, meta);
+  summary.append(title, modelTag, meta);
   const body = Object.assign(document.createElement('div'), { className: 'thread-body' });
   box.append(summary, body);
   $('messages').append(box);
-  const thread = { box, title, meta, body, step, reasoning: '', text: '', tools: [], trace: null, userToggled: false };
+  const thread = { box, title, meta, modelTag, body, step, reasoning: '', text: '', tools: [], trace: null, userToggled: false };
   summary.addEventListener('click', () => { thread.userToggled = true; });
   ui.thread = thread;
   scrollDown();
+}
+
+/**
+ * The model answering a turn, on the thread's own line: the short name (no provider
+ * prefix, no vendor path) with the full "Provider · model" label as its tooltip.
+ */
+function showThreadModel(tag, model) {
+  const short = String(model || '').split(' · ').pop().split('/').pop();
+  tag.textContent = short;
+  tag.title = model || '';
 }
 
 function closeThread() {
@@ -816,7 +871,8 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   if (ui.thread) {
     // On the thread's own line: the model, its time and its tokens.
     ui.thread.meta.textContent = [time, tokens, waited].filter(Boolean).join(' · ');
-    ui.thread.meta.title = model || '';
+    // The model that actually answered: after a switch to the backup it differs from the one the turn started with.
+    if (model) showThreadModel(ui.thread.modelTag, model);
     return;
   }
   const row = document.createElement('div');
@@ -923,7 +979,9 @@ async function copyText(text) {
 }
 
 function clearMessages() {
+  $('resumeRow').hidden = true;
   ui.thread = null;
+  ui.compacting = null;
   $('messages').querySelectorAll('.msg, .trace, .thread').forEach((n) => n.remove());
   ui.pending = [];
   renderPending();
@@ -1203,6 +1261,19 @@ $('attachBtn').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', () => {
   addFiles([...$('fileInput').files]);
   $('fileInput').value = '';
+});
+$('input').addEventListener('paste', (event) => {
+  const clipboard = event.clipboardData;
+  if (!clipboard) return;
+  const images = [...(clipboard.items ?? [])]
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile()).filter(Boolean);
+  // Some clipboard implementations expose files without matching items.
+  if (!images.length) images.push(...[...(clipboard.files ?? [])].filter((file) => file.type.startsWith('image/')));
+  if (!images.length) return;
+  // Preserve native text insertion when the clipboard also contains text.
+  if (!clipboard.getData('text/plain')) event.preventDefault();
+  void addFiles(images);
 });
 $('composerBox').addEventListener('dragover', (event) => {
   event.preventDefault();
@@ -1891,6 +1962,12 @@ window.addEventListener('pagehide', () => {
   voiceApproval?.();
 });
 chrome.runtime.onMessage.addListener(onMicMessage);
+// Auth events arrive via runtime messages too, so a panel without a port
+// (e.g. after a worker restart) still hears the failure or device code.
+const AUTH_RUNTIME_EVENTS = new Set(['auth-success', 'auth-event', 'auth-prompt', 'auth-error']);
+chrome.runtime.onMessage.addListener((message) => {
+  if (AUTH_RUNTIME_EVENTS.has(message?.type)) onEvent(message);
+});
 chrome.windows.onRemoved.addListener((id) => {
   if (id !== micWindowId) return;
   micWindowId = null;
@@ -1904,6 +1981,13 @@ $('input').addEventListener('keydown', (e) => {
   }
 });
 $('stopBtn').addEventListener('click', () => send({ type: 'stop' }));
+$('resumeBtn').addEventListener('click', async () => {
+  const expectedSessionId = sessionId;
+  $('resumeBtn').disabled = true;
+  try { await send({ type: 'resume', tabId: await activeTabId() }, { expectedSessionId }); }
+  catch (error) { $('hint').textContent = error.message; }
+  finally { $('resumeBtn').disabled = false; }
+});
 $('workspaceStopBtn').addEventListener('click', () => $('stopBtn').click());
 // A new session is a request for the conversation: it lands on the chat, even
 // when settings were open when it was asked for.
@@ -1927,22 +2011,25 @@ document.querySelectorAll('.examples li').forEach((li) => li.addEventListener('c
 // a new tab starts on a blank one, and a tab where a task ran keeps its session.
 let windowId = null;
 let tabLookups = 0;
+const ownerParam = new URL(location.href).searchParams.get('tabId');
+const ownerTabId = ownerParam !== null && /^\d+$/.test(ownerParam) && Number.isSafeInteger(Number(ownerParam)) ? Number(ownerParam) : null;
 
 async function startSessions() {
   windowId = (await chrome.windows.getCurrent()).id;
   // Opened as a page in a tab (as the e2e tests do), the panel is that tab's own
   // and must not jump to the session of whichever tab gets focus.
   const ownTab = await chrome.tabs.getCurrent();
-  if (!ownTab) {
+  if (!ownTab && ownerTabId === null) {
     chrome.tabs.onActivated.addListener((info) => {
       if (info.windowId === windowId) showTabSession(info.tabId).catch(() => {}); // the tab may close mid-lookup
     });
   }
-  await showTabSession(ownTab?.id);
+  await showTabSession(ownerTabId ?? ownTab?.id);
   await refreshSessions();
 }
 
 async function activeTabId() {
+  if (ownerTabId !== null) return ownerTabId;
   const [tab] = await chrome.tabs.query({ active: true, windowId });
   return tab?.id;
 }
@@ -2277,12 +2364,25 @@ function renderDriveState(state = driveState) {
   if (driveState.error) $('driveStatus').textContent = t('drive.failed', { reason: driveState.error });
   else if (driveState.at) $('driveStatus').textContent = t('drive.saved', { time: `⁨${new Date(driveState.at).toLocaleString(currentLanguage())}⁩` }) // isolated, or bidi scrambles the date inside Arabic text;
   else $('driveStatus').textContent = t('drive.none');
+  renderDriveContents();
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.driveBackup) renderDriveState(changes.driveBackup.newValue);
 });
 chrome.storage.local.get('driveBackup').then(({ driveBackup }) => renderDriveState(driveBackup));
+
+/**
+ * What the Drive backup holds. The conversations are in it only when the user
+ * turned the switch on, so the account menu says which of the two it is. A
+ * backup without them is the normal one: the backup leaves the computer on
+ * its own, and a task history is the user's own work.
+ */
+function renderDriveContents() {
+  const line = $('driveContents');
+  if (!line) return;
+  line.textContent = settings?.backupChats === true ? t('drive.contents.on') : t('drive.contents.off');
+}
 $('googleSignOutBtn').addEventListener('click', async () => {
   await signOutOfGoogle();
   account = null;
@@ -2545,10 +2645,32 @@ function syncHeaderContext() {
 }
 
 const keyStore = createKeyStore();
+window.addEventListener('postora-worker-mismatch', () => { $('workerUpdateNotice').hidden = false; });
+/**
+ * The extension is reloaded, but not while a task runs. The panel knows only
+ * about its own session, so the worker is asked which sessions are busy: a
+ * task in another session, in its own tab group, would be ended in the middle
+ * by the reload. A worker that cannot answer is not a reason to end a task
+ * that may be running.
+ */
+async function reloadExtension() {
+  if (ui.running) { showSettingsError(t('connection.stopBeforeReload')); return; }
+  let busy = false;
+  try {
+    const sessions = await request('sessions-list');
+    busy = sessions.some((session) => session.running);
+  } catch (err) {
+    showSettingsError(err.message ?? t('connection.stopBeforeReload'));
+    return;
+  }
+  if (busy) { showSettingsError(t('connection.stopBeforeReload')); return; }
+  chrome.runtime.reload();
+}
+$('reloadExtension').addEventListener('click', reloadExtension);
 const transcriptionForm = createTranscriptionForm();
 const saveSettings = createSettingsSaver({
   getSettings: () => settings,
-  onSaved: (saved) => { settings = saved; },
+  onSaved: (saved) => { settings = saved; renderDriveContents(); },
   save: (next) => request('save-settings', { settings: next }),
 });
 const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
@@ -2694,7 +2816,7 @@ let settingsDirty = false;
 
 // Fields that hold transient secrets, not settings: typing into them never
 // invents a draft.
-const NOT_A_SETTING_EDIT = '[data-auth], #authJson, .search-field';
+const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field';
 
 // Any edit in any page marks the draft, wherever the user walks afterwards.
 $('settingsView').addEventListener('input', (e) => {
@@ -2722,6 +2844,7 @@ function syncFooter() {
 async function init() {
   const data = await request('get-settings');
   settings = data.settings;
+  renderDriveContents();
   presets = data.presets;
   fastPresets = data.fastPresets;
   setLanguage(resolveLanguage(settings.uiLanguage, chrome.i18n.getUILanguage()));
@@ -2760,8 +2883,8 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   }
   // Only the slots that use these providers need their models again.
   for (const provider of providers) {
-    if (mainForm.provider() === provider) mainForm.loadModels();
-    if ($('fallbackEnabled').checked && fallbackForm.provider() === provider) fallbackForm.loadModels();
+    if (mainForm.accountProvider() === provider) mainForm.loadModels();
+    if ($('fallbackEnabled').checked && fallbackForm.accountProvider() === provider) fallbackForm.loadModels();
   }
 });
 
@@ -2777,6 +2900,10 @@ function fillForm() {
   $('allowJavascript').checked = settings.allowJavascript;
   $('showCursor').checked = settings.showCursor;
   $('steerMode').value = settings.steerMode ?? 'next-step';
+  $('autoCompact').checked = settings.autoCompact.enabled;
+  $('autoCompactTokens').value = settings.autoCompact.thresholdTokens;
+  syncAutoCompact();
+  $('backupChats').checked = settings.backupChats === true;
   syncNotifySwitch();
   $('replyLangEnabled').checked = settings.replyLanguage.enabled;
   $('replyLang').value = settings.replyLanguage.language;
@@ -2833,6 +2960,8 @@ function readForm() {
   next.allowJavascript = $('allowJavascript').checked;
   next.showCursor = $('showCursor').checked;
   next.steerMode = $('steerMode').value;
+  next.autoCompact = { enabled: $('autoCompact').checked, thresholdTokens: Number($('autoCompactTokens').value) };
+  next.backupChats = $('backupChats').checked === true;
   next.notify = $('notify').checked;
   next.replyLanguage = { enabled: $('replyLangEnabled').checked, language: $('replyLang').value };
   next.voiceEngine = $('voiceEngine')?.value || 'postora';
@@ -2840,6 +2969,12 @@ function readForm() {
   next.keys = keyStore.snapshot();
   return next;
 }
+
+// Off: nothing compacts by itself, so the threshold is hidden. /compact still works.
+function syncAutoCompact() {
+  $('autoCompactField').hidden = !$('autoCompact').checked;
+}
+$('autoCompact').addEventListener('change', syncAutoCompact);
 
 // Off: the agent follows the language of the task, so the choice is hidden.
 function syncReplyLanguage() {
@@ -3088,6 +3223,7 @@ $('restoreFile').addEventListener('change', async () => {
 async function showRestoredSettings(restored) {
   settings = restored;
   fillForm();
+  renderDriveContents();
   updateChip();
   await refreshAuthStates();
   mainForm.loadModels();
@@ -3201,7 +3337,7 @@ function quickModelSettings(current, id, effort) {
 /** A queued pick belongs to the connection whose catalog the user saw. */
 function modelConnectionKey(value) {
   const { model, effort, ...connection } = currentProviderSettings(value);
-  return JSON.stringify({ provider: value.provider, connection });
+  return JSON.stringify({ provider: value.provider, route: value.connectionRoute, connection });
 }
 
 /**
@@ -3412,16 +3548,18 @@ $('modelBtnFastBackup').addEventListener('click', () => openModelSlot('fastBacku
 // ---------- account sign-in ----------
 
 /**
- * The element that holds a provider's sign-in controls, or null when no frame
- * shows it: the main frame shows the provider of the main slot, the backup
- * frame shows its own provider when the main one does not.
+ * Both model slots show the same account state in their own sign-in controls.
+ * Manual code entry uses the currently visible settings page.
  */
+function authRoots(provider) {
+  return [[mainForm, $('mainProvider')], [fallbackForm, $('fallbackProvider')]]
+    .filter(([form]) => form.accountProvider() === provider)
+    .map(([, root]) => root.querySelector(`[data-provider="${provider}"]`)).filter(Boolean);
+}
+
 function authRoot(provider) {
-  const main = $('mainProvider').querySelector(`[data-provider="${provider}"]`);
-  if (main && mainForm.provider() === provider && (provider !== 'kimi' || mainForm.kimi().auth === 'account')) return main;
-  const backup = $('fallbackProvider').querySelector('[data-field="fallbackAuth"]');
-  if (backup && backup.dataset.provider === provider) return backup;
-  return null;
+  const roots = authRoots(provider);
+  return roots.find((root) => !root.closest('.settings-page')?.hidden) ?? roots[0] ?? null;
 }
 
 /** An element of a provider's sign-in controls. */
@@ -3448,33 +3586,33 @@ function showAuth(provider, status) {
 
 /** Draws a provider's sign-in controls from what the view says. */
 function drawAuth(provider, view) {
-  const root = authRoot(provider);
-  if (!root) return;
-  const el = (name) => root.querySelector(`[data-auth="${name}"]`);
-  const status = el('status');
-  if (status) status.textContent = view.status;
-  const login = el('login');
-  if (login) login.hidden = view.connected;
-  const logout = el('logout');
-  if (logout) logout.hidden = !view.connected;
-  const device = el('device');
-  if (device) {
-    if (view.deviceCode) {
-      const code = el('deviceCode');
-      if (code) code.textContent = view.deviceCode;
-      const link = el('deviceLink');
-      if (link && view.verificationUrl) link.href = view.verificationUrl;
-      device.hidden = false;
-    } else {
-      device.hidden = true;
+  for (const root of authRoots(provider)) {
+    const el = (name) => root.querySelector(`[data-auth="${name}"]`);
+    const status = el('status');
+    if (status) status.textContent = view.status;
+    const login = el('login');
+    if (login) login.hidden = view.connected;
+    const logout = el('logout');
+    if (logout) logout.hidden = !view.connected;
+    const device = el('device');
+    if (device) {
+      if (view.deviceCode || view.verificationUrl) {
+        const code = el('deviceCode');
+        if (code) { code.textContent = view.deviceCode || ''; code.hidden = !view.deviceCode; }
+        const link = el('deviceLink');
+        if (link && view.verificationUrl) link.href = view.verificationUrl;
+        device.hidden = false;
+      } else {
+        device.hidden = true;
+      }
     }
-  }
-  const codeBox = el('code');
-  if (codeBox) codeBox.hidden = !view.needsCode;
-  const message = el('message');
-  if (message) {
-    message.textContent = view.message;
-    message.hidden = !view.message;
+    const codeBox = el('code');
+    if (codeBox) codeBox.hidden = !view.needsCode;
+    const message = el('message');
+    if (message) {
+      message.textContent = view.message;
+      message.hidden = !view.message;
+    }
   }
 }
 
@@ -3493,12 +3631,14 @@ function setAuthMessage(provider, text) {
 function showDeviceCode(provider, code, url) {
   const box = authEl(provider, 'device');
   if (!box) return;
-  if (!code) {
+  // A sign-in that gives only a link still has something to show: the box
+  // stays and the code line goes away.
+  if (!code && !url) {
     box.hidden = true;
     return;
   }
   const shown = authEl(provider, 'deviceCode');
-  if (shown) shown.textContent = code;
+  if (shown) { shown.textContent = code || ''; shown.hidden = !code; }
   const link = authEl(provider, 'deviceLink');
   if (link && url) link.href = url;
   box.hidden = false;
@@ -3540,22 +3680,8 @@ function redrawAuth() {
  * backup's own when the main frame does not show that provider.
  */
 function syncAuthFrames() {
-  const view = backupAuthView({
-    main: mainForm.provider(),
-    backup: fallbackForm.provider(),
-    claudeAuth: fallbackForm.claude().auth,
-    kimiAuth: fallbackForm.kimi().auth,
-    mainKimiAuth: mainForm.kimi().auth,
-  });
-  const note = $('fallbackProvider').querySelector('[data-field="accountNote"]');
-  if (note) note.hidden = !view.note;
-  const block = $('fallbackProvider').querySelector('[data-field="fallbackAuth"]');
-  if (!block) return;
-  block.hidden = !view.signIn;
-  block.dataset.provider = view.signIn ?? '';
-  const login = block.querySelector('[data-auth="login"]');
-  if (login && view.signIn) login.textContent = t(`auth.login.${view.signIn}`);
-  // The blocks moved: what each provider shows is drawn again.
+  // Both forms own the same controls. The account itself is shared, so redraw
+  // every matching frame after a provider or connection method changes.
   redrawAuth();
 }
 
@@ -3641,11 +3767,12 @@ for (const name of ['login', 'logout', 'cancel', 'codeSubmit']) {
   }
 }
 
-$('importBtn').addEventListener('click', async () => {
+for (const [buttonId, inputId] of [['importBtn', 'authJson'], ['backupImportBtn', 'backupAuthJson']]) $(buttonId).addEventListener('click', async () => {
   try {
-    showAuth('chatgpt', await request('auth-import', { text: $('authJson').value }));
-    $('authJson').value = '';
+    showAuth('chatgpt', await request('auth-import', { text: $(inputId).value }));
+    $(inputId).value = '';
     mainForm.loadModels(true);
+    fallbackForm.loadModels(true);
   } catch (err) {
     showSettingsError(err.message);
   }

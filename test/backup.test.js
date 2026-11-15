@@ -21,13 +21,64 @@ beforeEach(() => {
 
 const credential = (access) => ({ type: 'oauth', access, refresh: 'rt', expires: 1700000000000 });
 
+test('a file restores session history and resumable progress after removal', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  const meta = await sessions.createStoredSession('Saved conversation');
+  const transcript = [{ type: 'user', text: 'Original task' }, { type: 'assistant-text', text: 'Progress' }, { type: 'stopped' }];
+  await sessions.saveSession(meta.id, { transcript, log: { task: 'Original task', notes: [], steps: [], last: null }, groupId: 90, continuation: { task: 'Original task', tabId: 80 }, pending: [{ id: 'queued', text: 'Follow-up' }] });
+  const file = JSON.parse(JSON.stringify(await exportBackup()));
+  assert.equal(file.sessions.length, 1);
+  for (const key of Object.keys(store)) delete store[key];
+  await importBackup(file);
+  const restored = await sessions.loadSession(meta.id);
+  assert.equal(restored.meta.title, 'Saved conversation');
+  assert.deepEqual(restored.transcript, transcript);
+  assert.equal(restored.continuation.task, 'Original task');
+  assert.equal(restored.continuation.tabId, null);
+  assert.equal(restored.groupId, null);
+  assert.equal(restored.pending[0].text, 'Follow-up');
+  await importBackup(file);
+  assert.equal((await sessions.listSessions()).length, 1, 'reimport does not duplicate unchanged sessions');
+  file.sessions[0].body.transcript.push({ type: 'user', text: 'A different imported history' });
+  await importBackup(file);
+  assert.equal((await sessions.listSessions()).length, 2, 'a collision preserves both histories');
+});
+
+test('the file the user downloads keeps the conversations; a backup can leave them out', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  const meta = await sessions.createStoredSession('Saved conversation');
+  await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'Original task' }], log: null, groupId: null });
+
+  const file = await exportBackup();
+  assert.equal(file.sessions.length, 1, 'the file the user downloads holds the conversations');
+
+  const without = await exportBackup({ includeSessions: false });
+  assert.deepEqual(without.sessions, [], 'a backup that leaves the computer can leave the conversations out');
+
+  // Restoring is explicit: what the file holds comes back.
+  for (const k of Object.keys(store)) delete store[k];
+  await importBackup(file);
+  assert.equal((await sessions.listSessions()).length, 1);
+  assert.equal((await sessions.loadSession(meta.id)).transcript[0].text, 'Original task');
+});
+
+test('damaged sessions are rejected before settings change; legacy files keep local chats', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  const meta = await sessions.createStoredSession('Keep me');
+  store.settings = { marker: 'unchanged' };
+  await assert.rejects(importBackup({ format: 'browser-agent-backup', version: 3, settings: {}, accounts: {}, sessions: [{ meta: { id: '../bad' } }] }), /damaged/);
+  assert.equal(store.settings.marker, 'unchanged');
+  await importBackup({ format: 'browser-agent-backup', version: 2, settings: {}, accounts: {} });
+  assert.equal((await sessions.loadSession(meta.id)).meta.title, 'Keep me');
+});
+
 test('a backup carries the settings and the signed-in accounts back after a reinstall', async () => {
   store.settings = { provider: 'compatible', compatible: { preset: 'openrouter', apiKey: 'or-key', model: 'm' } };
   store['accountAuth.chatgpt'] = { generation: 3, credential: credential('at') };
   store['accountAuth.claude'] = { generation: 1, credential: null }; // signed out
   const file = JSON.parse(JSON.stringify(await exportBackup()));
 
-  assert.equal(file.version, 2);
+  assert.equal(file.version, 3);
   assert.deepEqual(file.accounts, { chatgpt: credential('at') }, 'only the signed-in providers, without the generation');
 
   for (const k of Object.keys(store)) delete store[k];
@@ -42,13 +93,14 @@ test('a backup carries the settings and the signed-in accounts back after a rein
 
 test('Gemini/Moonshot API keys and Kimi Code sign-in survive a backup without crossing scopes', async () => {
   store.settings = { provider: 'gemini', gemini: { apiKey: 'GOOGLE-KEY', model: 'gemini-test' }, kimi: { apiKey: 'MOONSHOT-KEY', auth: 'account', model: 'kimi-for-coding' } };
-  store['accountAuth.kimi'] = { generation: 3, credential: credential('CODE-ACCESS') };
+  store['accountAuth.kimi'] = { generation: 3, credential: { ...credential('CODE-ACCESS'), kimiAuthority: 'https://auth.kimi.ai' } };
   const backup = await exportBackup();
   for (const key of Object.keys(store)) delete store[key];
   await importBackup(backup);
   assert.equal(store.settings.gemini.apiKey, 'GOOGLE-KEY');
   assert.equal(store.settings.kimi.apiKey, 'MOONSHOT-KEY');
   assert.equal(store['accountAuth.kimi'].credential.access, 'CODE-ACCESS');
+  assert.equal(store['accountAuth.kimi'].credential.kimiAuthority, 'https://auth.kimi.ai');
   assert.equal(store.settings.keys.moonshot, 'MOONSHOT-KEY');
   assert.ok(!JSON.stringify(store.settings).includes('CODE-ACCESS'));
 });

@@ -111,6 +111,30 @@ export async function runComposerScenario(context, extensionId) {
     assert.ok(await panel.isVisible('#fileChips'));
     await panel.click('#fileChips button');
     await panel.waitForSelector('#fileChips', { state: 'hidden' });
+    // A screenshot from the clipboard must use the same decoding pipeline as
+    // an uploaded image. Text-only paste must remain a native textarea action.
+    const paste = await panel.evaluate(async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2; canvas.height = 2;
+      canvas.getContext('2d').fillRect(0, 0, 2, 2);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File([blob], 'screenshot.png', { type: 'image/png' }));
+      const event = new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true });
+      document.getElementById('input').dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    assert.equal(paste, true, 'image-only paste is consumed by the attachment handler');
+    await panel.waitForFunction(() => document.querySelector('#fileChips .text')?.textContent === 'screenshot.png');
+    assert.equal(await panel.locator('#fileChips .text').getAttribute('title'), null, 'image decoded without a warning');
+    await panel.click('#fileChips button');
+    assert.equal(await panel.evaluate(() => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/plain', 'ordinary text');
+      const event = new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true });
+      document.getElementById('input').dispatchEvent(event);
+      return event.defaultPrevented;
+    }), false, 'ordinary text paste is not intercepted');
     assert.deepEqual(errors, []);
     console.log('\n== scenario: composer ==\nempty canvas, borderless model control, Full access, RTL/themes at 320/360/400px, sizing, shortcuts and attachments passed');
     return [];

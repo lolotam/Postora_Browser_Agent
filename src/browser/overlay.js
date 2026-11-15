@@ -128,24 +128,24 @@ export function overlayCommand(cmd) {
       .glow { position: absolute; inset: 0; box-shadow: inset 0 0 0 2px rgba(${ACCENT}, .9), inset 0 0 26px 4px rgba(${ACCENT}, .35);
         animation: breathe 2.4s ease-in-out infinite alternate; }
       @keyframes breathe { from { opacity: .55; } to { opacity: 1; } }
-      .box { position: fixed; border: 2px solid rgb(${ACCENT}); border-radius: 7px; opacity: 0;
-        box-shadow: 0 0 0 4px rgba(${ACCENT}, .18), 0 0 18px rgba(${ACCENT}, .45);
+      .box { position: fixed; border: 1px solid rgba(${ACCENT}, .85); border-radius: 5px; opacity: 0;
+        box-shadow: 0 0 0 2px rgba(${ACCENT}, .12), 0 0 8px rgba(${ACCENT}, .2);
         transition: opacity .2s ease; }
       .box.on { opacity: 1; }
       .cursor { position: fixed; left: 0; top: 0; opacity: 0; transition: opacity .25s ease; will-change: transform; }
       .cursor.on { opacity: 1; }
       .cursor svg { position: absolute; left: -3px; top: -2px; overflow: visible;
-        filter: drop-shadow(0 0 5px rgba(${ACCENT}, .95)) drop-shadow(0 1px 2px rgba(0, 0, 0, .45)); transition: transform .12s ease; }
-      .cursor.press svg { transform: scale(.82); }
-      .caption { position: absolute; left: 20px; top: 24px; max-width: 260px; padding: 5px 10px; border-radius: 8px;
+        filter: drop-shadow(0 0 2px rgba(${ACCENT}, .65)) drop-shadow(0 1px 1px rgba(0, 0, 0, .45)); transition: transform .12s ease; }
+      .cursor.press svg { transform: scale(.9); }
+      .caption { position: absolute; left: 14px; top: 18px; max-width: 260px; padding: 5px 10px; border-radius: 8px;
         background: rgba(13, 17, 19, .92); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         border: 1px solid rgba(${ACCENT}, .55); box-shadow: 0 4px 14px rgba(0, 0, 0, .3); opacity: 0; transition: opacity .2s ease; }
       .caption.on { opacity: 1; }
       .cursor.flip .caption { left: auto; right: 6px; }
       .cursor.up .caption { top: auto; bottom: 8px; }
-      .ripple { position: fixed; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%;
-        border: 2px solid rgb(${ACCENT}); background: rgba(${ACCENT}, .22); animation: ripple .6s ease-out forwards; }
-      @keyframes ripple { from { transform: scale(.25); opacity: 1; } to { transform: scale(1.5); opacity: 0; } }
+      .ripple { position: fixed; width: 24px; height: 24px; margin: -12px 0 0 -12px; border-radius: 50%;
+        border: 1px solid rgba(${ACCENT}, .85); background: rgba(${ACCENT}, .12); animation: ripple .4s ease-out forwards; }
+      @keyframes ripple { from { transform: scale(.4); opacity: .85; } to { transform: scale(1.4); opacity: 0; } }
       .bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
         padding: 6px 6px 6px 14px; border-radius: 999px; background: rgba(13, 17, 19, .92); color: #fff;
         border: 1px solid rgba(${ACCENT}, .5); box-shadow: 0 6px 22px rgba(0, 0, 0, .35); pointer-events: auto;
@@ -159,13 +159,13 @@ export function overlayCommand(cmd) {
       .stop:hover { background: #f2555a; }
       .stop:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
       .stop:disabled { opacity: .6; cursor: default; }
-      @media (prefers-reduced-motion: reduce) { .glow, .dot { animation: none; } .ripple { animation-duration: .01s; } }
+      @media (prefers-reduced-motion: reduce) { .glow, .dot { animation: none; } .ripple { animation: none; opacity: .5; } .cursor svg { transition: none; } .cursor.press svg { transform: none; } }
     </style>
     <div class="wrap">
       <div class="frame" aria-hidden="true"><div class="glow"></div></div>
       <div class="box" aria-hidden="true"></div>
       <div class="cursor" aria-hidden="true">
-        <svg width="24" height="30" viewBox="0 0 24 30" aria-hidden="true">
+        <svg width="16" height="20" viewBox="0 0 24 30" aria-hidden="true">
           <path d="M3 2 L3 24.5 L9 19 L13.2 28 L17.3 26.2 L13.2 17.4 L21.2 17 Z" fill="#0d1113" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/>
         </svg>
         <div class="caption"></div>
@@ -236,12 +236,24 @@ export function overlayCommand(cmd) {
     clearTimeout(ui.barTimer);
     ui.barTimer = setTimeout(() => ui.bar.classList.remove('through'), 900);
     if (!visible) return true;
+    // Highlight the live target only on a click; never resize the page's UI.
+    clearTimeout(ui.boxTimer);
+    const hit = document.elementFromPoint(cmd.x, cmd.y);
+    const target = hit?.closest('button,a,input,textarea,select,[role="button"]') ?? hit;
+    const rect = target?.getBoundingClientRect();
+    ui.box.classList.remove('on');
+    if (rect && target !== document.body && target !== document.documentElement && rect.width > 0 && rect.height > 0) {
+      const pad = 3;
+      Object.assign(ui.box.style, { left: `${rect.left - pad}px`, top: `${rect.top - pad}px`, width: `${rect.width + pad * 2}px`, height: `${rect.height + pad * 2}px` });
+      ui.box.classList.add('on');
+      ui.boxTimer = setTimeout(() => ui.box.classList.remove('on'), 450);
+    }
     const ring = document.createElement('div');
     ring.className = 'ripple';
     ring.style.left = `${cmd.x}px`;
     ring.style.top = `${cmd.y}px`;
     ui.wrap.appendChild(ring);
-    setTimeout(() => ring.remove(), 700);
+    setTimeout(() => ring.remove(), reduced ? 160 : 450);
     ui.cursor.classList.add('press');
     setTimeout(() => ui.cursor.classList.remove('press'), 160);
     return true;
@@ -250,17 +262,7 @@ export function overlayCommand(cmd) {
   if (cmd.op === 'move') {
     showCaption(cmd.caption);
     clearTimeout(ui.boxTimer);
-    if (cmd.rect) {
-      const pad = 4;
-      Object.assign(ui.box.style, {
-        left: `${cmd.rect.left - pad}px`, top: `${cmd.rect.top - pad}px`,
-        width: `${cmd.rect.width + pad * 2}px`, height: `${cmd.rect.height + pad * 2}px`,
-      });
-      ui.box.classList.add('on');
-      ui.boxTimer = setTimeout(() => ui.box.classList.remove('on'), 1400);
-    } else {
-      ui.box.classList.remove('on');
-    }
+    ui.box.classList.remove('on');
 
     const { x, y } = cmd;
     const fx = ui.x ?? innerWidth / 2;

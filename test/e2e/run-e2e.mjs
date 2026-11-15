@@ -29,6 +29,9 @@ import { extensionWorker } from './extension-worker.mjs';
 import { runDriveBackupScenario } from './drive-backup.mjs';
 import { runZenFastScenario } from './zen-fast.mjs';
 import { runComposerScenario } from './composer.mjs';
+import { runTabPanelsScenario } from './tab-panels.mjs';
+import { runResumeSessionScenario } from './resume-session.mjs';
+import { runOverlayScenario } from './overlay.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -1887,6 +1890,9 @@ async function main() {
       ...(await verify(runSessionRefreshRestartScenario)),
       ...(await verify(runUiLayoutScenario)),
       ...(await verify(runComposerScenario)),
+      ...(await verify(runTabPanelsScenario)),
+      ...(await verify(runResumeSessionScenario)),
+      ...(await verify(runOverlayScenario)),
       ...(await verify(runFocusedWorkspaceScenario)),
       ...(await verify(runNamedProvidersScenario)),
       ...(await verify(runZenFastScenario)),

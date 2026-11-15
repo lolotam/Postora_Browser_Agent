@@ -6,7 +6,9 @@
 
 import { describeFailure } from '../lib/failure.js';
 import { NOTE_SAVED_ARGS } from './notebook.js';
+import { compactedMessage } from '../sessions/compaction.js';
 
+const CANCEL_SUMMARY = '[System] The request to summarize the conversation was cancelled. Do not answer it. Carry on from where you were.';
 const LAST_TEXT_CHARS = 3000;
 const STEP_RESULT_CHARS = 160;
 const HANDOFF_STEPS = 40;
@@ -18,7 +20,9 @@ export function emptyLog() {
 }
 
 export class FallbackSession {
-  constructor({ primary, createBackup = null, labels = {}, notify = () => {}, log = emptyLog(), notebook = null }) {
+  constructor({ primary, createPrimary = null, createBackup = null, labels = {}, notify = () => {}, log = emptyLog(), notebook = null, history = '' }) {
+    this.history = history;
+    this.createPrimary = createPrimary;
     this.notebook = notebook;
     this.active = primary;
     this.createBackup = createBackup;
@@ -38,6 +42,19 @@ export class FallbackSession {
     if (this.log.task === null) this.log.task = text;
     else this.log.notes.push(text);
     this.active.addUserMessage(text, images);
+  }
+
+  /**
+   * Untrusted file text: it reaches the model as a message of its own and never
+   * becomes the task.
+   *
+   * The log is not touched on purpose. The task stays the user's task and the
+   * notes stay the user's messages, so neither the handoff to the backup nor
+   * the summary of a compaction can carry the file text forward with them.
+   */
+  addUntrustedContext(text) {
+    if (!text) return;
+    this.active.addUserMessage(text);
   }
 
   addToolResult(callId, output, images = []) {
@@ -66,11 +83,56 @@ export class FallbackSession {
     return turn;
   }
 
+  /**
+   * Replaces the conversation with a summary the active model writes of it.
+   *
+   * Only at a boundary between turns: every tool call has its result. The
+   * summary is asked of the model that holds the conversation, with no
+   * fallback, because a backup would not have the request. A failure throws
+   * and the conversation goes on as it was; the request it leaves behind is
+   * cancelled by a message, or the next turn would answer it as the task's report.
+   *
+   * Afterwards the session is a new primary one that reads the summary first,
+   * with the log restarted from it, so a later handoff to the backup carries it.
+   * `carry` is what the summary must not shorten: the task being worked on, with
+   * its images, goes into the new session word for word, and so do the notes.
+   * `accessState` is the mode in force now: the session may have been built under
+   * another. It may be a getter, which is read when the new conversation is
+   * built: the summary takes a while, and the mode may have moved in the mean time.
+   * Returns `{ summary, usage }`.
+   */
+  async compact({ prompt, signal, continueTask = false, carry = null, accessState }) {
+    if (!this.createPrimary) throw new Error('This session cannot be compacted.');
+    const lastObservation = this.log.last?.text ?? '';
+    const images = [...(carry?.images ?? []), ...(this.log.last?.images ?? [])];
+    this.active.addUserMessage(prompt);
+    let turn;
+    let summary;
+    try {
+      turn = await this.active.next({ signal, toolChoice: 'none' });
+      summary = String(turn.text ?? '').trim();
+      if (!summary) throw new Error('The model returned an empty summary.');
+    } catch (err) {
+      this.active.addUserMessage(CANCEL_SUMMARY);
+      throw err;
+    }
+    const message = compactedMessage(summary, { lastObservation, continueTask, task: carry?.task ?? '', notes: this.notebook?.format() ?? '' });
+    const fresh = this.createPrimary(accessState);
+    fresh.addUserMessage(message, continueTask ? images : []);
+    this.active = fresh;
+    this.switched = false;
+    this.openCalls.clear();
+    this.history = ''; // the summary replaces the saved conversation a backup would be given
+    this.log = { ...emptyLog(), task: message };
+    return { summary, usage: turn.usage ?? null };
+  }
+
   async switchToBackup(primaryError, options) {
     const failure = describeFailure(primaryError);
     this.notify({ level: 'error', kind: 'switched', from: this.labels.primary, to: this.labels.backup, ...failure });
     this.switched = true;
     this.active = this.createBackup();
+    if (this.history) this.active.addUserMessage(this.history);
     this.active.addUserMessage(handoffMessage(this.log, failure.reason, this.notebook), this.log.last?.images ?? []);
     try {
       return await this.active.next(options);

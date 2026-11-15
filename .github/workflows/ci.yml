@@ -5,9 +5,12 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -29,3 +32,38 @@ jobs:
         run: npm run e2e
         env:
           E2E_EXTENSION_DIR: ${{ runner.temp }}/postora-store
+
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build release packages
+        run: |
+          npm run package
+          npm run package:private
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists for this version. Skipping release creation."
+          else
+            echo "Creating new release $TAG at ${{ github.sha }}..."
+            gh release create "$TAG" \
+              "dist/postora-browser-agent-v$VERSION.zip" \
+              "dist/postora-private-v$VERSION.zip" \
+              --target "${{ github.sha }}" \
+              --title "v$VERSION" \
+              --generate-notes
+          fi

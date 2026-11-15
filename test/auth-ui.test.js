@@ -131,3 +131,19 @@ test('a failure event replaces the waiting state with the failure', () => {
   assert.equal(view.attempt, null);
   assert.equal(view.message, authMessage('timed-out'));
 });
+
+test('a device-code sign-in followed by auth-error clears the code and URL', () => {
+  // A device-code flow hands out a code and a verification URL, then fails.
+  let state = withLoginEvent(null, {
+    type: 'auth-event', provider: 'chatgpt', attemptId: 'dc1',
+    kind: 'device_code', userCode: 'ABCD-1234', verificationUrl: 'https://auth.openai.com/codex/device',
+  });
+  state = withLoginEvent(state, { type: 'auth-error', provider: 'chatgpt', attemptId: 'dc1', code: 'failed', message: 'boom' });
+
+  const view = authView('chatgpt', state, 'dc1');
+
+  assert.equal(view.deviceCode, null, 'device code must be cleared after failure');
+  assert.equal(view.verificationUrl, null, 'verification URL must be cleared after failure');
+  assert.equal(view.needsCode, false);
+  assert.equal(view.attempt, null);
+});

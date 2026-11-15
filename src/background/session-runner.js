@@ -10,7 +10,11 @@ import { BrowserController } from '../browser/controller.js';
 import { Notebook } from '../agent/notebook.js';
 import { createFastLayer } from '../fast/fast-layer.js';
 import { AccessAuthority, ALLOW, ASK_FIRST, DENY, FULL_ACCESS } from '../permissions/policy.js';
+import { isSidePanelSender } from '../permissions/panel-sender.js';
+import { autoCompactDue, compactPrompt, lastInputTokens, parseCompactCommand } from '../sessions/compaction.js';
+import { checkpointFor, conversationHistory } from '../sessions/continuation.js';
 import { effectiveSettings, loadSettings } from '../lib/settings.js';
+import { normalizeUsage } from '../lib/usage.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
@@ -20,7 +24,9 @@ import { nativeRequest } from '../native/client.js';
 
 const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
-const STREAMING = new Set(['text-delta', 'reasoning-delta', 'text-reset']);
+// How far past the automatic threshold a conversation may grow while "queue" postpones the compaction.
+const POSTPONE_LIMIT = 1.5;
+const STREAMING = new Set(['text-delta', 'reasoning-delta', 'text-reset', 'compacting']);
 
 // The events that describe the state of the worker at this moment and are
 // never a moment of the conversation: a mode, a question and the way it
@@ -29,7 +35,6 @@ const TRANSIENT_EVENTS = new Set(['access-state', 'access-request', 'access-requ
 
 // The one page of this extension that may ask for the access mode. The check
 // is exact: the side panel of this extension, and nothing else.
-const ACCESS_PANEL_PATH = 'src/sidepanel/index.html';
 
 /**
  * The site a target is on, without its path, its query or its fragment.
@@ -71,11 +76,7 @@ function safeLabel(label) {
  * merely starts with the same words.
  */
 function ownSidePanel(port) {
-  const runtime = globalThis.chrome?.runtime;
-  if (!runtime?.id) return false;
-  const sender = port?.sender;
-  if (!sender || sender.id !== runtime.id) return false;
-  return sender.url === runtime.getURL(ACCESS_PANEL_PATH);
+  return isSidePanelSender(port?.sender);
 }
 
 /**
@@ -98,6 +99,7 @@ function portBoundToSession(port, sessionId) {
 export class SessionRunner {
   constructor({ meta, body, color, isTakenByOther, onSessionsChanged }) {
     this.id = meta.id;
+    this.continuation = checkpointFor(body);
     this.title = meta.title;
     this.project = body.project ?? null;
     this.projectRequest = 0;
@@ -112,6 +114,9 @@ export class SessionRunner {
     // `text` is the short line in the chat; `model` is the full file text.
     this.inbox = Array.isArray(body.pending) ? body.pending : [];
     this.turnAbort = null;
+    this.autoCompactBlocked = false; // a failed automatic compaction is not retried in the same task
+    this.autoCompactBlockedUntil = 0; // the size a conversation must pass before it is compacted again
+    this.awaitingShrink = false; // an automatic compaction happened and its effect is not measured yet
     this.onSessionsChanged = onSessionsChanged;
     this.ports = new Set();
     // The live panels that may ask for the access mode, and the listeners
@@ -163,7 +168,7 @@ export class SessionRunner {
   /** `early` holds what the panel sent before this session finished loading. */
   attach(port, early = []) {
     try {
-      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), permissions: this.currentPermissions(), project: this.project });
+      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, resumable: Boolean(this.continuation), question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), permissions: this.currentPermissions(), project: this.project });
     } catch {
       // The panel closed or moved on while this session loaded. Keeping its closed
       // port would make every later emit throw before reaching the next panel.
@@ -219,11 +224,15 @@ export class SessionRunner {
 
   receive(msg, port = null) {
     if (this.disposed) return; // a session that is gone answers nothing
-    if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images, tabId: msg.tabId, voiceLanguage: msg.voiceLanguage });
+    // /compact is a command to this worker, never a task or a message for the model.
+    const command = msg.type === 'run' || msg.type === 'steer' ? parseCompactCommand(msg.text) : null;
+    if (command) this.requestCompact(command.focus, msg.mode);
+    else if (msg.type === 'run') this.start(msg.text, { display: msg.display, images: msg.images, tabId: msg.tabId, voiceLanguage: msg.voiceLanguage });
     else if (msg.type === 'steer') this.steer(msg.text, msg.mode, { display: msg.display, images: msg.images });
     else if (msg.type === 'steer-now') this.sendNow(msg.id);
     else if (msg.type === 'steer-cancel') this.dropMessage(msg.id);
     else if (msg.type === 'stop') this.stop();
+    else if (msg.type === 'resume' && ownSidePanel(port) && portBoundToSession(port, this.id)) this.resume(msg.tabId);
     else if (msg.type === 'answer') this.answer(msg.text, msg.display);
     else if (msg.type === 'dismiss-notice') this.emit({ type: 'notice-dismissed', id: msg.id });
     else if (msg.type === 'access-mode') this.setAccessMode(msg, port);
@@ -235,7 +244,7 @@ export class SessionRunner {
 
   // @store-strip-start
   async setProject(msg, port) {
-    if (!this.livePort(port) || !ownSidePanel(port) || !portBoundToSession(port, this.id) || msg.sessionId !== this.id) return;
+    if (!this.livePort(port) || !ownSidePanel(port) || !portBoundToSession(port, this.id) || msg.sessionId !== this.id) throw new Error('Project linking requires this chat’s connected panel. Reopen the panel and try again.');
     if (this.running) throw new Error('Stop the current task before changing its project.');
     const request = ++this.projectRequest;
     let project = null;
@@ -448,6 +457,8 @@ export class SessionRunner {
   }
 
   emit(event) {
+    if (event.type === 'final') this.continuation = null;
+    if (event.type === 'status') event.resumable = Boolean(this.continuation) && !event.running;
     if (!STREAMING.has(event.type)) {
       event.at ??= Date.now(); // the panel shows durations from these
       this.transcript.push(event);
@@ -485,11 +496,30 @@ export class SessionRunner {
       this.start(clean, { display: shown, images: attached });
       return;
     }
-    const item = { id: crypto.randomUUID(), text: shown, model: clean, images: attached, mode: ['interrupt', 'queue'].includes(mode) ? mode : 'next-step', now: mode === 'interrupt' };
+    this.enqueue({ id: crypto.randomUUID(), text: shown, model: clean, images: attached, mode: ['interrupt', 'queue'].includes(mode) ? mode : 'next-step', now: mode === 'interrupt' });
+  }
+
+  /** A message or /compact request that waits for the running task; "interrupt" cuts the current turn short. */
+  enqueue(item) {
     this.inbox.push(item);
     this.emit({ type: 'pending-added', item: { id: item.id, text: item.text, mode: item.mode, now: item.now } });
     this.scheduleSave();
     if (item.now) this.turnAbort?.abort();
+  }
+
+  /**
+   * `/compact [focus]`. With no task running the conversation is compacted now. While
+   * one runs the request is a waiting message like any other and follows the same
+   * mode: "next-step" compacts before the model's next turn, "interrupt" cuts the
+   * current turn short and compacts, "queue" waits until the task has finished.
+   */
+  requestCompact(focus = '', mode = 'next-step') {
+    if (!this.running) {
+      this.compactAndSettle({ focus });
+      return;
+    }
+    const kind = ['interrupt', 'queue'].includes(mode) ? mode : 'next-step';
+    this.enqueue({ id: crypto.randomUUID(), text: focus ? `/compact ${focus}` : '/compact', model: '', images: [], mode: kind, now: kind === 'interrupt', compact: { focus } });
   }
 
   /** "Send now" on a waiting message: into the running task at once, or as a new task. */
@@ -498,7 +528,8 @@ export class SessionRunner {
     if (!item) return;
     if (!this.running) {
       this.dropMessage(id);
-      this.start(item.model || item.text, { display: item.text, images: item.images });
+      if (item.compact) this.compactAndSettle({ focus: item.compact.focus });
+      else this.start(item.model || item.text, { display: item.text, images: item.images });
       return;
     }
     item.now = true;
@@ -515,7 +546,8 @@ export class SessionRunner {
 
   /** What runAgent uses to deliver messages (see runAgent's `steering`). */
   steering() {
-    const due = (m) => m.now || m.mode !== 'queue';
+    // A /compact request is not a message for the model: compaction() takes it.
+    const due = (m) => !m.compact && (m.now || m.mode !== 'queue');
     return {
       waiting: () => this.inbox.some(due),
       take: () => {
@@ -538,7 +570,169 @@ export class SessionRunner {
     };
   }
 
-  async start(text, { display, images, tabId, voiceLanguage } = {}) {
+  /**
+   * What runAgent calls between model turns (see runAgent's `compaction`). A due
+   * /compact request is done now. The automatic one follows the same steering
+   * mode as a message: with "queue" it waits for the task to end (settle()
+   * does it then); otherwise it is done at this turn boundary. How big the
+   * conversation is comes from the last turn's input tokens, or, on a task's
+   * first turn, from the turn the previous task ended with.
+   */
+  compaction() {
+    return {
+      // `start` is the check before the task is added to the conversation: nothing to continue yet.
+      beforeTurn: async ({ session, inputTokens, signal, task, images, start = false }) => {
+        const size = inputTokens || lastInputTokens(this.transcript);
+        const carry = start ? null : { task, images };
+        const asked = this.inbox.filter((m) => m.compact && (m.now || m.mode !== 'queue'));
+        for (const m of asked) this.dropMessage(m.id);
+        if (asked.length) {
+          return this.runCompaction(session, { focus: joinFocus(asked), auto: false, continueTask: !start, carry, signal, size });
+        }
+        const config = this.settings?.autoCompact;
+        // A compaction that did not shrink the conversation waits for it to grow
+        // again before another summary is paid for. Past the urgent limit the
+        // conversation is compacted whatever it is: the model's own limit is
+        // closer than the cost of the summary.
+        const urgent = config.thresholdTokens * POSTPONE_LIMIT;
+        if (this.autoCompactBlockedUntil) {
+          if (size < this.autoCompactBlockedUntil && size < urgent) return false;
+          this.autoCompactBlockedUntil = 0;
+        }
+        if (this.autoCompactBlocked || this.compactedNotShrunk(config, inputTokens)) return false;
+        if (!autoCompactDue(config, size)) return false;
+        // "Queue" postpones it to the end of the task, unless the conversation has grown so far past the
+        // threshold that waiting would risk the model's limit.
+        const postponed = this.settings?.steerMode === 'queue' && size < config.thresholdTokens * POSTPONE_LIMIT;
+        if (postponed) return false;
+        return this.runCompaction(session, { auto: true, continueTask: !start, carry, signal, size });
+      },
+    };
+  }
+
+  /**
+   * The first turn read after an automatic compaction says whether it helped. A task
+   * that is itself over the threshold keeps the conversation over it, and compacting
+   * again every turn would only add a paid summary to each step: then the next one
+   * waits until the conversation has grown past the size it had, so a long task is
+   * compacted when it needs it and not at every turn. Past the urgent limit it is
+   * compacted right away: the model's own limit is closer than the summary.
+   * Zero is "no turn since": nothing to judge yet.
+   */
+  compactedNotShrunk(config, inputTokens) {
+    if (!this.awaitingShrink || !inputTokens) return false;
+    this.awaitingShrink = false;
+    if (!autoCompactDue(config, inputTokens)) return false;
+    if (inputTokens >= config.thresholdTokens * POSTPONE_LIMIT) return false;
+    this.autoCompactBlockedUntil = inputTokens + Math.round(config.thresholdTokens * 0.25);
+    return true;
+  }
+
+  /**
+   * Asks the model for the summary and swaps it in (FallbackSession.compact).
+   * Says whether it compacted. A failure is shown and the task goes on with the
+   * conversation it has; Stop is passed on.
+   */
+  async runCompaction(session, { focus = '', auto = false, continueTask = false, carry = null, signal, size = 0 }) {
+    this.emit({ type: 'compacting', auto });
+    try {
+      // The mode in force when the new conversation is built, not a snapshot of
+      // it from before the summary: the summary takes a while, and the user may
+      // have changed the mode in the mean time.
+      const { summary, usage } = await session.compact({ prompt: compactPrompt(focus), signal, continueTask, carry, accessState: () => this.access.state() });
+      this.emit({ type: 'compacted', auto, focus, summary, tokensBefore: size, usage: normalizeUsage(usage) });
+      if (auto) this.awaitingShrink = true;
+      return true;
+    } catch (err) {
+      if (err?.name === 'AbortError' || signal?.aborted) throw err;
+      if (auto) this.autoCompactBlocked = true;
+      this.emit({ type: 'compact-failed', auto, message: err.message });
+      return false;
+    }
+  }
+
+  /**
+   * Compacts a conversation no task is running in: the session is busy while it
+   * does, and Stop cancels it. Says how it ended: 'done', 'failed' or 'stopped'.
+   */
+  async compactIdle({ focus = '', auto = false } = {}) {
+    if (this.running || this.disposed) return 'failed';
+    if (!this.transcript.some((event) => event.type === 'user')) {
+      this.emit({ type: 'compact-failed', auto, code: 'nothing' });
+      return 'failed';
+    }
+    const abort = new AbortController();
+    this.abort = abort;
+    // The worker must stay alive while the model writes the summary, as it does for a task.
+    const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
+    this.emit({ type: 'status', running: true });
+    try {
+      const settings = await loadSettings();
+      this.settings = settings;
+      // The session that holds the conversation, even if the backup finished the last task:
+      // rebuilding it would put the summary request to the provider that had failed.
+      if (!this.session) this.prepareModelSession(settings);
+      const done = await this.runCompaction(this.session, { focus, auto, continueTask: false, signal: abort.signal, size: lastInputTokens(this.transcript) });
+      return done ? 'done' : 'failed';
+    } catch (err) {
+      // Stop during a compaction is not a stopped task: a "stopped" event would offer to resume the last task.
+      const stopped = err?.name === 'AbortError';
+      if (auto) this.autoCompactBlocked = true;
+      this.emit({ type: 'compact-failed', auto, ...(stopped ? { code: 'stopped' } : { message: err.message }) });
+      return stopped ? 'stopped' : 'failed';
+    } finally {
+      clearInterval(keepAlive);
+      this.abort = null;
+      this.emit({ type: 'status', running: false });
+      this.onSessionsChanged();
+    }
+  }
+
+  /**
+   * A /compact typed with no task running. What was waiting before it (left there by
+   * a Stop, for the user to decide) stays; what is sent while it works is read after.
+   */
+  compactAndSettle({ focus }) {
+    const before = new Set(this.inbox.map((m) => m.id));
+    this.compactIdle({ focus }).then((how) => (how === 'stopped' ? null : this.settle({ keep: before, auto: false })), () => {});
+  }
+
+  /**
+   * The session is free: /compact requests that waited, the automatic compaction
+   * that "queue" mode postponed, then the messages that waited, as a follow-up task.
+   * `keep` names what must stay where it is. A Stop during the compaction ends it all.
+   */
+  async settle({ keep = new Set(), auto: allowAuto = true } = {}) {
+    if (this.disposed || this.running) return;
+    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript));
+    // A /compact typed while one is running waits for it, so asking again finds it.
+    for (let asked = this.takeCompactRequests(keep); asked.length || auto; asked = this.takeCompactRequests(keep)) {
+      const how = await this.compactIdle({ focus: joinFocus(asked), auto: !asked.length });
+      if (how === 'stopped') return;
+      auto = false;
+    }
+    this.drainInbox(keep);
+  }
+
+  /** The waiting /compact requests, taken off the inbox. */
+  takeCompactRequests(keep) {
+    const asked = this.inbox.filter((m) => m.compact && !keep.has(m.id));
+    for (const m of asked) this.dropMessage(m.id);
+    return asked;
+  }
+
+  /** The waiting messages become one follow-up task. */
+  drainInbox(keep = new Set()) {
+    const texts = this.inbox.filter((m) => !m.compact && !keep.has(m.id));
+    if (!texts.length || this.disposed || this.running) return;
+    const next = texts.map((m) => m.model || m.text).join('\n\n');
+    const nextImages = texts.flatMap((m) => m.images ?? []);
+    const nextShown = texts.map((m) => m.text).join('\n\n');
+    for (const m of texts) this.dropMessage(m.id);
+    this.start(next, { display: nextShown, images: nextImages });
+  }
+
+  async start(text, { display, images, tabId, voiceLanguage, resumed = false } = {}) {
     if (this.running) {
       this.emit({ type: 'error', message: 'A task is already running in this session. Stop it first.' });
       return;
@@ -547,14 +741,19 @@ export class SessionRunner {
     const attached = Array.isArray(images) ? images : [];
     const abort = new AbortController();
     this.abort = abort;
+    this.continuation = { task: text, images: attached, tabId: tabId ?? null, at: Date.now() };
     // Extension API calls reset the service worker idle timer while the model thinks.
     const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
     this.notified.clear();
     this.retryNoticeShown = false;
-    this.emit({ type: 'user', text: shown });
+    this.autoCompactBlocked = false;
+    this.autoCompactBlockedUntil = 0;
+    this.awaitingShrink = false;
+    if (!resumed) this.emit({ type: 'user', text: shown });
     this.emit({ type: 'status', running: true });
     let finished = false;
     try {
+      await this.save();
       if (!this.titled) await this.nameAfter(shown);
       this.onSessionsChanged(); // after naming, so other panels list it with its title
       const settings = await loadSettings();
@@ -565,6 +764,22 @@ export class SessionRunner {
       this.browser.tabId = null; // each task starts on the tab the user is looking at
       const tab = await this.browser.startOn(tabId);
       const execute = createToolExecutor(this.browser, { askUser: (q) => this.askUser(q, abort.signal), signal: abort.signal, notebook: this.notebook, onNotebookChange: () => this.scheduleSave(), allowed: new Set(toolDefinitions(effectiveSettings(settings)).map((t) => t.name)), access: this.access, getProject: () => this.project });
+      let untrustedContext = '';
+      // @store-strip-start
+      if (this.project) {
+        this.emit({ type: 'tool-start', step: 0, callId: 'initial-project-context', name: 'project_context', args: {} });
+        const result = await execute('project_context', {});
+        if (result.isError) throw new Error(result.output);
+        // The text of the project is not part of the task. It reaches the model
+        // as a message of its own, framed as data, so a file cannot be read as
+        // something the user asked for.
+        untrustedContext = result.output;
+        this.emit({ type: 'tool-end', step: 0, callId: 'initial-project-context', name: 'project_context', ok: true, summary: 'Initial project context loaded, including the recursive file inventory and explicit reading limits.' });
+      }
+      // @store-strip-end
+      // The user may have changed access mode while approving project reads.
+      // Seed the first model turn with the current authority snapshot.
+      this.prepareModelSession(settings);
       const fastLayer = settings.fast.enabled && settings.fast.apiKey
         ? createFastLayer({ config: settings.fast, browser: this.browser, execute, task: text, ask: createFastAsk(settings.fast, this.notify) })
         : null;
@@ -572,18 +787,22 @@ export class SessionRunner {
         fastLayer,
         session: this.session,
         execute,
-        task: text + (this.project ? `\n\n[Selected project: ${this.project.name}. Use project_list/read/write/run for its files and commands. File paths are relative to the selected root.]` : '') + describeTabContext(tab) + replyLanguageReminder(settings.replyLanguage),
+        task: (resumed ? `Resume the interrupted task below from the current page and saved progress. Check the current state first. Never repeat a completed send, purchase, deletion or other side effect merely because the previous run stopped. If its outcome is uncertain, verify it before proceeding.\n\n${text}` : text) + (this.project ? `\n\n[Selected project: ${this.project.name}. Use project_list/read/write/run for its files and commands. File paths are relative to the selected root.]` : '') + describeTabContext(tab) + replyLanguageReminder(settings.replyLanguage),
+        untrustedContext,
         images: attached,
         maxSteps: Math.max(1, Number(settings.maxSteps) || 40),
         signal: abort.signal,
         emit: (event) => this.emit(event),
         steering: this.steering(),
+        compaction: this.compaction(),
         getAccessState: () => this.access.state(),
       });
       finished = true;
     } catch (err) {
-      this.emit(err.name === 'AbortError' ? { type: 'stopped' } : { type: 'error', message: err.message });
-      if (err.name !== 'AbortError') this.transition('failed'); // stopped by the user: they know
+      const stopped = abort.signal.aborted || err.name === 'AbortError';
+      if (!stopped) this.continuation = null;
+      this.emit(stopped ? { type: 'stopped' } : { type: 'error', message: err.message });
+      if (!stopped) this.transition('failed'); // stopped by the user: they know
     } finally {
       clearInterval(keepAlive);
       // The run is over: nothing it approved survives it. The mode the user
@@ -600,15 +819,9 @@ export class SessionRunner {
       this.emit({ type: 'status', running: false });
       this.onSessionsChanged();
     }
-    // Messages still waiting become the follow-up task, sent together. After a Stop or
-    // an error they stay, so the user decides.
-    if (finished && this.inbox.length && !this.disposed) {
-      const next = this.inbox.map((m) => m.model || m.text).join('\n\n');
-      const nextImages = this.inbox.flatMap((m) => m.images ?? []);
-      const nextShown = this.inbox.map((m) => m.text).join('\n\n');
-      for (const m of [...this.inbox]) this.dropMessage(m.id);
-      this.start(next, { display: nextShown, images: nextImages });
-    }
+    // /compact requests that waited, then the messages still waiting as the follow-up
+    // task, sent together. After a Stop or an error they stay, so the user decides.
+    if (finished && !this.disposed) await this.settle();
   }
 
   /**
@@ -622,7 +835,9 @@ export class SessionRunner {
    * mode that is really in force, and the key of the session includes it, so
    * a mode that moved is described by the next task. The snapshot is read
    * from the authority and from nowhere else: a setting, a message or a
-   * transcript never names a mode.
+   * transcript never names a mode. A session that is built later reads the
+   * mode again, so a backup that takes over later describes the mode that is
+   * in force then.
    */
   prepareModelSession(settings) {
     const accessState = this.access.state();
@@ -634,7 +849,7 @@ export class SessionRunner {
       : this.session.switched ? 'the previous task was finished by the backup provider'
         : modeMoved ? 'the access mode in force changed'
           : 'the model was changed in settings';
-    this.session = createModelSession(settings, { notify: this.notify, seed: log ? { log, reason } : null, conversationId: this.id, notebook: this.notebook, accessState });
+    this.session = createModelSession(settings, { notify: this.notify, seed: log ? { log, reason } : null, conversationId: this.id, notebook: this.notebook, accessState: () => this.access.state(), history: conversationHistory(this.transcript) });
     this.sessionKey = key;
     this.sessionMode = accessState.mode;
   }
@@ -649,6 +864,14 @@ export class SessionRunner {
     this.title = title;
     this.titled = true;
     await this.browser.rename(title);
+  }
+
+  resume(tabId) {
+    if (this.running || !this.continuation) return;
+    const checkpoint = this.continuation;
+    this.storedLog = this.session?.log ?? this.storedLog;
+    this.session = null; // rebuild from saved history, without unfinished tool calls
+    return this.start(checkpoint.task, { images: checkpoint.images ?? [], tabId: tabId ?? checkpoint.tabId ?? undefined, resumed: true });
   }
 
   stop() {
@@ -712,6 +935,11 @@ export class SessionRunner {
   async save() {
     clearTimeout(this.saveTimer);
     if (this.disposed) return;
-    await store.saveSession(this.id, { transcript: this.transcript, log: this.session?.log ?? this.storedLog, groupId: this.browser.groupId, notebook: this.notebook.toJSON(), pending: this.inbox, project: this.project });
+    await store.saveSession(this.id, { transcript: this.transcript, log: this.session?.log ?? this.storedLog, groupId: this.browser.groupId, notebook: this.notebook.toJSON(), pending: this.inbox, project: this.project, continuation: this.continuation });
   }
+}
+
+/** The focus texts of waiting /compact requests, as one. */
+function joinFocus(items) {
+  return items.map((m) => m.compact?.focus).filter(Boolean).join('; ');
 }

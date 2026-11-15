@@ -16,14 +16,18 @@ export async function runDriveBackupScenario(context, extensionId) {
     await worker.evaluate(() => {
       globalThis.__driveOriginalFetch = globalThis.fetch;
       globalThis.__driveOriginalAuthorize = chrome.identity.launchWebAuthFlow;
-      globalThis.__driveTest = { writes: 0, denied: false };
+      globalThis.__driveTest = { writes: 0, denied: false, lastBody: null };
       chrome.identity.launchWebAuthFlow = async () => { throw new Error('Synthetic Google session expired'); };
       globalThis.fetch = async (input, init = {}) => {
         const url = String(input);
         if (!url.startsWith('https://www.googleapis.com/')) return globalThis.__driveOriginalFetch(input, init);
         if (new Headers(init.headers).get('Authorization') !== 'Bearer SYNTHETIC-DRIVE-TOKEN') throw new Error('Wrong Drive credential');
         if (globalThis.__driveTest.denied) return Response.json({ error: { message: 'Synthetic permission denied' } }, { status: 403 });
-        if (init.method === 'PATCH') { globalThis.__driveTest.writes++; return Response.json({ id: 'synthetic-drive-file' }); }
+        if (init.method === 'PATCH') {
+          globalThis.__driveTest.writes++;
+          globalThis.__driveTest.lastBody = typeof init.body === 'string' ? init.body : null;
+          return Response.json({ id: 'synthetic-drive-file' });
+        }
         return Response.json({ files: [{ id: 'synthetic-drive-file' }] });
       };
     });
@@ -36,6 +40,9 @@ export async function runDriveBackupScenario(context, extensionId) {
     });
     const first = await worker.evaluate(() => globalThis.__driveTest.writes);
     assert.equal(first, 1);
+    // The conversations are not in this backup: the user did not ask for them.
+    const offDocument = await worker.evaluate(() => globalThis.__driveTest.lastBody);
+    assert.deepEqual(JSON.parse(offDocument).sessions, [], 'the backup holds no conversations');
     for (const language of ['en', 'ar']) {
       await panel.evaluate(async (language) => {
         const { settings } = await chrome.storage.local.get('settings');
@@ -86,6 +93,32 @@ export async function runDriveBackupScenario(context, extensionId) {
       await panel.click('#driveBackupBtn');
       await panel.waitForSelector('#accountStatus[data-tone="success"]');
     }
+    // The user turns the conversations on. The backup holds them from now on.
+    await panel.evaluate(async () => {
+      const { settings } = await chrome.storage.local.get('settings');
+      await chrome.storage.local.set({ settings: { ...settings, backupChats: true } });
+      const response = await chrome.runtime.sendMessage({ type: 'drive-backup-now' });
+      if (response.error || response.result?.error) throw new Error('The backup with the conversations failed');
+    });
+    const onDocument = await worker.evaluate(() => globalThis.__driveTest.lastBody);
+    assert.ok(Array.isArray(JSON.parse(onDocument).sessions), 'the backup holds the conversations');
+
+    // The order the conversations are in does not change what is uploaded:
+    // touching one moves it in the list, and the backup must stay the same one.
+    const hashBefore = await panel.evaluate(async () => (await chrome.storage.local.get('driveBackup')).driveBackup.hash);
+    const reordered = await panel.evaluate(async () => {
+      const { sessions } = await chrome.storage.local.get('sessions');
+      const index = sessions ?? [];
+      if (index.length < 2) return false;
+      const [first, second] = index;
+      await chrome.storage.local.set({ sessions: [{ ...second, updatedAt: first.updatedAt + 1000 }, first, ...index.slice(2)] });
+      return true;
+    });
+    assert.equal(reordered, true, 'two conversations to put in another order');
+    await panel.click('#driveBackupBtn');
+    await panel.waitForSelector('#accountStatus[data-tone="success"]');
+    const hashAfter = await panel.evaluate(async () => (await chrome.storage.local.get('driveBackup')).driveBackup.hash);
+    assert.equal(hashAfter, hashBefore, 'the same conversations in another order are the same backup');
     await panel.evaluate(() => chrome.storage.session.remove('googleToken'));
     const writes = await worker.evaluate(() => globalThis.__driveTest.writes);
     await panel.click('#driveBackupBtn');

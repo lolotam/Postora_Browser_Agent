@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 // while the question is open.
 
 const EXTENSION_ID = 'voice-access-extension';
-const PANEL_URL = `chrome-extension://${EXTENSION_ID}/src/sidepanel/index.html`;
+const PANEL_URL = `chrome-extension://${EXTENSION_ID}/src/sidepanel/index.html?tabId=7`;
 
 const records = {};
 const tabCalls = [];

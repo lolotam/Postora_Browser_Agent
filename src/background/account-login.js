@@ -5,6 +5,7 @@
 
 import { ACCOUNT_ERROR_CODES, accountFlow, beginAccountAttempt, cancelAccountAttempt, storeCredential } from '../providers/account-auth.js';
 import { ACCOUNT_PROVIDERS } from '../lib/settings.js';
+import { trustedPlanVerificationUrl } from '../providers/plan-oauth.js';
 
 const KEEP_ALIVE_MS = 20000;
 // A sign-in nobody finishes stops here, so its keep-alive does not run forever.
@@ -125,6 +126,7 @@ async function runAttempt(attempt, { post, first }) {
       return;
     }
     attempt.phase = 'signed-in';
+    if (['kimi', 'minimax', 'zai'].includes(attempt.provider)) await returnFromKimiSignIn(attempt);
     // A flow that finished before showing anything still answers auth-start.
     first.resolve({ userCode: null, verificationUrl: null });
     post({ type: 'auth-success', provider: attempt.provider });
@@ -195,19 +197,20 @@ function openAuthorization(attempt, event, { post, first }) {
   attempt.phase = 'authorizing';
   // The URL carries the PKCE verifier, so the worker opens it and the panel
   // never sees it.
-  openTab(event.url);
+  openTab(event.url, attempt);
   post({ type: 'auth-event', provider: attempt.provider, attemptId: attempt.id, kind: 'opened' });
   first.resolve({ userCode: null, verificationUrl: null });
 }
 
 function showDeviceCode(attempt, event, { post, first }) {
+  if (['minimax', 'zai'].includes(attempt.provider) && !trustedPlanVerificationUrl(attempt.provider, event.verificationUri)) throw new Error('Untrusted plan verification URL');
   if (attempt.provider === 'kimi' && !trustedKimiVerificationUrl(event.verificationUri)) {
     throw new Error('Untrusted Kimi verification URL');
   }
   attempt.phase = 'authorizing';
   attempt.deviceCode = event.userCode;
   attempt.verificationUrl = event.verificationUri;
-  openTab(event.verificationUri);
+  openTab(event.verificationUri, attempt);
   post({
     type: 'auth-event', provider: attempt.provider, attemptId: attempt.id,
     kind: 'device_code', userCode: event.userCode, verificationUrl: event.verificationUri,
@@ -220,12 +223,58 @@ export function trustedKimiVerificationUrl(value) {
   try {
     const url = new URL(value);
     return url.protocol === 'https:' && !url.username && !url.password && !url.port
-      && ['auth.kimi.com', 'www.kimi.com', 'kimi.com'].includes(url.hostname);
+      && ['auth.kimi.ai', 'www.kimi.ai', 'kimi.ai'].includes(url.hostname);
   } catch { return false; }
 }
 
-function openTab(url) {
-  chrome.tabs.create({ url, active: true }).catch(() => {});
+function openTab(url, attempt) {
+  // The page this sign-in opened. A tab that is no longer on it belongs to
+  // the user, and the user keeps it.
+  attempt.authorizationUrl = url;
+  if (!['kimi', 'minimax', 'zai'].includes(attempt.provider)) {
+    chrome.tabs.create({ url, active: true }).catch(() => {});
+    return;
+  }
+  attempt.openedTab = (async () => {
+    let previous;
+    try { [previous] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); }
+    catch { /* Opening authorization must still work without a return target. */ }
+    if (attempt.controller.signal.aborted) return null;
+    const tab = await chrome.tabs.create({ url, active: true });
+    return { tab, previous };
+  })().catch(() => null);
+}
+
+/** Device-code authorization returns through polling, not a redirect URL. */
+async function returnFromKimiSignIn(attempt) {
+  const opened = await attempt.openedTab;
+  if (!opened || attempt.controller.signal.aborted) return;
+  const { tab, previous } = opened;
+  if (previous?.id !== undefined) {
+    await chrome.tabs.update?.(previous.id, { active: true }).catch(() => {});
+    if (previous.windowId !== undefined) await chrome.windows?.update?.(previous.windowId, { focused: true }).catch(() => {});
+  }
+  if (tab?.id !== undefined && tab.id !== previous?.id && chrome.tabs.get) {
+    const current = await chrome.tabs.get(tab.id).catch(() => null);
+    // Leave a tab alone if the user has navigated it away from authorization.
+    // A trusted host on its own is not enough: the tab must still be on the
+    // page this sign-in opened, or it is the user's tab now.
+    if (current && sameAuthorizationPage(attempt.authorizationUrl, current.url) && (attempt.provider === 'kimi' ? trustedKimiVerificationUrl(current.url) : trustedPlanVerificationUrl(attempt.provider, current.url))) await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+/**
+ * The tab is still the sign-in's own when it is on the page the attempt
+ * opened: the same site and the same path. Anything else is a page the user
+ * went to, and that page is not ours to close.
+ */
+export function sameAuthorizationPage(openedUrl, currentUrl) {
+  try {
+    const opened = new URL(openedUrl);
+    const current = new URL(currentUrl);
+    if (opened.origin !== current.origin) return false;
+    return opened.pathname.replace(/\/+$/, '') === current.pathname.replace(/\/+$/, '');
+  } catch { return false; }
 }
 
 /**

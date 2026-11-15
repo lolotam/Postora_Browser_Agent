@@ -24,7 +24,7 @@ fs.writeFileSync(path.join(directory, 'config.json'), JSON.stringify({ origin })
 fs.writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "${path.join(directory, 'host.mjs')}" %*\r\n`);
 const hostManifest = path.join(directory, 'com.postora.private_terminal.json');
 fs.writeFileSync(hostManifest, JSON.stringify({ name: 'com.postora.private_terminal', description: 'Private Postora PowerShell bridge', path: launcher, type: 'stdio', allowed_origins: [origin] }, null, 2));
-for (const browser of ['Google\\Chrome', 'Microsoft\\Edge', 'Chromium']) {
+for (const browser of ['Google\\Chrome', 'Microsoft\\Edge', 'Chromium', 'Comet']) {
   const result = spawnSync('reg.exe', ['ADD', `HKCU\\Software\\${browser}\\NativeMessagingHosts\\com.postora.private_terminal`, '/ve', '/t', 'REG_SZ', '/d', hostManifest, '/f'], { windowsHide: true, encoding: 'utf8' });
   if (result.error || result.status !== 0) throw new Error(result.error?.message || result.stderr || 'Native host registration failed.');
 }

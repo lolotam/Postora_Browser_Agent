@@ -1,4 +1,4 @@
-// Settings, API keys and the account sign-ins as one JSON document. Chrome
+// Settings, API keys, account sign-ins and sessions as one JSON document. Chrome
 // deletes an extension's storage when it is removed, so this document is what
 // survives a remove-and-reinstall: as a file the user keeps, or in their Google
 // Drive (drive-backup.js).
@@ -6,11 +6,20 @@
 import { mergeSettings, ACCOUNT_PROVIDERS } from './settings.js';
 import { credentialOf } from './credentials.js';
 import { ACCOUNT_STORAGE_KEYS, migrateLegacyAccounts, storeCredential } from '../providers/account-auth.js';
+import { exportSessions, importSessions, validateSessions } from '../sessions/store.js';
 
 const FORMAT = 'browser-agent-backup';
-const VERSION = 2;
+const VERSION = 3;
 
-export async function exportBackup() {
+/**
+ * The backup document: settings, keys, account sign-ins and, when the user
+ * wants them there, the conversations.
+ *
+ * `includeSessions` is off where the backup leaves this computer on its own:
+ * a conversation is the user's own work, and it is not uploaded unless the user
+ * said so. A file the user downloads is theirs to keep, so it holds them.
+ */
+export async function exportBackup({ includeSessions = true } = {}) {
   // A ChatGPT sign-in from before the update is still under its old key until
   // something asks for it; the backup must not leave it out.
   await migrateLegacyAccounts();
@@ -21,6 +30,7 @@ export async function exportBackup() {
     exportedAt: new Date().toISOString(),
     settings: mergeSettings(stored.settings),
     accounts: signedInAccounts(stored),
+    sessions: includeSessions ? await exportSessions() : [],
   };
 }
 
@@ -69,9 +79,11 @@ export async function importBackup(data) {
   if (!(data.version <= VERSION)) throw new Error(`This backup was made by a newer version of Postora Browser Agent (format ${data.version}).`);
   // Read everything first: a damaged file must leave the local settings alone.
   const accounts = accountsIn(data);
+  const sessions = Number(data.version) >= 3 ? validateSessions(data.sessions) : [];
   const values = { settings: mergeSettings(data.settings ?? {}) };
   await chrome.storage.local.set(values);
   await restoreAccounts(accounts);
+  await importSessions(sessions);
   return values.settings;
 }
 
