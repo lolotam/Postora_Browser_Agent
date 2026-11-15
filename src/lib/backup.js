@@ -11,7 +11,15 @@ import { exportSessions, importSessions, validateSessions } from '../sessions/st
 const FORMAT = 'browser-agent-backup';
 const VERSION = 3;
 
-export async function exportBackup() {
+/**
+ * The backup document: settings, keys, account sign-ins and, when the user
+ * wants them there, the conversations.
+ *
+ * `includeSessions` is off where the backup leaves this computer on its own:
+ * a conversation is the user's own work, and it is not uploaded unless the user
+ * said so. A file the user downloads is theirs to keep, so it holds them.
+ */
+export async function exportBackup({ includeSessions = true } = {}) {
   // A ChatGPT sign-in from before the update is still under its old key until
   // something asks for it; the backup must not leave it out.
   await migrateLegacyAccounts();
@@ -22,7 +30,7 @@ export async function exportBackup() {
     exportedAt: new Date().toISOString(),
     settings: mergeSettings(stored.settings),
     accounts: signedInAccounts(stored),
-    sessions: await exportSessions(),
+    sessions: includeSessions ? await exportSessions() : [],
   };
 }
 

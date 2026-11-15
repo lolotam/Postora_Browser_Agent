@@ -137,6 +137,10 @@ export const DEFAULT_SETTINGS = {
   // The agent's cursor, captions and Stop bar drawn on the page it controls.
   showCursor: true,
   notify: false, // desktop notifications; also needs the optional permission
+  // Conversations in the Google Drive backup: off unless the user says so. The
+  // backup leaves this computer only with the user's own key, and the user may
+  // not want their tasks and replies in it at all.
+  backupChats: false,
   // A message sent while a task runs: 'next-step', 'interrupt' or 'queue' (see SessionRunner.steer).
   steerMode: 'next-step',
   // Shorten the conversation by itself once a turn read this many input tokens (see sessions/compaction.js).
@@ -246,6 +250,9 @@ export function mergeSettings(stored = {}) {
     },
     replyLanguage: { ...DEFAULT_SETTINGS.replyLanguage, ...(stored.replyLanguage ?? {}) },
     autoCompact: normalizeAutoCompact(stored.autoCompact),
+    // A stored value that is not a switch is no switch: the conversations stay
+    // out of the backup unless the user turned them on.
+    backupChats: typeof stored?.backupChats === 'boolean' ? stored.backupChats : DEFAULT_SETTINGS.backupChats,
     transcription: {
       ...DEFAULT_SETTINGS.transcription, ...(stored.transcription ?? {}),
       mode: stored.transcription?.mode ?? (stored.transcription ? 'auto' : 'browser'),

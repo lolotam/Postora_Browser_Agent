@@ -8,6 +8,8 @@ const TITLE_WORDS = 6;
 
 // Several sessions save at once; index updates run one at a time so none is lost.
 let indexQueue = Promise.resolve();
+// A restore is a whole operation: read the index, decide, write. One at a time.
+let importQueue = Promise.resolve();
 function updateIndex(change) {
   const run = indexQueue.then(async () => {
     const { [INDEX]: index = [] } = await chrome.storage.local.get(INDEX);
@@ -92,27 +94,42 @@ export function validateSessions(archive) {
   return structuredClone(archive);
 }
 
-/** Merge safely. Existing histories survive a collision with an imported ID. */
-export async function importSessions(archive) {
-  const entries = validateSessions(archive);
-  await indexQueue;
-  const existing = await listSessions();
-  const used = new Set(existing.map((meta) => meta.id));
-  const writes = {};
-  const added = [];
-  for (const { meta, body } of entries) {
-    const portable = { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
-    if (used.has(meta.id)) {
-      const current = await loadSession(meta.id);
-      const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.project, value?.continuation ? { ...value.continuation, tabId: null } : null];
-      if (JSON.stringify(historyFields(current)) === JSON.stringify(historyFields(portable))) continue;
+/**
+ * Merge safely. Existing histories survive a collision with an imported ID.
+ *
+ * One restore at a time. Each one reads the index, decides what to write and
+ * writes it, so two at once would both read the same index and both write the
+ * same conversations: the second body would win, and the index would end up
+ * with the same conversation twice. This queue runs the whole operation one
+ * after the other, so the second one sees what the first one added.
+ */
+export function importSessions(archive) {
+  const run = importQueue.then(async () => {
+    const entries = validateSessions(archive);
+    await indexQueue;
+    const existing = await listSessions();
+    const used = new Set(existing.map((meta) => meta.id));
+    const writes = {};
+    const added = [];
+    for (const { meta, body } of entries) {
+      const portable = { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
+      if (used.has(meta.id)) {
+        const current = await loadSession(meta.id);
+        const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.project, value?.continuation ? { ...value.continuation, tabId: null } : null];
+        if (JSON.stringify(historyFields(current)) === JSON.stringify(historyFields(portable))) continue;
+      }
+      const id = used.has(meta.id) ? crypto.randomUUID() : meta.id;
+      used.add(id);
+      added.push({ ...meta, id, groupId: null });
+      writes[bodyKey(id)] = portable;
     }
-    const id = used.has(meta.id) ? crypto.randomUUID() : meta.id;
-    used.add(id);
-    added.push({ ...meta, id, groupId: null });
-    writes[bodyKey(id)] = portable;
-  }
-  await chrome.storage.local.set(writes);
-  await updateIndex((index) => [...index, ...added]);
-  return added.length;
+    await chrome.storage.local.set(writes);
+    await updateIndex((index) => {
+      const known = new Set(index.map((meta) => meta.id));
+      return [...index, ...added.filter((meta) => !known.has(meta.id))];
+    });
+    return added.length;
+  });
+  importQueue = run.catch(() => {});
+  return run;
 }

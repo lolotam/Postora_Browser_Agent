@@ -680,6 +680,11 @@ function onEvent(event) {
     case 'session-missing':
       showTabSession();
       break;
+    case 'tab-session-changed':
+      // A notification brought a session back to a tab. The panel Chrome keeps
+      // for that tab shows it; another tab's panel keeps its own session.
+      if (ownerTabId !== null && ownerTabId === event.tabId) showTabSession(event.tabId).catch(() => {});
+      break;
     case 'auth-success':
       authNote[event.provider] = '';
       refreshAuthState(event.provider).catch(() => {});
@@ -1957,6 +1962,12 @@ window.addEventListener('pagehide', () => {
   voiceApproval?.();
 });
 chrome.runtime.onMessage.addListener(onMicMessage);
+// Auth events arrive via runtime messages too, so a panel without a port
+// (e.g. after a worker restart) still hears the failure or device code.
+const AUTH_RUNTIME_EVENTS = new Set(['auth-success', 'auth-event', 'auth-prompt', 'auth-error']);
+chrome.runtime.onMessage.addListener((message) => {
+  if (AUTH_RUNTIME_EVENTS.has(message?.type)) onEvent(message);
+});
 chrome.windows.onRemoved.addListener((id) => {
   if (id !== micWindowId) return;
   micWindowId = null;
@@ -2353,12 +2364,25 @@ function renderDriveState(state = driveState) {
   if (driveState.error) $('driveStatus').textContent = t('drive.failed', { reason: driveState.error });
   else if (driveState.at) $('driveStatus').textContent = t('drive.saved', { time: `⁨${new Date(driveState.at).toLocaleString(currentLanguage())}⁩` }) // isolated, or bidi scrambles the date inside Arabic text;
   else $('driveStatus').textContent = t('drive.none');
+  renderDriveContents();
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.driveBackup) renderDriveState(changes.driveBackup.newValue);
 });
 chrome.storage.local.get('driveBackup').then(({ driveBackup }) => renderDriveState(driveBackup));
+
+/**
+ * What the Drive backup holds. The conversations are in it only when the user
+ * turned the switch on, so the account menu says which of the two it is. A
+ * backup without them is the normal one: the backup leaves the computer on
+ * its own, and a task history is the user's own work.
+ */
+function renderDriveContents() {
+  const line = $('driveContents');
+  if (!line) return;
+  line.textContent = settings?.backupChats === true ? t('drive.contents.on') : t('drive.contents.off');
+}
 $('googleSignOutBtn').addEventListener('click', async () => {
   await signOutOfGoogle();
   account = null;
@@ -2622,14 +2646,31 @@ function syncHeaderContext() {
 
 const keyStore = createKeyStore();
 window.addEventListener('postora-worker-mismatch', () => { $('workerUpdateNotice').hidden = false; });
-$('reloadExtension').addEventListener('click', () => {
+/**
+ * The extension is reloaded, but not while a task runs. The panel knows only
+ * about its own session, so the worker is asked which sessions are busy: a
+ * task in another session, in its own tab group, would be ended in the middle
+ * by the reload. A worker that cannot answer is not a reason to end a task
+ * that may be running.
+ */
+async function reloadExtension() {
   if (ui.running) { showSettingsError(t('connection.stopBeforeReload')); return; }
+  let busy = false;
+  try {
+    const sessions = await request('sessions-list');
+    busy = sessions.some((session) => session.running);
+  } catch (err) {
+    showSettingsError(err.message ?? t('connection.stopBeforeReload'));
+    return;
+  }
+  if (busy) { showSettingsError(t('connection.stopBeforeReload')); return; }
   chrome.runtime.reload();
-});
+}
+$('reloadExtension').addEventListener('click', reloadExtension);
 const transcriptionForm = createTranscriptionForm();
 const saveSettings = createSettingsSaver({
   getSettings: () => settings,
-  onSaved: (saved) => { settings = saved; },
+  onSaved: (saved) => { settings = saved; renderDriveContents(); },
   save: (next) => request('save-settings', { settings: next }),
 });
 const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
@@ -2803,6 +2844,7 @@ function syncFooter() {
 async function init() {
   const data = await request('get-settings');
   settings = data.settings;
+  renderDriveContents();
   presets = data.presets;
   fastPresets = data.fastPresets;
   setLanguage(resolveLanguage(settings.uiLanguage, chrome.i18n.getUILanguage()));
@@ -2861,6 +2903,7 @@ function fillForm() {
   $('autoCompact').checked = settings.autoCompact.enabled;
   $('autoCompactTokens').value = settings.autoCompact.thresholdTokens;
   syncAutoCompact();
+  $('backupChats').checked = settings.backupChats === true;
   syncNotifySwitch();
   $('replyLangEnabled').checked = settings.replyLanguage.enabled;
   $('replyLang').value = settings.replyLanguage.language;
@@ -2918,6 +2961,7 @@ function readForm() {
   next.showCursor = $('showCursor').checked;
   next.steerMode = $('steerMode').value;
   next.autoCompact = { enabled: $('autoCompact').checked, thresholdTokens: Number($('autoCompactTokens').value) };
+  next.backupChats = $('backupChats').checked === true;
   next.notify = $('notify').checked;
   next.replyLanguage = { enabled: $('replyLangEnabled').checked, language: $('replyLang').value };
   next.voiceEngine = $('voiceEngine')?.value || 'postora';
@@ -3179,6 +3223,7 @@ $('restoreFile').addEventListener('change', async () => {
 async function showRestoredSettings(restored) {
   settings = restored;
   fillForm();
+  renderDriveContents();
   updateChip();
   await refreshAuthStates();
   mainForm.loadModels();
@@ -3586,12 +3631,14 @@ function setAuthMessage(provider, text) {
 function showDeviceCode(provider, code, url) {
   const box = authEl(provider, 'device');
   if (!box) return;
-  if (!code) {
+  // A sign-in that gives only a link still has something to show: the box
+  // stays and the code line goes away.
+  if (!code && !url) {
     box.hidden = true;
     return;
   }
   const shown = authEl(provider, 'deviceCode');
-  if (shown) shown.textContent = code;
+  if (shown) { shown.textContent = code || ''; shown.hidden = !code; }
   const link = authEl(provider, 'deviceLink');
   if (link && url) link.href = url;
   box.hidden = false;

@@ -72,6 +72,25 @@ test('Kimi device login returns focus to the source tab and closes only its auth
   } finally { chrome.tabs = previousTabs; }
 });
 
+test('a sign-in tab the user navigated away from is not closed', async () => {
+  const previousTabs = chrome.tabs;
+  const removed = [];
+  chrome.tabs = { ...previousTabs,
+    query: async () => [{ id: 99 }],
+    get: async (id) => ({ id, url: 'https://www.kimi.ai/chat' }),
+    update: async () => {},
+    remove: async (id) => { removed.push(id); },
+  };
+  stubFetch((url) => url.endsWith('/device_authorization')
+    ? Response.json({ device_code: 'PRIVATE-DEVICE', user_code: 'KIMI-1234', verification_uri: 'https://www.kimi.ai/code/authorize', verification_uri_complete: 'https://www.kimi.ai/code/authorize?user_code=KIMI-1234', interval: 1, expires_in: 60 })
+    : Response.json({ access_token: 'KIMI-ACCESS', refresh_token: 'KIMI-REFRESH', expires_in: 3600 }));
+  try {
+    await startAccountLogin('kimi', { post });
+    await settled('auth-success', 0, 5000);
+    assert.deepEqual(removed, [], 'the tab is the user\'s now: a trusted host alone is not a reason to close it');
+  } finally { chrome.tabs = previousTabs; }
+});
+
 test('Kimi cancellation prevents a device poll from storing a credential', async () => {
   stubFetch(() => Response.json({ device_code: 'PRIVATE', user_code: 'CODE', verification_uri: 'https://www.kimi.ai/code/authorize', verification_uri_complete: 'https://www.kimi.ai/code/authorize?user_code=CODE', interval: 1, expires_in: 60 }));
   await startAccountLogin('kimi', { post });

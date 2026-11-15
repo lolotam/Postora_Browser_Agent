@@ -101,6 +101,19 @@ test('the factory builds the session of the provider the slot names', () => {
   assert.ok(grok.active instanceof GrokAccountSession, 'a Grok slot speaks the Responses API');
 });
 
+test('a session built later describes the access mode that is in force then', () => {
+  const settings = mergeSettings({ provider: 'compatible', compatible: { preset: 'openrouter', apiKey: 'fixture-key', model: 'openai/gpt-5' },
+    fallback: { enabled: true, provider: 'compatible', compatible: { preset: 'openrouter', apiKey: 'fixture-key', model: 'openai/gpt-5' } } });
+  let mode = { mode: 'ask-first', revision: 1 };
+  const session = createModelSession(settings, { accessState: () => mode, conversationId: 'conversation' });
+  assert.match(session.active.messages[0].content, /ask\s*first/i, 'the main model was told the mode in force');
+
+  // The mode moves while the task runs. A session built after that, such as the
+  // backup that takes over, must describe the mode that is in force now.
+  mode = { mode: 'full-access', revision: 2 };
+  assert.match(session.createBackup().messages[0].content, /full\s*access/i, 'the backup describes the mode in force now');
+});
+
 test('a Claude or Grok slot is saved with its own model, not the compatible one', () => {
   const claude = mergeSettings({ provider: 'claude', claude: { model: 'claude-sonnet-4-6' }, compatible: { model: '' } });
   assert.equal(slotSettings(claude).model, 'claude-sonnet-4-6', 'the save check finds the model of the Claude slot');
@@ -321,4 +334,23 @@ test('OpenRouter OAuth hides manual fields and plan routes keep only the plan ke
     assert.equal(el('zaiAccount').hidden, preset !== 'zai-coding');
     assert.equal(form.read().compatible.apiKey, 'fixture-key', 'hidden fields retain the credential');
   }
+});
+
+test('the custom route keeps the endpoint fields, even when a plan preset is still selected', () => {
+  const fields = [...MAIN_FIELDS, 'presetField', 'baseUrlField', 'apiKeyField', 'apiKeyLabel', 'openrouterLogin', 'openrouterStatus', 'planHelp', 'planAccount', 'zaiAccount'];
+  const { root, el } = fakeRoot(fields);
+  const form = formFor(root);
+  form.fill(mergeSettings({ provider: 'compatible', connectionRoute: 'minimax-plan', compatible: { preset: 'minimax-coding-plan', apiKey: 'fixture-key' } }));
+  assert.equal(el('presetField').hidden, true, 'a plan route has a fixed endpoint');
+  assert.equal(el('baseUrlField').hidden, true, 'and does not offer another one');
+
+  // The user goes back to the custom route to enter their own endpoint. The
+  // plan preset is still the one selected, and it must not keep the fields
+  // hidden: there would be no way to change the endpoint at all.
+  el('provider').value = 'compatible';
+  el('provider').dispatch('change');
+
+  assert.equal(el('presetField').hidden, false, 'the custom route shows the preset again');
+  assert.equal(el('baseUrlField').hidden, false, 'and the endpoint that can be changed');
+  assert.equal(el('apiKeyField').hidden, false);
 });

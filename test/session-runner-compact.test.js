@@ -256,6 +256,44 @@ test('a task that is itself over the threshold is compacted once, not again at e
   assert.equal(again.length, 2);
 });
 
+test('a compaction that did not shrink the conversation waits for it to grow again', async () => {
+  const { runner } = await busyRunner('Compact waits for growth');
+  const calls = [];
+  const hook = runner.compaction();
+  const turn = (inputTokens) => hook.beforeTurn({ session: compactingSession(calls), inputTokens, signal: runner.abort.signal });
+  assert.equal(await turn(9000), true); // compacted
+  assert.equal(await turn(9500), false); // it did not shrink: another summary is not paid for yet
+  assert.equal(await turn(10000), false); // still waiting
+  assert.equal(calls.length, 1);
+  assert.equal(await turn(11500), true, // the conversation grew past the size it had: it is compacted again
+    true);
+  assert.equal(calls.length, 2);
+});
+
+test('a conversation past the urgent limit is compacted even when it is waiting for growth', async () => {
+  const { runner } = await busyRunner('Compact urgent');
+  const calls = [];
+  const hook = runner.compaction();
+  const turn = (inputTokens) => hook.beforeTurn({ session: compactingSession(calls), inputTokens, signal: runner.abort.signal });
+  assert.equal(await turn(9000), true); // compacted
+  assert.equal(await turn(9500), false); // it did not shrink
+  assert.equal(await turn(12000), true, 'past 1.5 times the threshold the model\'s own limit is closer');
+  assert.equal(calls.length, 2);
+});
+
+test('a task that ended while the conversation is waiting for growth is not compacted again', async () => {
+  const { runner } = await busyRunner('Compact settle');
+  const calls = [];
+  const hook = runner.compaction();
+  const turn = (inputTokens) => hook.beforeTurn({ session: compactingSession(calls), inputTokens, signal: runner.abort.signal });
+  assert.equal(await turn(9000), true); // compacted
+  assert.equal(await turn(9500), false); // it did not shrink
+  runner.abort = null;
+  runner.transcript.push({ type: 'user', text: 'task' });
+  await runner.settle({});
+  assert.equal(calls.length, 1, 'the end of the task does not pay for another summary');
+});
+
 test('an idle compaction keeps the session that holds the conversation, even the backup\'s', async () => {
   const { runner, events } = await busyRunner('Compact keeps session');
   runner.abort = null;

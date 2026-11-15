@@ -110,6 +110,7 @@ function listenToNotifications() {
   chrome.notifications.onClicked.addListener((id) => openFromNotification(id, {
     sessionExists: async (sessionId) => Boolean((await store.loadSession(sessionId))?.meta),
     bindTab: (tabId, sessionId) => tabSessions.bindTab(tabId, sessionId),
+    notifyPanels: postToPanels,
   }));
   chrome.notifications.onClosed.addListener((id) => forgetNotification(id));
 }
@@ -453,5 +454,14 @@ function withChosenModel(list, model) {
 
 /** Sends a message to every open panel. */
 function postToPanels(message) {
-  for (const port of panels) port.postMessage(message);
+  for (const port of panels) {
+    // A panel that closed its port is not a reason to stop the others.
+    try { port.postMessage(message); } catch { /* the panel is gone */ }
+  }
+  // Auth events are also sent via runtime messages so a panel that reconnected
+  // after a worker restart (no port yet) still hears the failure or code.
+  const AUTH_EVENTS = new Set(['auth-success', 'auth-event', 'auth-prompt', 'auth-error']);
+  if (AUTH_EVENTS.has(message?.type)) {
+    chrome.runtime.sendMessage(message).catch(() => {});
+  }
 }

@@ -18,10 +18,26 @@ function abortableWait(ms, signal) {
   });
 }
 
+/**
+ * The OAuth error code of a failed response, when it has one. A token endpoint
+ * that answers `invalid_grant` says the sign-in is over for good; without the
+ * code the failure looks like a hiccup that another try would fix.
+ */
+function oauthErrorCode(body) {
+  const error = body?.error;
+  const code = typeof error === 'string' ? error : error?.code ?? error?.error;
+  return typeof code === 'string' && code.trim() ? code.trim() : null;
+}
+
 async function json(url, init, signal) {
   const response = await fetch(url, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), credentials: 'omit', redirect: 'error' });
-  if (!response.ok) throw Object.assign(new Error(`Account authorization failed (HTTP ${response.status}).`), { status: response.status });
-  const body = await response.json();
+  // A failure may still carry a body, and that body may say what went wrong.
+  let body = null;
+  try { body = await response.json(); } catch { body = null; }
+  if (!response.ok) {
+    const code = oauthErrorCode(body);
+    throw Object.assign(new Error(`Account authorization failed (HTTP ${response.status})${code ? `: ${code}` : ''}.`), { status: response.status, code });
+  }
   if (body.base_resp?.status_code || (body.code !== undefined && ![0, 200, '0', '200'].includes(body.code))) throw new Error('Account authorization was rejected. Sign in again or use a plan key.');
   return body;
 }

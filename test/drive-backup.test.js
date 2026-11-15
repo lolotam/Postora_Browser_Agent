@@ -214,7 +214,8 @@ test('restoring when Drive has no backup says so', async () => {
 
 test('a session that is only touched uploads nothing; a new message in it does', async () => {
   const sessions = await import('../src/sessions/store.js');
-  local.settings = setUp;
+  // The conversations are in this backup: the user asked for them.
+  local.settings = { ...setUp, backupChats: true };
   const meta = await sessions.createStoredSession('Chat');
   const { transcript, log, groupId } = await sessions.loadSession(meta.id);
   await sessions.saveSession(meta.id, { transcript, log, groupId }); // the shape a saved session has
@@ -233,4 +234,68 @@ test('a session that is only touched uploads nothing; a new message in it does',
   await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'hello' }], log, groupId });
   await backUpToDrive({ getToken });
   assert.equal(drive.content.sessions[0].body.transcript[0].text, 'hello');
+});
+
+test('the order the conversations are in does not change the backup: touching one uploads nothing', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  local.settings = { ...setUp, backupChats: true };
+  const older = await sessions.createStoredSession('Older');
+  const newer = await sessions.createStoredSession('Newer');
+  const body = { transcript: [], log: null, groupId: null };
+  await sessions.saveSession(older.id, { ...body });
+  await sessions.saveSession(newer.id, { ...body });
+  await backUpToDrive({ getToken });
+  assert.equal(drive.content.sessions.length, 2);
+
+  // Saving a session moves it to the front of the list, because the list is
+  // ordered by the time it was touched. The conversations did not change, so
+  // the backup is the same one and nothing is uploaded.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await sessions.saveSession(older.id, { ...body });
+  assert.equal((await sessions.listSessions())[0].id, older.id, 'the touched conversation is now the first');
+  calls = [];
+  await backUpToDrive({ getToken });
+  assert.deepEqual(calls, [], 'the same conversations in another order: no Drive call');
+});
+
+test('a conversation that really changed is uploaded again', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  local.settings = { ...setUp, backupChats: true };
+  const first = await sessions.createStoredSession('First');
+  const second = await sessions.createStoredSession('Second');
+  await sessions.saveSession(first.id, { transcript: [], log: null, groupId: null });
+  await sessions.saveSession(second.id, { transcript: [], log: null, groupId: null });
+  await backUpToDrive({ getToken });
+
+  await sessions.saveSession(second.id, { transcript: [{ type: 'user', text: 'a new message' }], log: null, groupId: null });
+  calls = [];
+  await backUpToDrive({ getToken });
+  assert.deepEqual(calls, ['PATCH /upload/drive/v3/files/file1']);
+  assert.equal(drive.content.sessions.find((s) => s.meta.id === second.id).body.transcript[0].text, 'a new message');
+});
+
+test('the conversations stay out of the Drive backup until the user asks for them', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  local.settings = setUp; // no backupChats: the user did not ask
+  const meta = await sessions.createStoredSession('Chat');
+  await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'hello' }], log: null, groupId: null });
+  await backUpToDrive({ getToken });
+  assert.deepEqual(drive.content.sessions, [], 'the backup holds no conversations');
+
+  // A conversation that is not in the backup changes nothing in it, so the
+  // backup stays the same one and nothing is uploaded.
+  await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'a new message' }], log: null, groupId: null });
+  calls = [];
+  await backUpToDrive({ getToken });
+  assert.deepEqual(calls, [], 'the same backup: no Drive call');
+});
+
+test('a stored value that is not a switch is no switch', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  local.settings = { ...setUp, backupChats: 'yes' };
+  const meta = await sessions.createStoredSession('Chat');
+  await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'hello' }], log: null, groupId: null });
+  await backUpToDrive({ getToken });
+  assert.deepEqual(drive.content.sessions, [], 'the conversations stay out');
+  assert.equal(mergeSettings(local.settings).backupChats, false, 'a malformed value is not a switch');
 });

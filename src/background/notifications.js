@@ -52,7 +52,7 @@ export async function notifyTransition({ kind, sessionId, tabId, groupId = null,
  * A click: focus the session's tab and its window, tie the tab to the session and
  * try to open the side panel there. Returns what happened, for tests.
  */
-export async function openFromNotification(id, { sessionExists, bindTab }) {
+export async function openFromNotification(id, { sessionExists, bindTab, notifyPanels } = {}) {
   const route = await takeRoute(id);
   chrome.notifications?.clear(id)?.catch?.(() => {});
   if (!route || !(await sessionExists(route.sessionId).catch(() => false))) return 'gone';
@@ -60,6 +60,9 @@ export async function openFromNotification(id, { sessionExists, bindTab }) {
   if (!tab) return 'tab-closed';
   // Bound first: activating the tab makes an open panel look up the tab's session.
   await bindTab(tab.id, route.sessionId);
+  // A panel Chrome keeps for this tab does not look its session up again on its
+  // own, so it is told which session the tab belongs to now.
+  try { notifyPanels?.({ type: 'tab-session-changed', tabId: tab.id, sessionId: route.sessionId }); } catch { /* a panel that cannot be told is not a reason to fail the click */ }
   await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
   await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
   try {

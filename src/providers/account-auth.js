@@ -256,9 +256,16 @@ async function refreshError(provider, record, error) {
   });
 }
 
-/** True when pi-ai's error is a confirmed OAuth rejection. */
-function isDeadToken(error, provider) {
+/**
+ * True when pi-ai's error is a confirmed OAuth rejection.
+ *
+ * An error that carries the OAuth code and the status itself is judged on
+ * those: a token endpoint that answers `invalid_grant` has said the sign-in
+ * is over, and the panel must ask for a new one instead of trying again.
+ */
+export function isDeadToken(error, provider) {
   if (['minimax', 'zai'].includes(provider) && [401, 403].includes(error?.status)) return true;
+  if (DEAD_TOKEN_CODES.includes(error?.code) && DEAD_TOKEN_STATUSES.includes(error?.status)) return true;
   const text = String(error?.message ?? error ?? '');
   // pi's Kimi adapter emits this fixed prefix only on confirmed 401/403 or
   // invalid_grant rejection. A generic 403 from inference is not a dead token.

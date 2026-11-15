@@ -44,6 +44,24 @@ test('a file restores session history and resumable progress after removal', asy
   assert.equal((await sessions.listSessions()).length, 2, 'a collision preserves both histories');
 });
 
+test('the file the user downloads keeps the conversations; a backup can leave them out', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  const meta = await sessions.createStoredSession('Saved conversation');
+  await sessions.saveSession(meta.id, { transcript: [{ type: 'user', text: 'Original task' }], log: null, groupId: null });
+
+  const file = await exportBackup();
+  assert.equal(file.sessions.length, 1, 'the file the user downloads holds the conversations');
+
+  const without = await exportBackup({ includeSessions: false });
+  assert.deepEqual(without.sessions, [], 'a backup that leaves the computer can leave the conversations out');
+
+  // Restoring is explicit: what the file holds comes back.
+  for (const k of Object.keys(store)) delete store[k];
+  await importBackup(file);
+  assert.equal((await sessions.listSessions()).length, 1);
+  assert.equal((await sessions.loadSession(meta.id)).transcript[0].text, 'Original task');
+});
+
 test('damaged sessions are rejected before settings change; legacy files keep local chats', async () => {
   const sessions = await import('../src/sessions/store.js');
   const meta = await sessions.createStoredSession('Keep me');

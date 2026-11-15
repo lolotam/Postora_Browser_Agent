@@ -129,10 +129,17 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     if (claudeKeyLabel) claudeKeyLabel.hidden = claudeFields().auth === 'account';
     const oauth = route().id === 'openrouter-auth';
     const account = route().accountProvider;
+    // The plan preset that is in force: its key is a plan key and its endpoint
+    // is the plan's, so the key field says so.
     const plan = ['minimax-coding-plan', 'zai-coding'].includes(f('preset').value);
+    // What the chosen route is decides what is hidden, not the preset that is
+    // still in the dropdown. A plan route has a fixed endpoint, so the endpoint
+    // and the preset are its own. On the custom route they are the user's to
+    // change, even when a plan preset is the one still selected.
+    const planRoute = ['minimax-plan', 'zai-plan'].includes(route().id);
     hide('openrouterLogin', !oauth);
-    hide('presetField', Boolean(oauth || plan || account));
-    hide('baseUrlField', Boolean(oauth || plan || account));
+    hide('presetField', Boolean(oauth || planRoute || account));
+    hide('baseUrlField', Boolean(oauth || planRoute || account));
     hide('apiKeyField', Boolean(oauth || account));
     for (const name of ['minimax', 'zai']) hide(`${name}OAuthAccount`, account !== name);
     if (f('apiKeyLabel')) f('apiKeyLabel').textContent = plan ? t('connection.planKey') : 'API Key';

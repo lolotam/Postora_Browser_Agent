@@ -1,7 +1,7 @@
 export const WORKSPACE_MESSAGES = {
   en: {
     'access.approval.actionName.project_context': 'Read initial project context and subfolders',
-    'backup.desc': 'Back up settings, keys, account sign-ins and all conversations, including interrupted tasks. Chrome removes these when the extension is uninstalled. Keep the file private: it contains your keys and chat history.',
+    'backup.desc': 'Back up settings, keys, account sign-ins and all conversations, including interrupted tasks. Chrome removes these when the extension is uninstalled. Keep the file private: it contains your keys and chat history. The Google Drive backup is another thing: it holds your conversations only when you turn that switch on in Settings.',
     'backup.restored': 'Settings and available conversations restored',
     'session.resume': 'Resume task',
     'settings.version': 'Version',
@@ -61,7 +61,7 @@ export const WORKSPACE_MESSAGES = {
   },
   ar: {
     'access.approval.actionName.project_context': 'قراءة سياق المشروع والمجلدات الفرعية',
-    'backup.desc': 'احفظ الإعدادات والمفاتيح وتسجيلات الدخول وكل المحادثات، بما فيها المهام المتوقفة. Chrome بيمسحهم عند إزالة الإضافة. احتفظ بالملف لنفسك: فيه مفاتيحك ومحادثاتك.',
+    'backup.desc': 'احفظ الإعدادات والمفاتيح وتسجيلات الدخول وكل المحادثات، بما فيها المهام المتوقفة. Chrome بيمسحهم عند إزالة الإضافة. احتفظ بالملف لنفسك: فيه مفاتيحك ومحادثاتك. نسخة Google Drive حاجة تانية: محادثاتك بتروح فيها بس لما تشغّل المفتاح ده في الإعدادات.',
     'backup.restored': 'تمت استعادة الإعدادات والمحادثات الموجودة في الملف',
     'session.resume': 'استكمال المهمة',
     'settings.version': 'الإصدار',

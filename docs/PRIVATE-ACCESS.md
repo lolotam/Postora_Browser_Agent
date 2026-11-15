@@ -50,7 +50,7 @@ the user may remove that specific lock and retry after reading the file again.
 Editors outside Postora do not participate in this lock protocol.
 
 This is a local, unpacked extension. Nothing is uploaded to the Chrome Web Store.
-Run `npm run package:private` to create `dist/postora-private-v0.4.4.zip`.
+Run `npm run package:private` to create `dist/postora-private-v0.4.15.zip`.
 Extract it into a permanent directory and load that directory with **Load unpacked**
 in `chrome://extensions`. When updating an existing installation, use **Reload**;
 removing it deletes its stored settings and credentials.

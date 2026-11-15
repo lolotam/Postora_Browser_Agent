@@ -3,7 +3,10 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const HIDDEN = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.venv', 'vendor']);
-const secret = (name) => /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$|\.postora-write\.lock$|^(?:auth|credentials|secrets?|tokens?)(?:\.|$)|^\.npmrc$|^\.git-credentials$/i.test(name);
+// A secret name, with or without a leading dot: `.secrets`, `.secrets.json`,
+// `.token` and `auth.json` are all names a secret file has. The context the
+// model reads must not carry them.
+const secret = (name) => /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$|\.postora-write\.lock$|^\.?(?:auth|credentials|secrets?|tokens?)(?:\.|$)|^\.npmrc$|^\.git-credentials$/i.test(name);
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /** Bounded initial context: recursive inventory and text, with explicit limits. */

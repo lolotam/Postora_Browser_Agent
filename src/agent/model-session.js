@@ -61,7 +61,10 @@ function createProviderSession(slot, settings, conversationId, notify = null, ac
   if (!c.model) throw new Error('Choose a model in settings first.');
   const preset = COMPATIBLE_PRESETS[c.preset] ?? COMPATIBLE_PRESETS.custom;
   const accountProvider = planAccountProvider(slot);
-  if (accountProvider) return new PlanAccountSession({ ...c, accountProvider, thinkingStyle: accountProvider === 'minimax' ? 'minimax' : 'glm', systemPrompt, tools, sessionId: conversationId, notify });
+  // The account route uses the preset of the route, so it keeps the preset's
+  // usage setting: without it the stream reports no tokens, and a conversation
+  // that never reports its size is never compacted.
+  if (accountProvider) return new PlanAccountSession({ ...c, accountProvider, thinkingStyle: accountProvider === 'minimax' ? 'minimax' : 'glm', systemPrompt, tools, sessionId: conversationId, notify, usage: Boolean(preset.usage) });
   return new CompatibleSession({ ...c, thinkingStyle: preset.thinkingStyle, systemPrompt, tools, sessionId: conversationId, notify, textToolCalls: Boolean(preset.textToolCalls), usage: Boolean(preset.usage) });
 }
 

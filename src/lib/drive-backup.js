@@ -57,9 +57,16 @@ async function writeBackupFile(token, data, id) {
  * sign-in, while the credential itself is what a refresh changes. A session's
  * `updatedAt` is left out too: opening a panel or moving a tab group touches it
  * with nothing in the conversation changed, and that must not upload the backup again.
+ *
+ * The sessions are sorted by their id before they are hashed. Their order on its own
+ * comes from `updatedAt`, which every save moves, so two backups of the same
+ * conversations in a different order would hash differently and upload again for
+ * nothing. The id is the one thing about a session that does not move.
  */
 async function backupHash(data) {
-  const sessions = (data.sessions ?? []).map(({ meta, body }) => ({ meta: { ...meta, updatedAt: 0 }, body }));
+  const sessions = (data.sessions ?? [])
+    .map(({ meta, body }) => ({ meta: { ...meta, updatedAt: 0 }, body }))
+    .sort((a, b) => (a.meta.id < b.meta.id ? -1 : a.meta.id > b.meta.id ? 1 : 0));
   const bytes = new TextEncoder().encode(JSON.stringify([data.settings, normaliseAccounts(data.accounts), sessions]));
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -88,13 +95,19 @@ function serial(operation) {
  * force a real write even when unchanged. A failure is kept
  * in the state (shown in the account menu) rather than thrown, since this runs
  * on its own after every settings change.
+ *
+ * The conversations are in the backup only when the user asked for them: this
+ * backup leaves the computer on its own, and a task history is the user's own
+ * work. The file the user downloads is theirs to keep, so it holds them.
  */
 export function backUpToDrive({ getToken = googleAccessToken, force = false } = {}) {
   return serial(() => upload(getToken, force));
 }
 
 async function upload(getToken, force = false) {
-  const data = await exportBackup();
+  const stored = await chrome.storage.local.get('settings');
+  const includeSessions = mergeSettings(stored.settings).backupChats === true;
+  const data = await exportBackup({ includeSessions });
   const hash = await backupHash(data);
   const state = await driveBackupState();
   if (!force && state.hash === hash && !state.error) return state;

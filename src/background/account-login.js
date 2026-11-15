@@ -228,6 +228,9 @@ export function trustedKimiVerificationUrl(value) {
 }
 
 function openTab(url, attempt) {
+  // The page this sign-in opened. A tab that is no longer on it belongs to
+  // the user, and the user keeps it.
+  attempt.authorizationUrl = url;
   if (!['kimi', 'minimax', 'zai'].includes(attempt.provider)) {
     chrome.tabs.create({ url, active: true }).catch(() => {});
     return;
@@ -254,8 +257,24 @@ async function returnFromKimiSignIn(attempt) {
   if (tab?.id !== undefined && tab.id !== previous?.id && chrome.tabs.get) {
     const current = await chrome.tabs.get(tab.id).catch(() => null);
     // Leave a tab alone if the user has navigated it away from authorization.
-    if (current && (attempt.provider === 'kimi' ? trustedKimiVerificationUrl(current.url) : trustedPlanVerificationUrl(attempt.provider, current.url))) await chrome.tabs.remove(tab.id).catch(() => {});
+    // A trusted host on its own is not enough: the tab must still be on the
+    // page this sign-in opened, or it is the user's tab now.
+    if (current && sameAuthorizationPage(attempt.authorizationUrl, current.url) && (attempt.provider === 'kimi' ? trustedKimiVerificationUrl(current.url) : trustedPlanVerificationUrl(attempt.provider, current.url))) await chrome.tabs.remove(tab.id).catch(() => {});
   }
+}
+
+/**
+ * The tab is still the sign-in's own when it is on the page the attempt
+ * opened: the same site and the same path. Anything else is a page the user
+ * went to, and that page is not ours to close.
+ */
+export function sameAuthorizationPage(openedUrl, currentUrl) {
+  try {
+    const opened = new URL(openedUrl);
+    const current = new URL(currentUrl);
+    if (opened.origin !== current.origin) return false;
+    return opened.pathname.replace(/\/+$/, '') === current.pathname.replace(/\/+$/, '');
+  } catch { return false; }
 }
 
 /**

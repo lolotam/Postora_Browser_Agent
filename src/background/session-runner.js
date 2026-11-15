@@ -115,6 +115,7 @@ export class SessionRunner {
     this.inbox = Array.isArray(body.pending) ? body.pending : [];
     this.turnAbort = null;
     this.autoCompactBlocked = false; // a failed automatic compaction is not retried in the same task
+    this.autoCompactBlockedUntil = 0; // the size a conversation must pass before it is compacted again
     this.awaitingShrink = false; // an automatic compaction happened and its effect is not measured yet
     this.onSessionsChanged = onSessionsChanged;
     this.ports = new Set();
@@ -589,6 +590,15 @@ export class SessionRunner {
           return this.runCompaction(session, { focus: joinFocus(asked), auto: false, continueTask: !start, carry, signal, size });
         }
         const config = this.settings?.autoCompact;
+        // A compaction that did not shrink the conversation waits for it to grow
+        // again before another summary is paid for. Past the urgent limit the
+        // conversation is compacted whatever it is: the model's own limit is
+        // closer than the cost of the summary.
+        const urgent = config.thresholdTokens * POSTPONE_LIMIT;
+        if (this.autoCompactBlockedUntil) {
+          if (size < this.autoCompactBlockedUntil && size < urgent) return false;
+          this.autoCompactBlockedUntil = 0;
+        }
         if (this.autoCompactBlocked || this.compactedNotShrunk(config, inputTokens)) return false;
         if (!autoCompactDue(config, size)) return false;
         // "Queue" postpones it to the end of the task, unless the conversation has grown so far past the
@@ -603,14 +613,18 @@ export class SessionRunner {
   /**
    * The first turn read after an automatic compaction says whether it helped. A task
    * that is itself over the threshold keeps the conversation over it, and compacting
-   * again every turn would only add a paid summary to each step: then it stops for
-   * this task. Zero is "no turn since": nothing to judge yet.
+   * again every turn would only add a paid summary to each step: then the next one
+   * waits until the conversation has grown past the size it had, so a long task is
+   * compacted when it needs it and not at every turn. Past the urgent limit it is
+   * compacted right away: the model's own limit is closer than the summary.
+   * Zero is "no turn since": nothing to judge yet.
    */
   compactedNotShrunk(config, inputTokens) {
     if (!this.awaitingShrink || !inputTokens) return false;
     this.awaitingShrink = false;
     if (!autoCompactDue(config, inputTokens)) return false;
-    this.autoCompactBlocked = true;
+    if (inputTokens >= config.thresholdTokens * POSTPONE_LIMIT) return false;
+    this.autoCompactBlockedUntil = inputTokens + Math.round(config.thresholdTokens * 0.25);
     return true;
   }
 
@@ -690,7 +704,7 @@ export class SessionRunner {
    */
   async settle({ keep = new Set(), auto: allowAuto = true } = {}) {
     if (this.disposed || this.running) return;
-    let auto = allowAuto && !this.autoCompactBlocked && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript));
+    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript));
     // A /compact typed while one is running waits for it, so asking again finds it.
     for (let asked = this.takeCompactRequests(keep); asked.length || auto; asked = this.takeCompactRequests(keep)) {
       const how = await this.compactIdle({ focus: joinFocus(asked), auto: !asked.length });
@@ -733,6 +747,7 @@ export class SessionRunner {
     this.notified.clear();
     this.retryNoticeShown = false;
     this.autoCompactBlocked = false;
+    this.autoCompactBlockedUntil = 0;
     this.awaitingShrink = false;
     if (!resumed) this.emit({ type: 'user', text: shown });
     this.emit({ type: 'status', running: true });

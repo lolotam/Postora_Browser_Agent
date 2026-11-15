@@ -91,6 +91,7 @@
       </div>
       <div class="drive">
         <small class="muted" id="driveStatus" dir="auto"></small>
+        <small class="muted" id="driveContents" dir="auto"></small>
         <div class="row">
           <button type="button" class="ghost" id="driveBackupBtn" data-i18n="drive.backupNow"></button>
           <button type="button" class="ghost" id="driveRestoreBtn" data-i18n="drive.restore"></button>
@@ -817,6 +818,10 @@
           <button type="button" id="restoreBtn" data-i18n="backup.restore"></button>
           <input type="file" id="restoreFile" accept="application/json,.json" hidden />
         </div>
+        <label class="switch-row">
+          <span class="grow"><strong data-i18n="backup.chats"></strong><small class="muted" data-i18n="backup.chatsDesc"></small></span>
+          <input type="checkbox" id="backupChats" role="switch" />
+        </label>
         <small class="muted" id="backupResult"></small>
       </div>
     </div>

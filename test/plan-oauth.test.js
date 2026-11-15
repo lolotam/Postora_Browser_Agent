@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { minimaxOAuth, zaiOAuth, trustedPlanVerificationUrl } from '../src/providers/plan-oauth.js';
 import { PlanAccountSession, planAccountProvider } from '../src/providers/plan-account.js';
+import { isDeadToken } from '../src/providers/account-auth.js';
+import { mergeSettings } from '../src/lib/settings.js';
 
 const reply = (body) => Response.json(body);
 function mockFetch(t, run) {
@@ -83,6 +85,16 @@ test('plan login refuses untrusted redirects and a substituted state', async (t)
   await assert.rejects(minimaxOAuth.login({ notify: () => assert.fail('must not open a page') }), /state mismatch/);
 });
 
+test('the plan account session keeps the usage setting of its preset', async () => {
+  const { createModelSession } = await import('../src/agent/model-session.js');
+  const settings = mergeSettings({ provider: 'compatible', connectionRoute: 'minimax-auth', compatible: { preset: 'minimax-coding-plan', model: 'MiniMax-M3.1-Flash' } });
+  const session = createModelSession(settings, { notify: null });
+
+  // Without the usage setting the stream reports no tokens, so a conversation
+  // that never states its size is never compacted.
+  assert.equal(session.active.usage, true, 'the account route reports the tokens of its turns');
+});
+
 test('account inference is pinned and does not use manual API credentials', () => {
   for (const provider of ['minimax', 'zai']) {
     const session = new PlanAccountSession({ accountProvider: provider, apiKey: 'manual-secret', baseUrl: 'https://evil.test', model: 'fixture', tools: [], systemPrompt: '' });
@@ -115,4 +127,27 @@ test('cancelled device authorization never polls for a token', async (t) => {
   });
   await assert.rejects(minimaxOAuth.login({ signal: controller.signal, notify: () => controller.abort() }), { name: 'AbortError' });
   assert.equal(calls, 1);
+});
+
+test('a rejected sign-in says why, and a dead token is not a failure worth retrying', async (t) => {
+  mockFetch(t, async () => Response.json({ error: 'invalid_grant', error_description: 'synthetic expired grant' }, { status: 400 }));
+  const error = await minimaxOAuth.refresh({ refresh: 'synthetic-refresh', access: 'stale' }).then(() => null, (err) => err);
+  assert.ok(error, 'the refresh failed');
+  assert.equal(error.status, 400);
+  assert.equal(error.code, 'invalid_grant');
+  assert.match(error.message, /invalid_grant/);
+  assert.equal(isDeadToken(error, 'minimax'), true, 'the sign-in is over: the panel must ask for a new one');
+});
+
+test('a failure without a known OAuth code stays a failure worth retrying', async (t) => {
+  mockFetch(t, async () => new Response('not json at all', { status: 500 }));
+  const error = await minimaxOAuth.refresh({ refresh: 'synthetic-refresh', access: 'stale' }).then(() => null, (err) => err);
+  assert.ok(error, 'the refresh failed');
+  assert.equal(error.code, null);
+  assert.equal(isDeadToken(error, 'minimax'), false, 'a server error may work the next time');
+
+  mockFetch(t, async () => Response.json({ error: 'temporarily_unavailable' }, { status: 400 }));
+  const other = await minimaxOAuth.refresh({ refresh: 'synthetic-refresh', access: 'stale' }).then(() => null, (err) => err);
+  assert.equal(other.code, 'temporarily_unavailable');
+  assert.equal(isDeadToken(other, 'minimax'), false, 'an unknown code is not a dead token');
 });
