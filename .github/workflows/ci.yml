@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -37,6 +37,8 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -48,20 +50,20 @@ jobs:
         run: |
           npm run package
           npm run package:private
-      - name: Create or update GitHub Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           TAG="v$VERSION"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, updating assets..."
-            gh release upload "$TAG" "dist/postora-browser-agent-v$VERSION.zip" "dist/postora-private-v$VERSION.zip" --clobber
+            echo "Release $TAG already exists for this version. Skipping release creation."
           else
-            echo "Creating new release $TAG..."
+            echo "Creating new release $TAG at ${{ github.sha }}..."
             gh release create "$TAG" \
               "dist/postora-browser-agent-v$VERSION.zip" \
               "dist/postora-private-v$VERSION.zip" \
+              --target "${{ github.sha }}" \
               --title "v$VERSION" \
               --generate-notes
           fi
