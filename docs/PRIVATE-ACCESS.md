@@ -7,7 +7,7 @@ logo is removed; model selection is borderless; Arabic uses the bundled Cairo fo
 and its OFL license. No external font service is contacted. Confirmed access changes
 are displayed as small conversation notes. Those notes never grant permissions.
 
-**Automatic Arabic/English speech:** open Settings → Voice and choose Automatic
+**Automatic Arabic/English speech (cloud/compatible endpoint):** open Settings → Voice and choose Automatic
 Arabic / English. Set a transcription endpoint, model, and API key. The defaults
 use `https://api.openai.com/v1/audio/transcriptions` and `gpt-transcribe`, following
 the [OpenAI transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text).
@@ -24,6 +24,8 @@ Live transcription quality requires a working service; regression tests use a mo
 service and synthetic audio. The system voice is chosen from the response language.
 Install an Arabic Windows speech voice if the browser has none; Postora reports
 that missing voice instead of choosing English for Arabic text.
+
+**Local private speech models (private Windows build only):** Local speech is split into explicit selections. **Local Whisper** (`local-whisper`) keeps the existing phrase-by-phrase offline transcription flow after you download its pinned model/runtime in Settings → Voice. **Nemotron Streaming 3.5** (`local-nemotron`) is a separate live microphone streaming model for the private build; it requires Windows x64, Node.js 22+, the pinned private native runtime closure, and an explicit user-initiated model download. Nemotron cannot transcribe recorded blobs and must be used from live microphone capture. Model downloads, hashes, runtime bindings, and license notices are documented in `docs/THIRD-PARTY-SPEECH.md`. Local Whisper/Nemotron transcription runs on your machine through the private native host; microphone audio is not sent to a network speech service by those local modes, but model downloads occur only when you explicitly start them and resulting transcripts can still be sent to the selected conversation provider.
 
 **Project folders:** click the folder icon next to the chat controls, browse or paste
 an absolute path, then Link. This binds the folder to the current chat. Stop a running

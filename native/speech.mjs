@@ -146,11 +146,20 @@ export async function commitInstallation(staging, destination, valid, signal) {
   }
 }
 
+export const speechHome = root;
+
 export async function speechOperation(message, options = {}) {
+  const modelId = message.modelId;
+  if (modelId === 'local-nemotron') {
+    const mod = await import('./nemotron.mjs');
+    if (message.type === 'speech-transcribe') throw new Error('Nemotron requires live microphone capture.');
+    return mod.nemotronOperation(message, options);
+  }
+  if (modelId && modelId !== 'local-whisper') throw new Error(`Unknown local speech model: ${modelId}`);
   if (message.type === 'speech-status') return status();
   if (message.type === 'speech-install') return install(options);
   if (message.type !== 'speech-transcribe') throw new Error('Unknown speech operation.');
-  const wav = validateWav(message.audio);
+  const wav = validateWav(message.audio ?? message.wav);
   if (!(await status(true)).installed) throw new Error('Download the local model in Settings → Voice first.');
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'postora-audio-'));
   try {

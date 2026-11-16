@@ -18,5 +18,8 @@
     "@earendil-works/pi-ai": "1.1.0",
     "esbuild": "0.25.11",
     "playwright-core": "1.56.1"
+  },
+  "dependencies": {
+    "transcribe-cpp": "0.4.2"
   }
 }
