@@ -146,3 +146,48 @@ test('Windows native host executes framed commands, reports failures, and times 
     fs.rmdirSync(temporary);
   }
 });
+
+// The stream protocol of the native host: a chunk can carry more than one
+// frame, and a frame that is too large is refused instead of buffered.
+test('Windows native host handles coalesced stream frames and refuses an oversized one', { skip: process.platform !== 'win32' }, async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'postora-host-stream-'));
+  const origin = `chrome-extension://${'a'.repeat(32)}/`;
+  const copied = ['host.mjs', 'project.mjs', 'speech.mjs', 'nemotron.mjs', 'speech-stream.mjs'];
+  for (const name of copied) fs.copyFileSync(new URL(`../native/${name}`, import.meta.url), path.join(temporary, name));
+  fs.writeFileSync(path.join(temporary, 'config.json'), JSON.stringify({ origin }));
+  const child = spawn(process.execPath, [path.join(temporary, 'host.mjs'), origin], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const frames = [];
+  let output = Buffer.alloc(0);
+  child.stdout.on('data', (chunk) => {
+    output = Buffer.concat([output, chunk]);
+    while (output.length >= 4) {
+      const length = output.readUInt32LE(0);
+      if (output.length < 4 + length) return;
+      frames.push(JSON.parse(output.subarray(4, 4 + length).toString()));
+      output = output.subarray(4 + length);
+    }
+  });
+  child.stdin.on('error', () => {});
+  try {
+    const open = frame({ type: 'speech-stream-open', protocol: 1, modelId: 'local-nemotron', captureId: 'cap1' });
+    const feed = frame({ type: 'speech-stream-feed', captureId: 'cap1', phraseId: 0, seq: 0, samples: Buffer.from([0, 0, 0, 0]).toString('base64') });
+    // Both frames in one write: the second one must not be lost.
+    child.stdin.write(Buffer.concat([open, feed]));
+    const deadline = Date.now() + 15000;
+    while (frames.length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(frames.length >= 2, `the frame after the opening one was handled: ${JSON.stringify(frames)}`);
+
+    frames.length = 0;
+    // A frame that is larger than a stream frame may be is refused.
+    child.stdin.write(frame({ type: 'speech-stream-feed', captureId: 'cap1', phraseId: 0, seq: 1, samples: 'A'.repeat(40 * 1024) }));
+    const second = Date.now() + 15000;
+    while (frames.length < 1 && Date.now() < second) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(frames[0]?.type, 'error');
+    assert.match(String(frames[0]?.error), /maximum size/i);
+  } finally {
+    child.stdin.end();
+    await new Promise((resolve) => child.once('close', resolve));
+    for (const name of [...copied, 'config.json']) fs.unlinkSync(path.join(temporary, name));
+    fs.rmdirSync(temporary);
+  }
+});

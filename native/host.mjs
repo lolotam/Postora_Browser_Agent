@@ -8,6 +8,9 @@ import { speechOperation } from './speech.mjs';
 
 const MAX_MESSAGE = 2 * 1024 * 1024;
 const MAX_OUTPUT = 64 * 1024;
+const MAX_STREAM_QUEUE = 4 * 1024 * 1024;
+// A stream frame carries one chunk of audio: a few kilobytes, never a file.
+const MAX_STREAM_MESSAGE = 32 * 1024;
 
 export function frame(value) {
   const body = Buffer.from(JSON.stringify(value));
@@ -24,17 +27,119 @@ export function validateCommand(message) {
     throw new Error('cwd must be an existing absolute directory.');
   }
   const timeout = message.timeout_ms ?? 30000;
-  if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 60000) throw new Error('timeout_ms must be an integer from 1000 to 60000.');
+  if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 60000) {
+    throw new Error('timeout_ms must be an integer from 1000 to 60000.');
+  }
   return { command: message.command, cwd: message.cwd, timeout };
 }
 
-export function startHost(origin) {
-  const config = JSON.parse(fs.readFileSync(new URL('./config.json', import.meta.url), 'utf8'));
-  if (origin !== config.origin || !/^chrome-extension:\/\/[a-p]{32}\/$/.test(origin)) {
+export function killTree(pid) {
+  if (!pid) return Promise.resolve();
+  return new Promise((resolve) => {
+    const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    killer.once('error', () => { try { process.kill(pid); } catch {} resolve(); });
+    killer.once('close', () => resolve());
+  });
+}
+
+export function createFrameParser(onMessage, { maxMessage = MAX_MESSAGE, maxBuffered = MAX_MESSAGE * 2 } = {}) {
+  let buffer = Buffer.alloc(0);
+  let queued = Promise.resolve();
+
+  return (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    if (buffer.length > maxBuffered) throw new Error('Native message buffer exceeded limit.');
+    while (buffer.length >= 4) {
+      const length = buffer.readUInt32LE(0);
+      if (length > maxMessage) throw new Error('Native message exceeds maximum size.');
+      if (buffer.length < 4 + length) return;
+      const body = buffer.subarray(4, 4 + length).toString('utf8');
+      buffer = buffer.subarray(4 + length);
+      const message = JSON.parse(body);
+      queued = queued.then(() => onMessage(message), () => onMessage(message));
+    }
+  };
+}
+
+async function defaultLoadNemotronModel(options = {}) {
+  const { loadNemotronModel, NEMOTRON_LANGUAGE, NEMOTRON_STREAM_FAMILY } = await import('./nemotron.mjs');
+  const model = await loadNemotronModel(options);
+  return { model, streamOptions: { family: NEMOTRON_STREAM_FAMILY, language: NEMOTRON_LANGUAGE } };
+}
+
+async function startStreamMode(firstMessage, { stdin = process.stdin, stdout = process.stdout, loadModel = defaultLoadNemotronModel, rest = Buffer.alloc(0) } = {}) {
+  const { createSpeechStream } = await import('./speech-stream.mjs');
+  const send = (value) => stdout.write(frame(value));
+  let streamOptions = {};
+  let stream = null;
+  let loading = null;
+  const streamFor = async () => {
+    if (stream) return stream;
+    // The model is loaded once: a load that failed is the same failure for
+    // every frame that follows it.
+    if (!loading) {
+      loading = (async () => {
+        const loaded = await loadModel();
+        const model = loaded?.model ?? loaded;
+        streamOptions = loaded?.streamOptions ?? {};
+        stream = createSpeechStream({ loadModel: async () => model, send, streamOptions });
+        return stream;
+      })();
+    }
+    return loading;
+  };
+  let queueBytes = 0;
+  const runMessage = async (message) => {
+    const size = Buffer.byteLength(JSON.stringify(message));
+    queueBytes += size;
+    if (queueBytes > MAX_STREAM_QUEUE) throw new Error('Speech stream input queue exceeded limit.');
+    try {
+      const target = await streamFor();
+      await target.handle(message);
+    } catch (error) {
+      send({ type: 'error', error: error?.message || String(error), captureId: message?.captureId, phraseId: message?.phraseId });
+      await stream?.cancel?.();
+    } finally {
+      queueBytes -= size;
+    }
+  };
+
+  await runMessage(firstMessage);
+  const parser = createFrameParser((message) => { void runMessage(message); }, { maxBuffered: MAX_STREAM_QUEUE, maxMessage: MAX_STREAM_MESSAGE });
+  // The first chunk can carry more than the frame that opened the stream.
+  if (rest.length) {
+    try { parser(rest); }
+    catch (error) {
+      send({ type: 'error', error: error?.message || String(error) });
+      void stream?.cancel?.();
+    }
+  }
+  stdin.on('data', (chunk) => {
+    try { parser(chunk); }
+    catch (error) {
+      send({ type: 'error', error: error?.message || String(error) });
+      void stream?.cancel?.();
+    }
+  });
+  stdin.on('end', () => { void stream?.cancel?.(); });
+  stdin.on('error', () => { void stream?.cancel?.(); });
+}
+
+function isAuthorizedOrigin(origin, configOrigin) {
+  return origin === configOrigin && /^chrome-extension:\/\/[a-p]{32}\/$/.test(origin);
+}
+
+export function startHost(origin, options = {}) {
+  const stdin = options.stdin ?? process.stdin;
+  const stdout = options.stdout ?? process.stdout;
+  const configPath = options.configPath ?? new URL('./config.json', import.meta.url);
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (!isAuthorizedOrigin(origin, config.origin)) {
     process.stderr.write('Postora native host: unauthorized extension origin.\n');
     process.exitCode = 1;
     return;
   }
+
   let input = Buffer.alloc(0);
   let child = null;
   let accepted = false;
@@ -44,28 +149,27 @@ export function startHost(origin) {
   let outputBytes = 0;
   let truncated = false;
   let timer;
-  let killing = null;
   let replied = false;
+  let streamMode = false;
   const abort = new AbortController();
   let speechTask;
+  let projectTask;
+  let killing = null;
+
   const kill = () => {
     if (killing) return killing;
-    if (!child?.pid) return Promise.resolve();
-    const command = child;
-    killing = new Promise((resolve) => {
-      const killer = spawn('taskkill.exe', ['/PID', String(command.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      killer.once('error', () => { command.kill(); resolve(); });
-      killer.once('close', resolve);
-    });
+    killing = killTree(child?.pid);
     return killing;
   };
+
   const reply = (value) => {
     clearTimeout(timer);
     if (!ended && !replied) {
       replied = true;
-      process.stdout.write(frame(value));
+      stdout.write(frame(value));
     }
   };
+
   const capture = (chunk, decoder) => {
     const room = MAX_OUTPUT - outputBytes;
     if (chunk.length > room) truncated = true;
@@ -75,7 +179,8 @@ export function startHost(origin) {
       outputBytes += part.length;
     }
   };
-  process.stdin.on('data', async (chunk) => {
+
+  stdin.on('data', async (chunk) => {
     if (accepted) return;
     input = Buffer.concat([input, chunk]);
     if (input.length < 4) return;
@@ -89,19 +194,37 @@ export function startHost(origin) {
     accepted = true;
     try {
       const message = JSON.parse(input.subarray(4, 4 + length).toString('utf8'));
+
+      if (message?.type === 'speech-stream-open') {
+        streamMode = true;
+        // The chunk that carried the opening frame can carry more frames.
+        const rest = input.subarray(4 + length);
+        input = Buffer.alloc(0);
+        await startStreamMode(message, { stdin, stdout, rest });
+        return;
+      }
+
       if (String(message.type).startsWith('speech-')) {
         input = Buffer.alloc(0);
-        speechTask = speechOperation(message, { signal: abort.signal, onChild: (value) => { child = value; },
-          onProgress: (value) => { if (!ended) process.stdout.write(frame(value)); } });
+        speechTask = speechOperation(message, {
+          signal: abort.signal,
+          onChild: (value) => { child = value; },
+          onProgress: (value) => { if (!ended) stdout.write(frame(value)); },
+        });
         const result = await speechTask;
+        child = null;
         reply({ exitCode: 0, result });
         return;
       }
+
       if (String(message.type).startsWith('project-')) {
-        const result = await projectOperation(message);
+        input = Buffer.alloc(0);
+        projectTask = projectOperation(message, { signal: abort.signal });
+        const result = await projectTask;
         reply({ exitCode: 0, result });
         return;
       }
+
       const args = validateCommand(message);
       input = Buffer.alloc(0);
       const command = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $ErrorActionPreference = 'Stop';\n${args.command}`;
@@ -110,8 +233,8 @@ export function startHost(origin) {
         { cwd: args.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       const stdoutDecoder = new StringDecoder('utf8');
       const stderrDecoder = new StringDecoder('utf8');
-      child.stdout.on('data', (chunk) => capture(chunk, stdoutDecoder));
-      child.stderr.on('data', (chunk) => capture(chunk, stderrDecoder));
+      child.stdout.on('data', (data) => capture(data, stdoutDecoder));
+      child.stderr.on('data', (data) => capture(data, stderrDecoder));
       child.once('error', (error) => reply({ error: error.message }));
       child.once('close', (code) => {
         child = null;
@@ -123,13 +246,16 @@ export function startHost(origin) {
       reply({ error: error.message });
     }
   });
+
   // Chrome closes this pipe when the command is cancelled or the worker dies.
-  process.stdin.once('end', async () => {
+  stdin.once('end', async () => {
+    if (streamMode) return;
     ended = true;
     abort.abort();
     clearTimeout(timer);
     await kill();
     await speechTask?.catch(() => {});
+    await projectTask?.catch(() => {});
     process.exit();
   });
 }

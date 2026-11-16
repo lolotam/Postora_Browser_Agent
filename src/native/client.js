@@ -2,6 +2,11 @@
 // the host terminates the command tree. No localhost listener is exposed.
 export const HOST_NAME = 'com.postora.private_terminal';
 
+export async function createPort(runtimeName = HOST_NAME, runtime = globalThis.chrome?.runtime) {
+  if (!runtime?.connectNative) throw new Error('Native messaging is unavailable.');
+  return runtime.connectNative(runtimeName);
+}
+
 export function runNativeCommand(args, { signal = null, runtime = globalThis.chrome?.runtime } = {}) {
   return nativeRequest({ type: 'run', ...args }, { signal, runtime });
 }
