@@ -12,7 +12,13 @@ export function pcmWav(samples, sampleRate = 16000) {
   return new Uint8Array(buffer);
 }
 
-export async function transcribeLocal(blob, { signal } = {}) {
+/**
+ * The phrase recording of a local Whisper model.
+ *
+ * `modelId` says which local model is asked for. The audio leaves the computer
+ * as a WAV file and the native host runs the model: nothing is uploaded.
+ */
+export async function transcribeLocal(blob, { signal, modelId = 'local-whisper' } = {}) {
   signal?.throwIfAborted();
   const context = new AudioContext();
   let decoded;
@@ -26,6 +32,6 @@ export async function transcribeLocal(blob, { signal } = {}) {
   const wav = pcmWav(rendered.getChannelData(0));
   let binary = '';
   for (let i = 0; i < wav.length; i += 8192) binary += String.fromCharCode(...wav.subarray(i, i + 8192));
-  const result = await nativeRequest({ type: 'speech-transcribe', audio: btoa(binary) }, { signal });
+  const result = await nativeRequest({ type: 'speech-transcribe', audio: btoa(binary), modelId }, { signal });
   return result.result.text;
 }

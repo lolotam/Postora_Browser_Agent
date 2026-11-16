@@ -2,6 +2,7 @@
 
 import { keyGroup, shareKeys } from './keys.js';
 import { STORE_BUILD } from './build.js';
+import { normalizeLocal } from '../voice/local-models.js';
 
 /** The providers that sign in with an account, in the order they are listed. */
 export const ACCOUNT_PROVIDERS = ['chatgpt', 'claude', 'grok', 'kimi', 'minimax', 'zai'];
@@ -253,11 +254,11 @@ export function mergeSettings(stored = {}) {
     // A stored value that is not a switch is no switch: the conversations stay
     // out of the backup unless the user turned them on.
     backupChats: typeof stored?.backupChats === 'boolean' ? stored.backupChats : DEFAULT_SETTINGS.backupChats,
-    transcription: {
+    transcription: normalizeLocal({
       ...DEFAULT_SETTINGS.transcription, ...(stored.transcription ?? {}),
       mode: stored.transcription?.mode ?? (stored.transcription ? 'auto' : 'browser'),
       provider: stored.transcription?.provider ?? (stored.transcription?.endpoint && stored.transcription.endpoint !== DEFAULT_SETTINGS.transcription.endpoint ? 'custom' : 'openai'),
-    },
+    }),
     fallback: {
       ...DEFAULT_SETTINGS.fallback,
       ...(stored.fallback ?? {}),
