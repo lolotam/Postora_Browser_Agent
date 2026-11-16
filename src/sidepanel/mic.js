@@ -5,8 +5,7 @@
 import { heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey } from './voice.js';
 import { setLanguage, t } from './i18n.js';
 import { loadSettings } from '../lib/settings.js';
-import { createAudioRecognition } from '../voice/audio-recognition.js';
-import { transcribeAudio, validateTranscription } from '../voice/transcription.js';
+import { createConfiguredRecognition } from '../voice/recognition-factory.js';
 
 const params = new URLSearchParams(location.search);
 const language = params.get('lang') === 'ar' ? 'ar' : 'en';
@@ -85,16 +84,28 @@ async function onRecognizeError(code) {
 }
 
 function start() {
-  const Ctor = settings.transcription.mode !== 'browser'
-    ? function () { return createAudioRecognition({ endSilenceMs: settings.transcription.endSilenceMs, checkConfiguration: () => validateTranscription(settings.transcription), transcribe: (blob, signal) => transcribeAudio(blob, settings.transcription, { signal }) }); }
-    : window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Ctor) {
+  let rec;
+  try {
+    rec = createConfiguredRecognition(settings, {
+      createBrowserRecognition: () => {
+        const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        return Ctor ? new Ctor() : null;
+      },
+    });
+  } catch (error) {
+    // A local model that cannot be built says why. The audio is not sent
+    // somewhere else instead.
+    live.textContent = error?.message || t('composer.micMissing');
+    post('error', { code: 'not-supported', detail: error?.message });
+    button.disabled = false;
+    return;
+  }
+  if (!rec) {
     live.textContent = t('composer.micMissing');
     post('error', { code: 'not-supported' });
     button.disabled = false;
     return;
   }
-  const rec = new Ctor();
   recognition = rec;
   // A new recognizer starts with a new list of results.
   text = '';

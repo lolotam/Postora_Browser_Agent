@@ -33,6 +33,7 @@ import { runTabPanelsScenario } from './tab-panels.mjs';
 import { runResumeSessionScenario } from './resume-session.mjs';
 import { runOverlayScenario } from './overlay.mjs';
 import { runVoiceCleanupScenario } from './voice-cleanup.mjs';
+import { runNemotronVoiceScenario } from './nemotron-voice.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -1901,6 +1902,7 @@ async function main() {
       ...(await verify(runParallelScenario)),
       ...(await verify(runVoiceScenario)),
       ...(await verify(runVoiceCleanupScenario)),
+      ...(await verify(runNemotronVoiceScenario)),
       ...(await verify(runVoiceTrustedScenario)),
       ...(await verify(runVoiceSafetyScenario)),
       ...(await verify(runVoiceSwitchScenario)),

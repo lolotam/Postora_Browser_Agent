@@ -25,8 +25,8 @@ import { FILE_LIMITS, readLocalFile } from './attach.js';
 import { createFastAsk } from '../fast/clients.js';
 import { approvalText as approvalMessage } from '../voice/voice-approval.js';
 import { createVoiceController } from '../voice/voice-controller.js';
-import { createAudioRecognition } from '../voice/audio-recognition.js';
-import { transcribeAudio, speechLocale, validateTranscription } from '../voice/transcription.js';
+import { createConfiguredRecognition } from '../voice/recognition-factory.js';
+import { speechLocale } from '../voice/transcription.js';
 import { createTranscriptionForm } from './transcription-form.js';
 import { playReply } from '../voice/playback.js';
 import { runFastCommand } from '../voice/voice-runner.js';
@@ -1572,17 +1572,15 @@ async function saveVoicePrefs(prefs) {
 
 function createVoice() {
   return createVoiceController({
-    createRecognition: () => {
-      if (settings?.transcription?.mode !== 'browser') {
-        const config = structuredClone(settings?.transcription);
-        return createAudioRecognition({ endSilenceMs: config.endSilenceMs, checkConfiguration: () => validateTranscription(config), transcribe: (blob, signal) => transcribeAudio(blob, config, { signal }) });
-      }
-      const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!Ctor) return null;
-      const rec = new Ctor();
-      rec.lang = speechLang(currentLanguage());
-      return rec;
-    },
+    createRecognition: () => createConfiguredRecognition(settings, {
+      createBrowserRecognition: () => {
+        const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!Ctor) return null;
+        const rec = new Ctor();
+        rec.lang = speechLang(currentLanguage());
+        return rec;
+      },
+    }),
     // The side panel cannot ask Chrome for the microphone; a real window can.
     canListenInPanel: () => !panelMicBroken && micListenTarget(micPermission) === 'panel',
     openMicWindow,
