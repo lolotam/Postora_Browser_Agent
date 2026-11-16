@@ -89,7 +89,7 @@ export async function runNemotronVoiceScenario(context, extensionId) {
   const panel = await context.newPage();
   const pageErrors = [];
   panel.on('pageerror', (error) => pageErrors.push(error.message));
-  await context.addInitScript(installSpeechFixture);
+  await panel.addInitScript(installSpeechFixture);
   await panel.addInitScript(() => {
     // The side panel listens in the panel only when this extension's own
     // microphone permission was granted from a real window.
