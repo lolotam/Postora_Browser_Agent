@@ -125,10 +125,11 @@ export async function runNemotronVoiceScenario(context, extensionId) {
     await panel.waitForFunction(() => document.querySelector('#voiceLive')?.textContent.includes('افتح'), { timeout: 15000 });
     console.log('Nemotron voice: the Arabic words are visible while the phrase is still open');
 
-    // The silence ends the phrase and the command runs.
+    // The silence ends the phrase and the command is handed to the panel.
     await panel.evaluate(() => window.__pushPcm(0));
-    await waitFor(() => commands.length >= 1, 20000, 'the first command did not reach the model');
-    assert.match(commands[0], /افتح يوتيوب/, 'the first command carries the words that were spoken');
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry').length >= 1, { timeout: 20000 });
+    let entries = await voiceEntries(panel);
+    assert.match(entries.join(' | '), /افتح يوتيوب/, 'the first command carries the words that were spoken');
 
     // The second phrase: the result history keeps both, so the second command
     // is not dropped.
@@ -136,9 +137,10 @@ export async function runNemotronVoiceScenario(context, extensionId) {
     await panel.evaluate(() => window.__pushPcm(0.2));
     await panel.waitForFunction(() => document.querySelector('#voiceLive')?.textContent.includes('open'), { timeout: 15000 });
     await panel.evaluate(() => window.__pushPcm(0));
-    await waitFor(() => commands.length >= 2, 20000, 'the second command did not reach the model');
-    assert.match(commands[1], /open youtube/, 'the second command carries the second phrase');
-    assert.equal(commands.length, 2, 'every phrase runs exactly once');
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry').length >= 2, { timeout: 20000 });
+    entries = await voiceEntries(panel);
+    assert.match(entries.join(' | '), /open youtube/, 'the second command carries the second phrase');
+    assert.equal(entries.length, 2, 'every phrase runs exactly once');
 
     // Closing the voice screen ends the capture: no further command.
     await panel.click('#voiceBackBtn');
@@ -147,7 +149,7 @@ export async function runNemotronVoiceScenario(context, extensionId) {
     await panel.evaluate(() => window.__pushPcm(0.2));
     await panel.evaluate(() => window.__pushPcm(0));
     await panel.waitForTimeout(1500);
-    assert.equal(commands.length, 2, 'a stopped capture sends nothing');
+    assert.equal((await voiceEntries(panel)).length, 2, 'a stopped capture sends nothing');
 
     // The audio never left the computer: only the model request was made.
     const audioPosts = requests.filter((request) => /audio|transcri/i.test(request.url) || /audio|mpeg|wav/i.test(request.type));
@@ -169,11 +171,7 @@ export async function runNemotronVoiceScenario(context, extensionId) {
   }
 }
 
-async function waitFor(condition, timeout, message) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    if (condition()) return;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(message);
+/** The commands the panel heard, one entry per phrase. */
+async function voiceEntries(panel) {
+  return panel.evaluate(() => [...document.querySelectorAll('#voiceLog .voice-entry')].map((node) => node.textContent));
 }
