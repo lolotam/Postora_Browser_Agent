@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey } from '../src/sidepanel/voice.js';
+import { createConfiguredRecognition } from '../src/voice/recognition-factory.js';
 
 // Run the actual microphone page with a small browser boundary. No recognizer
 // or relay logic is duplicated in the test.
@@ -33,6 +34,7 @@ async function microphone() {
   const location = { search: '?epoch=42&continuous=1', href: 'chrome-extension://test/src/sidepanel/mic.html?epoch=42&continuous=1' };
   await vm.runInNewContext(`(async () => { ${source}\n })()`, {
     loadSettings: async () => ({ transcription: { mode: 'browser' } }),
+    createConfiguredRecognition,
     heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey,
     setLanguage() {}, t: (key) => key,
     URL, URLSearchParams, location,
