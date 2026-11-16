@@ -731,7 +731,9 @@ function refusal(reason) {
   if (reason === 'denied') return 'The user did not allow this action.';
   if (reason === 'no-panel') return 'No trusted panel was connected to answer this action request; nothing was allowed.';
   if (reason === 'aborted' || reason === 'cancelled') return 'The task was stopped before this action was allowed.';
-  if (reason === 'stale-revision') return 'The access mode changed while the question was open, so nothing was allowed.';
+  if (reason === 'stale-revision' || reason === 'mode-changed') {
+    return 'The access mode changed while the question was open, so nothing was allowed. Check the current access mode and try again if it now allows this action.';
+  }
   if (reason === 'unknown-action') return 'This session may not run that action.';
   return `This action was not allowed (${reason ?? 'no reason given'}).`;
 }

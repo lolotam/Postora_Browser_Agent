@@ -493,11 +493,20 @@ function onEvent(event) {
       }
       $('resumeRow').hidden = event.running || !event.resumable;
       if (!event.running) {
-        // The task ended without a report: it did not succeed.
-        const entry = voiceEntryFor(event);
-        if (entry) {
-          entry.setErr(t('voice.failed'));
-          finishVoiceTask();
+        const task = voiceTask;
+        if (task && !task.settled && task.sessionId === sessionId) {
+          const entry = voiceEntryFor(event);
+          if (entry && !task.awaitingIdle) {
+            // The task ended without a report: it did not succeed.
+            entry.setErr(t('voice.failed'));
+            completeVoiceTaskAfterCleanup(task);
+          }
+          // A queued voice command must not start until worker cleanup is complete.
+          // `status.running === false` is emitted after the session runner finishes
+          // cleanup, so only then do we release the voice task promise.
+          if (task.awaitingIdle && !ui.running) {
+            finishVoiceTask();
+          }
         }
       }
       break;
@@ -638,14 +647,17 @@ function onEvent(event) {
           voiceEntry.setErr(t('voice.partial'));
           voiceController?.speak(voiceT('voice.partialSpoken'));
         }
-        finishVoiceTask();
+        // Worker cleanup (detach/save/settle) continues after final; wait for idle.
+        completeVoiceTaskAfterCleanup(voiceTask);
       }
       break;
     }
     case 'error':
       add('msg error', event.message);
-      voiceEntryFor(event)?.setErr(event.message);
-      if (!replaying) finishVoiceTask();
+      if (voiceEntryFor(event)) {
+        voiceEntryFor(event).setErr(event.message);
+        if (!replaying) completeVoiceTaskAfterCleanup(voiceTask);
+      }
       break;
     case 'compacting':
       ui.compacting?.remove();
@@ -663,8 +675,10 @@ function onEvent(event) {
       break;
     case 'stopped':
       add('msg error', t('msg.stopped'));
-      voiceEntryFor(event)?.setErr(t('voice.cancelled'));
-      if (!replaying) finishVoiceTask();
+      if (voiceEntryFor(event)) {
+        voiceEntryFor(event).setErr(t('voice.cancelled'));
+        if (!replaying) completeVoiceTaskAfterCleanup(voiceTask);
+      }
       break;
     case 'notice':
       ui.notices.push(event);
@@ -1676,6 +1690,7 @@ function finishVoiceTask() {
   const task = voiceTask;
   if (!task) return;
   voiceTask = null;
+  task.awaitingIdle = false;
   task.resolve?.();
 }
 
@@ -1686,15 +1701,30 @@ function finishVoiceTask() {
  * still shown where it belongs.
  */
 function settleVoiceCommand() {
-  voiceTask?.resolve?.();
+  const task = voiceTask;
+  if (!task) return;
+  task.awaitingIdle = false;
+  task.settled = true;
+  voiceTask = null;
+  task.resolve?.();
 }
 
 function cancelVoiceTask(message) {
   const task = voiceTask;
   if (!task) return;
   voiceTask = null;
+  task.awaitingIdle = false;
+  task.settled = true;
   task.entry?.setErr?.(message || t('voice.cancelled'));
   task.resolve?.();
+}
+
+function completeVoiceTaskAfterCleanup(task = voiceTask) {
+  if (!task || task.settled) return;
+  task.awaitingIdle = true;
+  // If cleanup already finished, the next status event may not arrive; but in
+  // normal flow final/error/stopped precede status running:false from the
+  // session runner. Release is performed on that idle status.
 }
 
 /** Runs one spoken command on the engine the user chose. */
@@ -1737,7 +1767,7 @@ async function runVoiceCommand(text, { signal, entry }) {
   // session that is already working on something is not steered by a voice
   // command: the result would belong to a task the user did not ask for.
   return new Promise((resolve) => {
-    const task = { entry, text, startedAt: Date.now(), sessionId, resolve };
+    const task = { entry, text, startedAt: Date.now(), sessionId, resolve, awaitingIdle: false, settled: false };
     voiceTask = task;
     voiceTarget().then((target) => {
       if (signal.aborted || voiceTask !== task || sessionId !== task.sessionId) {
