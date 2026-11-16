@@ -125,6 +125,23 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
   };
 }
 
+test('a queued command waits for the worker to be idle before it starts', async () => {
+  const app = setup({ handsFree: true });
+  await app.controller.open();
+  const rec = app.created[0];
+
+  rec.hear('open youtube');
+  rec.hear('scroll down');
+  assert.deepEqual(app.commands.map((c) => c.text), ['open youtube'], 'the second command waits for the first to be done');
+
+  // The worker is idle only when the task it ran has finished its cleanup.
+  // Until then the second command must not start: it would ask a session that
+  // is still working on something.
+  app.release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(app.commands.map((c) => c.text), ['open youtube', 'scroll down'], 'the second command starts after the idle');
+});
+
 test('microphone-window transcription failures preserve the provider detail once', async () => {
   const app = setup({ panel: false });
   await app.controller.open();
