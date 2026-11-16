@@ -1,6 +1,8 @@
 export const LOCAL_MODELS = Object.freeze({
-  'local-nemotron': { label: 'Nemotron Streaming 3.5', endpoint: '', model: 'nemotron-3.5-q8_0' },
-  'local-whisper': { label: 'Whisper Base', endpoint: '', model: 'base' },
+  // bytes: what the download of this model costs the user.
+  // live: the model transcribes while the user speaks, not phrase by phrase.
+  'local-nemotron': { label: 'Nemotron Streaming 3.5', endpoint: '', model: 'nemotron-3.5-q8_0', bytes: 751094240, live: true },
+  'local-whisper': { label: 'Whisper Base', endpoint: '', model: 'base', bytes: 162910259, live: false },
 });
 
 export function normalizeLocal(config) {
