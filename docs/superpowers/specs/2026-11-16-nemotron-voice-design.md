@@ -54,6 +54,17 @@ No Local audio reaches a transcription service or telemetry. Final transcript st
 
 Acceptance includes migration and routing units; independent model status/install/cancel tests; PCM continuity and validation; native mocked-binding partial/final/reset/failure tests; cancellation and stale-event tests; browser synthetic native streams in Arabic/English; a Postora queue regression that enqueues command two before command one finishes and proves dispatch after idle. Existing Whisper, project and native command tests remain green. Run `npm test` and `npm run e2e`. Real Windows English/Arabic smoke requires a separately user-approved model download and is not CI.
 
+## Validation results (2026-11-17)
+
+What was actually run, and what was not.
+
+- **`npm test`: 1210 unit tests, 1210 passing, 0 failing.** The new coverage is the local model selection and routing, the pinned runtime and the installer, the native stream protocol, the PCM resampler and worklet, the recognition state machine, the independent model downloads, and the recognizer factory. The Whisper, project and native command cases are unchanged and green.
+- **`npm run e2e`: the new `nemotron-voice` scenario passes**, on its own and in the order of the suite: the live recognizer opens, the Arabic words are visible while the phrase is still open, every phrase becomes exactly one command in the panel, a closed voice screen sends nothing, and no request other than the provider's model list is made - no audio leaves the computer. The scenario judges the speech path; whether the task that follows can run in the browser is the work of the other scenarios.
+- **`npm run e2e` did not finish green in this sandbox.** The four voice scenarios that share the browser before it (`voice-cleanup`, `voice-switch`, `voice-window`, `voice-replay`) fail with Chrome's "Grouping is not supported by tabs in this window" and "Tabs can only be moved to and from normal windows": the agent cannot open its grouped tab in this browser window. The same four scenarios fail the same way on the tree before this work (`baa122e`, verified by running them against an export of that tree), so this is the environment of the machine, not a regression of this work. The whole suite must be read on a machine where these four scenarios pass.
+- **`npm run package`**: `dist/postora-browser-agent-v0.4.15.zip`, 118 files, 713 KB. No `node_modules`, no model weights, and the store manifest keeps no native messaging permission.
+- **`npm run package:private`**: `dist/postora-private-v0.4.15.zip`, 242 files. The pinned runtime closure is inside it - `transcribe-cpp` 0.4.2, `@transcribe-cpp/win32-x64-cpu-vulkan` with its `transcribe.dll`, `koffi` and the licenses of all three - together with the new native modules (`nemotron.mjs`, `speech-stream.mjs`, `runtime-check.mjs`, `runtime-files.mjs`). No model weights are in either archive.
+- **The real Windows smoke is pending.** It needs the 751094240-byte model download, which is not approved yet, so nothing here claims it: the Windows architecture, the Node version, the Visual C++ version, the exact model hash, CPU transcription of English and Arabic phrases, the live partials before the silence, a second phrase without a model reload, a stop during inference, the spoken-reply pause and a session switch, and the existing Whisper path all still have to be run on the real model. The synthetic evidence above does not stand in for it.
+
 ## Sources
 
 - https://github.com/handy-computer/transcribe.cpp/blob/v0.4.2/bindings/typescript/README.md
