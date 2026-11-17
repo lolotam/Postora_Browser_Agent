@@ -1423,10 +1423,12 @@ async function openMicWindow({ continuous = false } = {}) {
 
 function closeMicWindow() {
   const epoch = micEpoch;
+  const winId = micWindowId;
   micWindowId = null;
   micCaptureOpen = false;
   micEpoch += 1; // what the old window says from now on is stale
   chrome.runtime.sendMessage({ source: MIC_PANEL, kind: 'cancel', epoch }).catch(() => {});
+  if (winId != null) chrome.windows.remove(winId).catch(() => {});
 }
 
 /** What the microphone window heard. Only the window of this epoch counts. */

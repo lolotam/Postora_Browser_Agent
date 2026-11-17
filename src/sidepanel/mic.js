@@ -38,6 +38,15 @@ function post(kind, extra = {}) {
   return chrome.runtime.sendMessage({ source: MIC_WINDOW, kind, epoch, ...extra }).catch(() => {});
 }
 
+function closeSelf() {
+  try { window.close(); } catch {}
+  try {
+    chrome.tabs?.getCurrent?.((tab) => {
+      if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
+    });
+  } catch {}
+}
+
 function finish(said, send) {
   if (finished) return;
   finished = true;
@@ -45,7 +54,7 @@ function finish(said, send) {
   // says that it is done and closes.
   if (continuous) post('ended');
   else if (send) post('end', { text: said.trim() });
-  setTimeout(() => window.close(), 500);
+  setTimeout(closeSelf, 500);
 }
 
 async function micState() {
@@ -68,7 +77,7 @@ async function onRecognizeError(code) {
       next.searchParams.set('tab', '1');
       await chrome.tabs.create({ url: next.href });
       await post('moved');
-      window.close();
+      closeSelf();
       return;
     }
   }
@@ -221,7 +230,7 @@ chrome.runtime.onMessage.addListener((message) => {
     started = false;
     finished = true;
     try { recognition?.abort(); } catch { /* already stopped */ }
-    window.close();
+    closeSelf();
     return;
   }
   if (message.kind === 'stop') {
