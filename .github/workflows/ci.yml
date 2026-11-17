@@ -18,6 +18,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install Windows speech runtime artifact for packaging
+        run: npm install --force --no-save @transcribe-cpp/win32-x64-cpu-vulkan@0.4.2
       - name: Unit tests
         run: npm test
       - name: Install Chromium
@@ -46,6 +48,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install Windows speech runtime artifact for packaging
+        run: npm install --force --no-save @transcribe-cpp/win32-x64-cpu-vulkan@0.4.2
       - name: Build release packages
         run: |
           npm run package

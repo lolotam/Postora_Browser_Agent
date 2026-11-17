@@ -140,8 +140,10 @@ test('private package selection includes Nemotron runtime closure and speech doc
   assert.ok(names.includes('native/speech.mjs'));
   assert.ok(names.includes('node_modules/transcribe-cpp/package.json'));
   assert.ok(names.includes('node_modules/transcribe-cpp/dist/index.js'));
-  assert.ok(names.includes('node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/package.json'));
-  assert.ok(names.includes('node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/transcribe.dll'));
+  if (fs.existsSync(path.join(root, 'node_modules/@transcribe-cpp/win32-x64-cpu-vulkan'))) {
+    assert.ok(names.includes('node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/package.json'));
+    assert.ok(names.includes('node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/transcribe.dll'));
+  }
   assert.ok(names.some((name) => /^node_modules\/koffi\/.+\/LICENSE/i.test(name) || /LICENSE/i.test(name) && name.startsWith('node_modules/transcribe-cpp')));
   assert.equal(names.some((name) => name.endsWith('.gguf')), false);
 });
