@@ -1,6 +1,6 @@
 {
   "name": "browser-controle",
-  "version": "0.4.15",
+  "version": "0.4.16",
   "private": true,
   "description": "Chrome extension: an AI agent that operates the browser using a ChatGPT subscription or an OpenAI-compatible API.",
   "type": "module",
