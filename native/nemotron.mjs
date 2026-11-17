@@ -68,8 +68,12 @@ export async function nemotronStatus({ home = speechHome(), supported = isNemotr
 }
 
 async function fileReady(file, size) {
-  const stat = await fs.stat(file);
-  return stat.isFile() && stat.size === size;
+  try {
+    const stat = await fs.stat(file);
+    return stat.isFile() && stat.size === size;
+  } catch {
+    return false;
+  }
 }
 
 export async function nemotronInstall({
@@ -101,8 +105,9 @@ export async function nemotronInstall({
       if (loaded && typeof loaded.dispose === 'function') await loaded.dispose?.();
       else if (loaded && typeof loaded[Symbol.dispose] === 'function') loaded[Symbol.dispose]();
     }
+    signal?.throwIfAborted();
     const valid = async () => fileReady(path.join(destination, asset.name), asset.size);
-    await commitInstallation(staging, destination, valid);
+    await commitInstallation(staging, destination, valid, signal);
   } catch (error) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
     throw error;
