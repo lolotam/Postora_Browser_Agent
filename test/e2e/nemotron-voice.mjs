@@ -111,6 +111,8 @@ export async function runNemotronVoiceScenario(context, extensionId) {
         voiceHandsfree: true,
         uiLanguage: 'en',
       },
+      voiceHandsfree: true,
+      voiceSpeak: false,
     }), origin);
     await panel.reload();
     await panel.waitForFunction(() => document.querySelector('#sessionTitle')?.textContent.trim());
@@ -130,6 +132,9 @@ export async function runNemotronVoiceScenario(context, extensionId) {
     await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry').length >= 1, { timeout: 20000 });
     let entries = await voiceEntries(panel);
     assert.match(entries.join(' | '), /افتح يوتيوب/, 'the first command carries the words that were spoken');
+
+    // The speech guard and previous command must settle before phrase two starts.
+    await panel.waitForTimeout(1000);
 
     // The second phrase: the result history keeps both, so the second command
     // is not dropped.

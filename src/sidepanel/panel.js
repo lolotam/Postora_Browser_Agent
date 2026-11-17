@@ -1720,9 +1720,9 @@ function cancelVoiceTask(message) {
 function completeVoiceTaskAfterCleanup(task = voiceTask) {
   if (!task || task.settled) return;
   task.awaitingIdle = true;
-  // If cleanup already finished, the next status event may not arrive; but in
-  // normal flow final/error/stopped precede status running:false from the
-  // session runner. Release is performed on that idle status.
+  if (!ui.running) {
+    finishVoiceTask();
+  }
 }
 
 /** Runs one spoken command on the engine the user chose. */

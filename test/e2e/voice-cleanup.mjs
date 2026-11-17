@@ -15,7 +15,8 @@ export async function runVoiceCleanupScenario(context, extensionId) {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw);
-    const first = body.messages.some((message) => message.role === 'user' && String(message.content).includes('Voice command one'));
+    const lastUserMsg = body.messages.filter((message) => message.role === 'user').at(-1);
+    const first = lastUserMsg && String(lastUserMsg.content).includes('Voice command one');
     tasks.push(first ? 'one' : 'two');
     console.log(`Voice cleanup: model request ${tasks.at(-1)}`);
     if (first) {
@@ -50,6 +51,10 @@ export async function runVoiceCleanupScenario(context, extensionId) {
         });
         return port;
       };
+      Object.defineProperty(navigator, 'permissions', {
+        configurable: true,
+        value: { query: async (descriptor) => ({ state: descriptor?.name === 'microphone' ? 'granted' : 'prompt', onchange: null }) },
+      });
     });
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     previous = await panel.evaluate(() => chrome.storage.local.get('settings'));
@@ -64,6 +69,7 @@ export async function runVoiceCleanupScenario(context, extensionId) {
     await panel.reload();
     await panel.waitForFunction(() => document.querySelector('#sessionTitle')?.textContent.trim());
     console.log('Voice cleanup: panel ready');
+    await target.bringToFront();
     await panel.click('#voiceToggle');
     await panel.waitForSelector('#voiceView:not([hidden])');
     await panel.fill('#voiceTypedInput', 'Voice command one');
@@ -111,6 +117,7 @@ export async function runVoiceCleanupScenario(context, extensionId) {
     return [`Voice cleanup: ${error.stack ?? error}; panel ${JSON.stringify(state)}; page errors ${JSON.stringify(pageErrors)}`];
   } finally {
     releaseFirst();
+    await panel.click('#voiceBackBtn').catch(() => {});
     if (previous) await panel.evaluate((saved) => chrome.storage.local.set(saved), previous).catch(() => {});
     await Promise.all([panel.close(), target.close()]);
     await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });

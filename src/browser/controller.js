@@ -252,9 +252,14 @@ export class BrowserController {
         }
       }
       if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
-      this.groupId = await chrome.tabs.group({ tabIds: [tabId] });
-      if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
-      await chrome.tabGroups.update(this.groupId, { title: this.title, color: this.color });
+      try {
+        this.groupId = await chrome.tabs.group({ tabIds: [tabId] });
+        if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
+        await chrome.tabGroups.update(this.groupId, { title: this.title, color: this.color });
+      } catch (err) {
+        if (err?.message === INPUT_CANCELLED) throw err;
+        this.groupId = null;
+      }
       if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
       this.publishTab(tabId);
       return { ...tab, groupId: this.groupId };
