@@ -28,6 +28,8 @@ jobs:
         run: npm run e2e
       - name: Build the store package
         run: npm run package
+      - name: Build the private package
+        run: npm run package:private
       - name: Unpack the store package
         run: unzip -q dist/postora-browser-agent-v*.zip -d "$RUNNER_TEMP/postora-store"
       - name: End-to-end (packaged extension with mock models)
