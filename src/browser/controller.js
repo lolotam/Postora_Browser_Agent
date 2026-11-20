@@ -567,13 +567,17 @@ export class BrowserController {
       if (kind === 'focus') {
         // The focus may live in a child frame: the top document then only
         // holds the iframe element. Every frame is asked, and the frame whose
-        // focused element is a real element (not an iframe slot) wins.
+        // focused element is a real element — not an iframe slot, and not an
+        // unfocused body — wins. The top frame is ordered first, so with no
+        // better answer the top document keeps what it captured.
         const results = await this.injectFrames(permissionTarget, ['capture', { kind: 'focus' }, SECRET_RULE], { tabId: tab.id });
         let picked = null;
         for (const entry of results ?? []) {
           if (!entry?.result?.ok) continue;
-          const slot = entry.result.element?.tag === 'iframe';
-          if (!picked || (picked.result.element?.tag === 'iframe' && !slot)) picked = entry;
+          const element = entry.result.element;
+          const slot = element?.tag === 'iframe' || Boolean(element?.body);
+          if (picked && !slot && picked.result.element?.tag !== 'iframe' && !picked.result.element?.body) continue;
+          if (!picked || (picked.result.element?.tag === 'iframe' || picked.result.element?.body) && !slot) picked = entry;
         }
         if (picked) {
           target.documentId = picked.result.documentId ?? null;
@@ -735,6 +739,15 @@ export class BrowserController {
     const res = await this.inject(permissionTarget, ['hit', { target, x, y }, SECRET_RULE], { tabId: target.tabId, guard, frameId: target.frameId ?? null });
     if (!res?.ok) throw new Error(INPUT_CANCELLED);
     return true;
+  }
+
+  /**
+   * The control a screenshot point would really land on, with the point
+   * clamped inside its box: exposed so a click_at captures and approves the
+   * snapped point instead of the raw one.
+   */
+  async snapPoint(x, y, { tabId = null } = {}) {
+    return this.inject(pointSnap, [x, y], { tabId });
   }
 
   /** Whether an element of the latest snapshot lives outside the top document. */

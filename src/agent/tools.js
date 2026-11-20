@@ -339,6 +339,19 @@ export function createToolExecutor(rawBrowser, {
     click_at: async ({ x, y }) => {
       const at = { x: Number(x), y: Number(y) };
       if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) throw new Error('A click needs a point in the viewport.');
+      // The point snaps before anything is captured or approved: the approval
+      // then names the control the click will really land on, and a late
+      // frame can never swallow the click into a different element.
+      try {
+        const snapped = await browser.snapPoint(at.x, at.y);
+        if (snapped && Number.isFinite(snapped.x) && Number.isFinite(snapped.y)) {
+          at.x = snapped.x;
+          at.y = snapped.y;
+        }
+      } catch {
+        // An unsnappable point (a snapshot that just left, a blank page) is
+        // captured and clicked where the model aimed it.
+      }
       const target = await pointTarget(at.x, at.y);
       const { guard } = await approve({
         action: 'click_at',
@@ -551,8 +564,9 @@ export function createToolExecutor(rawBrowser, {
       });
       // An element inside an iframe is scrolled in its own frame: the option
       // is the same element list, but CDP coordinates of the top document
-      // never land there, so the wheel goes to the element itself.
-      if (browser.elementFrame(at) != null) {
+      // never land there, so the wheel goes to the element itself. A scroll
+      // without an index is always the page's own.
+      if (at !== null && browser.elementFrame(at) != null) {
         await overlay.say(direction === 'up' ? 'scrollUp' : 'scrollDown');
         await browser.element(at, 'scroll-el', { direction: String(direction), screens: howMany }, { guard, target });
         return observe(`Scrolled ${direction}.`);
@@ -572,12 +586,14 @@ export function createToolExecutor(rawBrowser, {
       const at = { x: Number(x), y: Number(y) };
       if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) throw new Error('A scroll needs a point in the viewport.');
       const howMany = Number.isFinite(Number(screens)) ? Number(screens) : 1;
-      const tabId = await currentTabId();
+      // The approval is bound to the tab's document: if the page navigates
+      // while the answer waits, the wheel goes nowhere.
+      const scope = await tabScope();
       // The guard of the approval travels with the scroll: a task that is
       // stopped while the tab was looked up scrolls nothing.
-      const { guard } = await approve({ action: 'scroll_at', args: { x: at.x, y: at.y, direction: String(direction), screens: howMany }, tabId, target: null, describe: `Scroll ${direction} at (${at.x}, ${at.y})` });
+      const { guard } = await approve({ action: 'scroll_at', args: { x: at.x, y: at.y, direction: String(direction), screens: howMany }, tabId: scope.tabId, target: scope, describe: `Scroll ${direction} at (${at.x}, ${at.y})` });
       await overlay.say(direction === 'up' ? 'scrollUp' : 'scrollDown');
-      await browser.scrollAt(at.x, at.y, String(direction), howMany, { guard, tabId });
+      await browser.scrollAt(at.x, at.y, String(direction), howMany, { guard, tabId: scope.tabId });
       return observe(`Scrolled ${direction} at (${at.x}, ${at.y}).`);
     },
     get_text: async ({ start = 0, length = 6000 }) => {

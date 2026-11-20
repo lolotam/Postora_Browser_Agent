@@ -631,7 +631,7 @@ export function elementAction(index, action, value, quiet, rule, target) {
     flash();
     const box = el.getBoundingClientRect();
     const at = {
-      bubbles: true, cancelable: true, view: window,
+      bubbles: true, cancelable: true, composed: true, view: window,
       clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2),
       button: 0,
     };
@@ -659,7 +659,7 @@ export function elementAction(index, action, value, quiet, rule, target) {
     flash();
     const box = el.getBoundingClientRect();
     const at = {
-      bubbles: true, cancelable: true, view: window,
+      bubbles: true, cancelable: true, composed: true, view: window,
       clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2),
     };
     // Pointer events first, then the mouse pair: script handlers of both
@@ -677,13 +677,21 @@ export function elementAction(index, action, value, quiet, rule, target) {
     return { ok: true, tag: el.tagName.toLowerCase() };
   }
   if (action === 'scroll-el') {
-    // A wheel on the element itself: the only way to scroll an inner pane
-    // that lives inside an iframe.
+    // The wheel scrolls the scrollable pane the element sits in: a button
+    // inside a chat transcript never scrolls itself, so the deepest
+    // scrollable ancestor of the element is what turns.
     const sign = value?.direction === 'up' ? -1 : 1;
     const screens = Math.min(Math.max(Number(value?.screens) || 1, 0.2), 10);
-    const page = el.clientHeight || window.innerHeight || 600;
-    el.scrollBy({ top: sign * screens * page * 0.85, behavior: 'instant' });
-    return { ok: true, top: Math.round(el.scrollTop) };
+    let pane = null;
+    for (let node = el; node && !pane; node = node.parentElement ?? node.getRootNode?.()?.host ?? null) {
+      if (node === document.body || node === document.documentElement) break;
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null;
+      if (node.scrollHeight > node.clientHeight + 8 && style && /(auto|scroll|overlay)/.test(style.overflowY)) pane = node;
+    }
+    const target2 = pane ?? el;
+    const page = target2.clientHeight || window.innerHeight || 600;
+    target2.scrollBy({ top: sign * screens * page * 0.85, behavior: 'instant' });
+    return { ok: true, top: Math.round(target2.scrollTop), pane: Boolean(pane) };
   }
   if (action === 'locate') {
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -888,7 +896,7 @@ export function suggestionAction(index, wanted, mode, rule, target) {
     option.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
     const r = option.getBoundingClientRect();
     const at = {
-      bubbles: true, cancelable: true, view: window,
+      bubbles: true, cancelable: true, composed: true, view: window,
       clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
       button: 0, detail: 1,
     };
