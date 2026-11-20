@@ -758,10 +758,11 @@ function addCompacted(event) {
 function add(className, text) {
   closeThread();
   $('emptyState').hidden = true;
-  // A report or an error is the answer the user is waiting for: the folded
-  // list opens for it, unless they closed it by hand. Ordinary messages
-  // (the user's own text, spoken echoes) stay behind the fold.
-  if (/msg (final|error)/.test(className) && !$('chatLog').dataset.userToggled) $('chatLog').open = true;
+  // A report, an error, or a question the agent is waiting on is the answer
+  // the user is waiting for: the folded list opens for it, unless they closed
+  // it by hand. Ordinary messages (the user's own text, spoken echoes) stay
+  // behind the fold.
+  if (/msg (final|error|ask)/.test(className) && !$('chatLog').dataset.userToggled) $('chatLog').open = true;
   ui.trace = null;
   const node = document.createElement('div');
   node.className = className;
@@ -898,9 +899,11 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   }
   // The last turn's input tokens are the conversation's size as the provider
   // counted it: this is what the context bar fills against the model window.
+  // The display label ("Provider · model") is stripped to the bare model id
+  // first, because the window table matches model ids.
   ui.context = {
     input: Number.isFinite(usage?.input) ? usage.input : ui.context.input,
-    model: model || ui.context.model,
+    model: (model || ui.context.model).split(' · ').pop(),
   };
   updateContextBar();
   const tokens = usage ? t('stats.tokens', { input: number(usage.input), output: number(usage.output) }) : '';

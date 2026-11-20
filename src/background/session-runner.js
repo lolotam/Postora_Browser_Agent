@@ -595,14 +595,16 @@ export class SessionRunner {
         // model's context window: an 80k threshold on a 128k model compacts
         // at 80k anyway, while a 200k threshold on a 256k model compacts at
         // 80% of the window instead of at its very edge.
-        const windowTokens = contextWindowFor(model);
+        const windowTokens = contextWindowFor(String(typeof model === 'function' ? model() : model ?? '').split(' · ').pop());
         const threshold = Math.min(Number(config.thresholdTokens) || 0, Math.floor(windowTokens * 0.8));
         const tuned = { ...config, thresholdTokens: threshold };
         // A compaction that did not shrink the conversation waits for it to grow
         // again before another summary is paid for. Past the urgent limit the
         // conversation is compacted whatever it is: the model's own limit is
-        // closer than the cost of the summary.
-        const urgent = tuned.thresholdTokens * POSTPONE_LIMIT;
+        // closer than the cost of the summary — but both the postponement and
+        // the urgent limit stay bounded below the window itself, so waiting
+        // never risks it.
+        const urgent = Math.min(tuned.thresholdTokens * POSTPONE_LIMIT, Math.floor(windowTokens * 0.95));
         if (this.autoCompactBlockedUntil) {
           if (size < this.autoCompactBlockedUntil && size < urgent) return false;
           this.autoCompactBlockedUntil = 0;
@@ -611,7 +613,7 @@ export class SessionRunner {
         if (!autoCompactDue(tuned, size)) return false;
         // "Queue" postpones it to the end of the task, unless the conversation has grown so far past the
         // threshold that waiting would risk the model's limit.
-        const postponed = this.settings?.steerMode === 'queue' && size < tuned.thresholdTokens * POSTPONE_LIMIT;
+        const postponed = this.settings?.steerMode === 'queue' && size < Math.min(tuned.thresholdTokens * POSTPONE_LIMIT, Math.floor(windowTokens * 0.9));
         if (postponed) return false;
         return this.runCompaction(session, { auto: true, continueTask: !start, carry, signal, size });
       },
@@ -802,7 +804,9 @@ export class SessionRunner {
         signal: abort.signal,
         emit: (event) => this.emit(event),
         steering: this.steering(),
-        compaction: this.compaction(slotSettings(settings).model),
+        // The window follows the model that is actually answering: after a
+        // switch to the backup, the backup's window is the one that matters.
+        compaction: this.compaction(() => this.session?.model || slotSettings(settings).model),
         getAccessState: () => this.access.state(),
       });
       finished = true;
