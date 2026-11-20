@@ -1,6 +1,6 @@
 # Privacy Policy — Postora Browser Agent
 
-Last updated: 27 October 2026
+Last updated: 20 November 2026
 
 Postora Browser Agent ("the extension") is an AI agent in Chrome's side panel. You give it a task, and it reads and operates the web pages needed to carry it out, then writes you a report. This policy explains what data the extension handles, where it goes, and how to delete it.
 

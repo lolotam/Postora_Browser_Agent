@@ -488,6 +488,9 @@ function onEvent(event) {
       break;
     case 'status':
       setRunning(event.running);
+      // The live dot follows the task: it pulses while a task works and goes
+      // out when the session settles, replays included.
+      $('chatLog').classList.toggle('live', Boolean(event.running));
       if (!event.running && ui.compacting) {
         // A compaction that was stopped leaves no "compacting…" line behind.
         ui.compacting.remove();
@@ -755,6 +758,10 @@ function addCompacted(event) {
 function add(className, text) {
   closeThread();
   $('emptyState').hidden = true;
+  // A report or an error is the answer the user is waiting for: the folded
+  // list opens for it, unless they closed it by hand. Ordinary messages
+  // (the user's own text, spoken echoes) stay behind the fold.
+  if (/msg (final|error)/.test(className) && !$('chatLog').dataset.userToggled) $('chatLog').open = true;
   ui.trace = null;
   const node = document.createElement('div');
   node.className = className;
