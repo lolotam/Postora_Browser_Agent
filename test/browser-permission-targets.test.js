@@ -25,7 +25,7 @@ function matches(node, selector) {
     const attr = /^\[([\w-]+)(?:=["']?([^\]"']*)["']?)?\]/.exec(s);
     if (attr) {
       const [, name, value] = attr;
-      if (name === 'contenteditable') return node.editable && (value === undefined || value === '' || value === 'true');
+      if (name === 'contenteditable') return node.isContentEditable && (value === undefined || value === '' || value === 'true' || value === 'plaintext-only');
       if (name === 'onclick') return 'onclick' in node.attrs;
       if (!(name in node.attrs)) return false;
       return value === undefined ? true : String(node.attrs[name]) === value;
@@ -133,7 +133,7 @@ function makePage({ text = 'A page with ordinary words.' } = {}) {
     window,
     location: { href: 'https://example.test/page' },
     performance,
-    getComputedStyle: () => ({ visibility: 'visible', display: 'block', opacity: '1' }),
+    getComputedStyle: (node) => node?.__style ?? { visibility: 'visible', display: 'block', opacity: '1' },
     Node: { TEXT_NODE: 3 },
     NodeFilter: { SHOW_TEXT: 4 },
     getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
@@ -240,6 +240,47 @@ test('the label that belongs to a field is part of its name', () => {
 
   const captured = page.run(TARGET, 'capture', { kind: 'element', index: 0 }, rule);
   assert.equal(captured.element.secret, true, 'the rule of the module sees the label too');
+});
+
+test('a plaintext-only editor is an element the agent can act on', () => {
+  const page = makePage();
+  // Chat composers of 2026 write plaintext-only, and the old list only knew
+  // "" and "true": the field the user types into was invisible to the agent.
+  page.make({ tag: 'DIV', editable: true, attrs: { 'aria-label': 'Chat', contenteditable: 'plaintext-only' } });
+  const snap = page.run(SNAPSHOT, 250, 3500, rule);
+  assert.ok(snap.elements.some((line) => line.includes('Chat')), `the plaintext-only editor is collected: ${JSON.stringify(snap.elements)}`);
+});
+
+test('a select circle that only appears on hover is collected', () => {
+  const page = makePage();
+  // A photo grid keeps its select circle at opacity 0 until the tile is
+  // hovered; a checkbox the page names is a target all the same.
+  const circle = page.make({ tag: 'DIV', attrs: { role: 'checkbox', 'aria-label': 'Select' } });
+  circle.__style = { visibility: 'visible', display: 'block', opacity: '0' };
+  circle.closest = (selector) => (matches(circle, selector) ? circle : null);
+  const snap = page.run(SNAPSHOT, 250, 3500, rule);
+  assert.ok(snap.elements.some((line) => line.includes('Select')), 'the hover-revealed control is collected');
+});
+
+test('a hidden unnamed control stays out of the list', () => {
+  const page = makePage();
+  const menu = page.make({ tag: 'BUTTON', attrs: { 'aria-label': 'Archive' } });
+  menu.__style = { visibility: 'visible', display: 'block', opacity: '0' };
+  menu.closest = () => null;
+  const snap = page.run(SNAPSHOT, 250, 3500, rule);
+  assert.equal(snap.elements.some((line) => line.includes('Archive')), false, 'opacity hides an unnamed control');
+});
+
+test('a scrollable chat transcript is collected as a scrollable region', () => {
+  const page = makePage();
+  const transcript = page.make({ tag: 'DIV', attrs: { 'aria-label': 'Messages' } });
+  transcript.__style = { visibility: 'visible', display: 'block', opacity: '1', overflowY: 'auto' };
+  transcript.scrollHeight = 2000;
+  transcript.clientHeight = 400;
+  transcript.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 500, right: 400, bottom: 500 });
+  transcript.dataset = {};
+  const snap = page.run(SNAPSHOT, 250, 3500, rule);
+  assert.ok(snap.elements.some((line) => line.includes('scrollable region')), 'the transcript joins the list as a scrollable region');
 });
 
 test('a date inside a control that holds a secret is not a date of the page', () => {

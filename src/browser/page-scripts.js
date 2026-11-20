@@ -54,9 +54,9 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
   const INTERACTIVE = [
     'a[href]', 'button', 'input:not([type="hidden"])', 'select', 'textarea', 'summary',
     '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]', '[role="tab"]',
-    '[role="menuitem"]', '[role="option"]', '[role="switch"]', '[role="combobox"]',
-    '[role="textbox"]', '[role="searchbox"]', '[role="slider"]', '[contenteditable=""]',
-    '[contenteditable="true"]', '[onclick]', '[tabindex]:not([tabindex="-1"])',
+    '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]', '[role="option"]', '[role="switch"]', '[role="combobox"]',
+    '[role="textbox"]', '[role="searchbox"]', '[role="slider"]', '[contenteditable]:not([contenteditable="false"])',
+    '[onclick]', '[tabindex]:not([tabindex="-1"])',
   ].join(',');
 
   const collect = (root, out) => {
@@ -65,12 +65,6 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
       if (el.shadowRoot) collect(el.shadowRoot, out);
     });
     return out;
-  };
-
-  const isVisible = (el, rect) => {
-    if (rect.width < 2 || rect.height < 2) return false;
-    const style = getComputedStyle(el);
-    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.05;
   };
 
   const clean = (s, n) => (s || '').replace(/\s+/g, ' ').trim().slice(0, n);
@@ -244,7 +238,15 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     if (seen.has(el)) continue;
     seen.add(el);
     const rect = el.getBoundingClientRect();
-    if (!isVisible(el, rect)) continue;
+    const style = getComputedStyle(el);
+    // Laid out and not display-gone: opacity comes later, because a control
+    // that only appears on hover (a photo grid's select circle stays at
+    // opacity 0 until its tile is hovered) is still a target the page names.
+    const laid = rect.width >= 2 && rect.height >= 2 &&
+      style.visibility !== 'hidden' && style.display !== 'none';
+    if (!laid) continue;
+    const hiddenUntilHover = Number(style.opacity) <= 0.05;
+    if (hiddenUntilHover && !el.closest('input[type="checkbox"], [role="checkbox"], [role="option"], [role="menuitemcheckbox"]')) continue;
     const near = rect.bottom > -vh * 0.25 && rect.top < vh * 1.5 && rect.right > 0 && rect.left < vw;
     if (!near || elements.length >= maxElements) {
       offscreen += 1;
@@ -254,6 +256,23 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     const owner = el.parentElement && el.parentElement.closest('a[href],button');
     if (owner && elements.includes(owner)) continue;
     elements.push(el);
+  }
+
+  // Scrollable regions the wheel can drive: a chat transcript or a feed lives
+  // in its own container, and page-level scrolling never moves it. They join
+  // the list as plain [scrollable] entries an index can address.
+  let scrollables = 0;
+  for (const el of document.querySelectorAll('div,section,main,aside,nav,ul')) {
+    if (elements.length >= maxElements || scrollables >= 6) break;
+    const style = getComputedStyle(el);
+    if (!/(auto|scroll|overlay)/.test(style.overflowY)) continue;
+    if (el.scrollHeight <= el.clientHeight + 24 || el.clientHeight < 80) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.height < 80 || rect.bottom < 0 || rect.top > vh) continue;
+    if (elements.some((listed) => listed.contains?.(el) === true)) continue;
+    el.dataset.agentScrollable = '1';
+    elements.push(el);
+    scrollables += 1;
   }
 
   // The elements of this snapshot, in the extension's own world of the frame.
@@ -267,6 +286,7 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     el.setAttribute('data-agent-idx', String(i));
     const rect = el.getBoundingClientRect();
     const where = rect.top >= 0 && rect.bottom <= vh ? '' : ' (below fold)';
+    if (el.dataset?.agentScrollable) return `[${i}] scrollable region${where}`;
     return `[${i}] ${describe(el, hidden)}${where}`;
   });
 
@@ -359,6 +379,73 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     text,
     dates: pageDates(),
   };
+}
+
+/**
+ * Scrolls the scrollable area under a point: a chat transcript, a feed or an
+ * inner pane has its own scroller, and a page-level scroll never moves it.
+ * The deepest scrollable ancestor of the element under the point wins; with
+ * none, the page itself scrolls.
+ */
+export function scrollAtPage(x, y, direction, screens, rule) {
+  x = Number(x);
+  y = Number(y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { error: 'A scroll needs a point in the viewport.' };
+  const sign = direction === 'up' ? -1 : 1;
+  const amount = Math.max(200, window.innerHeight * 0.9) * sign * (Number(screens) || 1);
+  let el = document.elementFromPoint(x, y);
+  while (el?.shadowRoot?.elementFromPoint) {
+    const next = el.shadowRoot.elementFromPoint(x, y);
+    if (!next || next === el) break;
+    el = next;
+  }
+  const scrollable = (node) => {
+    if (!node || node === document.body || node === document.documentElement) return null;
+    if (node.scrollHeight <= node.clientHeight + 8) return null;
+    return /(auto|scroll|overlay)/.test(getComputedStyle(node).overflowY) ? node : null;
+  };
+  for (let node = el; node; node = node.parentElement ?? node.getRootNode?.()?.host ?? null) {
+    const found = scrollable(node);
+    if (found) {
+      found.scrollBy({ top: amount, behavior: 'instant' });
+      return { ok: true, inside: true, top: Math.round(found.scrollTop) };
+    }
+  }
+  window.scrollBy({ top: amount, behavior: 'instant' });
+  return { ok: true, inside: false, top: Math.round(window.scrollY) };
+}
+
+/**
+ * Snaps a screenshot point to the control that would receive the click: the
+ * model reads a JPEG, and its coordinates land near a control more often than
+ * on one. The model's intent is kept — the point is only clamped inside the
+ * control's box, so an aim at an edge is not dragged to the centre — and a
+ * point that is already inside its control stays exactly where it was.
+ */
+export function pointSnap(x, y) {
+  x = Number(x);
+  y = Number(y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  let el = document.elementFromPoint(x, y);
+  while (el?.shadowRoot?.elementFromPoint) {
+    const next = el.shadowRoot.elementFromPoint(x, y);
+    if (!next || next === el) break;
+    el = next;
+  }
+  if (!el || el === document.body || el === document.documentElement) return null;
+  const control = el.closest('a[href],button,input,select,textarea,summary,label,' +
+    '[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],' +
+    '[role="option"],[role="switch"],[role="textbox"],[role="searchbox"],[role="combobox"],' +
+    '[role="menuitemcheckbox"],[role="menuitemradio"],[contenteditable],[onclick],[tabindex]:not([tabindex="-1"])');
+  if (!control || control === document.body || control === document.documentElement) return null;
+  const rect = control.getBoundingClientRect();
+  if (!rect || rect.width < 4 || rect.height < 4) return null;
+  // A box that covers most of the viewport is a surface, not a control.
+  if (rect.width * rect.height > innerWidth * innerHeight * 0.6) return null;
+  const nx = Math.min(Math.max(x, rect.left + 2), rect.right - 2);
+  const ny = Math.min(Math.max(y, rect.top + 2), rect.bottom - 2);
+  if (nx === x && ny === y) return null;
+  return { x: Math.round(nx * 10) / 10, y: Math.round(ny * 10) / 10 };
 }
 
 /**
@@ -532,6 +619,35 @@ export function elementAction(index, action, value, quiet, rule, target) {
     setTimeout(() => { el.style.outline = prev; }, 700);
   };
 
+  // A click and a focus done in the frame itself: the only way to reach an
+  // element that lives inside an iframe, where CDP viewport coordinates of
+  // the top document never land. Real DOM events still run the page's own
+  // handlers, React's included.
+  if (action === 'activate') {
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    flash();
+    if (value?.double) el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
+    el.click();
+    return { ok: true, tag: el.tagName.toLowerCase() };
+  }
+  if (action === 'focus-el') {
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    flash();
+    el.focus();
+    return { ok: true, tag: el.tagName.toLowerCase() };
+  }
+  if (action === 'hover-el') {
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    flash();
+    const box = el.getBoundingClientRect();
+    const cx = Math.round(box.left + box.width / 2);
+    const cy = Math.round(box.top + box.height / 2);
+    const at = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
+    el.dispatchEvent(new MouseEvent('mouseover', at));
+    el.dispatchEvent(new MouseEvent('mouseenter', { ...at, bubbles: false }));
+    el.dispatchEvent(new MouseEvent('mousemove', at));
+    return { ok: true, tag: el.tagName.toLowerCase() };
+  }
   if (action === 'locate') {
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();

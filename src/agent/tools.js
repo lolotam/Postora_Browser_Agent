@@ -40,6 +40,7 @@ const DEFINITIONS = [
   { name: 'choose_suggestion', description: 'Pick from an autocomplete field or custom dropdown (a list that appears while typing, like city, tag or subject pickers): types text into the field, waits for its list, and clicks the one option that reads exactly `option` (default: the typed text). Never presses Enter.', parameters: obj({ index: int('Element index of the field'), text: str('Text to type to open or filter the list'), option: str('Exact text of the option to pick, when it differs from the typed text') }, ['index', 'text']) },
   { name: 'hover', description: 'Move the mouse over an element (opens hover menus).', parameters: obj({ index: int('Element index') }, ['index']) },
   { name: 'scroll', description: 'Scroll the page (or the scrollable area under an element) up or down by about one screen.', parameters: obj({ direction: { type: 'string', enum: ['up', 'down'] }, index: int('Optional element index to scroll inside'), screens: { type: 'number', description: 'How many screens (default 1)' } }, ['direction']) },
+  { name: 'scroll_at', description: 'Scroll the scrollable area under viewport coordinates (a chat transcript, a feed, an inner pane) up or down. Use when page scrolling does not move the area you want, taking the point from the latest screenshot.', parameters: obj({ x: { type: 'number' }, y: { type: 'number' }, direction: { type: 'string', enum: ['up', 'down'] }, screens: { type: 'number', description: 'How many screens (default 1)' } }, ['x', 'y', 'direction']) },
   { name: 'get_text', description: 'Read more of the page text, for collecting information from long pages.', parameters: obj({ start: int('Character offset (default 0)'), length: int('Characters to read (default 6000, max 15000)') }) },
   { name: 'screenshot', description: 'Take a screenshot of the visible viewport to see layout, images, canvases or anything the element list does not capture.', parameters: obj({}), vision: true },
   { name: 'history', description: 'Go back, forward, or reload the current tab.', parameters: obj({ action: { type: 'string', enum: ['back', 'forward', 'reload'] } }, ['action']) },
@@ -322,6 +323,12 @@ export function createToolExecutor(rawBrowser, {
         target,
         describe: describeOf('Click', at, target),
       });
+      // An element inside an iframe is clicked in its own frame: CDP viewport
+      // coordinates of the top document never reach it.
+      if (browser.elementFrame(at) != null) {
+        const done = await browser.element(at, 'activate', { double: Boolean(double) }, { guard, target });
+        return observe(`Clicked [${at}] <${done.tag}>.`);
+      }
       const spot = await browser.element(at, 'locate', null, { guard, target });
       await overlay.pointTo(spot, spot.label ? ['click', { label: spot.label }] : ['clickPlain']);
       // The click is bound to the element that was approved: another element
@@ -357,6 +364,16 @@ export function createToolExecutor(rawBrowser, {
         // The text itself is never part of the preview of the operation.
         describe: describeOf('Type text into', at, target),
       });
+      // A field inside an iframe takes its focus in its own frame; the text
+      // then follows the focus through CDP, which routes it to that frame.
+      if (browser.elementFrame(at) != null) {
+        await browser.element(at, 'focus-el', null, { guard, target });
+        await typingTarget(target, guard);
+        if (clear) await browser.element(at, 'select-all', null, { guard, target });
+        await browser.insertText(String(text), { guard, target, tabId: target.tabId });
+        if (submit) await browser.pressKey('Enter', { guard, target, tabId: target.tabId });
+        return observe(`Typed into [${at}]${submit ? ' and pressed Enter' : ''}.`);
+      }
       const spot = await browser.element(at, 'locate', null, { guard, target });
       // A field that holds a secret is captioned as one: its text is never
       // shown, not on the page and not in the caption.
@@ -493,6 +510,11 @@ export function createToolExecutor(rawBrowser, {
         describe: describeOf('Hover', at, target),
       });
       const spot = await browser.element(at, 'locate', null, { guard, target });
+      // An element inside an iframe is hovered in its own frame.
+      if (browser.elementFrame(at) != null) {
+        await browser.element(at, 'hover-el', null, { guard, target });
+        return observe(`Hovering [${at}].`);
+      }
       await overlay.pointTo(spot, spot.label ? ['hover', { label: spot.label }] : ['hoverPlain']);
       // The pointer is bound to the element that was approved.
       await browser.hoverAt(spot.x, spot.y, { guard, target, tabId: target.tabId });
@@ -519,6 +541,15 @@ export function createToolExecutor(rawBrowser, {
       // the tab and its document.
       await browser.scroll(sign * Math.min(Math.max(howMany, 0.2), 10), spot, { guard, target, tabId: target.tabId });
       return observe(`Scrolled ${direction}.`);
+    },
+    scroll_at: async ({ x, y, direction, screens = 1 }) => {
+      const at = { x: Number(x), y: Number(y) };
+      if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) throw new Error('A scroll needs a point in the viewport.');
+      const howMany = Number.isFinite(Number(screens)) ? Number(screens) : 1;
+      await permitRead({ action: 'scroll_at', args: { x: at.x, y: at.y, direction: String(direction), screens: howMany }, tabId: await currentTabId(), describe: `Scroll ${direction} at (${at.x}, ${at.y})` });
+      await overlay.say(direction === 'up' ? 'scrollUp' : 'scrollDown');
+      const result = await browser.scrollAt(at.x, at.y, String(direction), howMany, { tabId: await currentTabId() });
+      return observe(`Scrolled ${direction} ${result.inside ? 'inside the area under the point' : 'the page'}.`);
     },
     get_text: async ({ start = 0, length = 6000 }) => {
       await permitRead({ action: 'get_text', args: { start, length }, tabId: await currentTabId(), describe: 'Read the text of the page' });
