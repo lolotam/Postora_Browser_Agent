@@ -382,37 +382,15 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
 }
 
 /**
- * Scrolls the scrollable area under a point: a chat transcript, a feed or an
- * inner pane has its own scroller, and a page-level scroll never moves it.
- * The deepest scrollable ancestor of the element under the point wins; with
- * none, the page itself scrolls.
+ * Whether the top document's focus chain currently sits in an iframe: a child
+ * frame keeps its own document.activeElement after the keyboard focus has
+ * moved back out of it, so a frame-local check alone can pass while the text
+ * is really going somewhere else.
  */
-export function scrollAtPage(x, y, direction, screens, rule) {
-  x = Number(x);
-  y = Number(y);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return { error: 'A scroll needs a point in the viewport.' };
-  const sign = direction === 'up' ? -1 : 1;
-  const amount = Math.max(200, window.innerHeight * 0.9) * sign * (Number(screens) || 1);
-  let el = document.elementFromPoint(x, y);
-  while (el?.shadowRoot?.elementFromPoint) {
-    const next = el.shadowRoot.elementFromPoint(x, y);
-    if (!next || next === el) break;
-    el = next;
-  }
-  const scrollable = (node) => {
-    if (!node || node === document.body || node === document.documentElement) return null;
-    if (node.scrollHeight <= node.clientHeight + 8) return null;
-    return /(auto|scroll|overlay)/.test(getComputedStyle(node).overflowY) ? node : null;
-  };
-  for (let node = el; node; node = node.parentElement ?? node.getRootNode?.()?.host ?? null) {
-    const found = scrollable(node);
-    if (found) {
-      found.scrollBy({ top: amount, behavior: 'instant' });
-      return { ok: true, inside: true, top: Math.round(found.scrollTop) };
-    }
-  }
-  window.scrollBy({ top: amount, behavior: 'instant' });
-  return { ok: true, inside: false, top: Math.round(window.scrollY) };
+export function focusInFrame() {
+  let el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  return el?.tagName === 'IFRAME';
 }
 
 /**
@@ -420,24 +398,48 @@ export function scrollAtPage(x, y, direction, screens, rule) {
  * model reads a JPEG, and its coordinates land near a control more often than
  * on one. The model's intent is kept — the point is only clamped inside the
  * control's box, so an aim at an edge is not dragged to the centre — and a
- * point that is already inside its control stays exactly where it was.
+ * point that is already inside its control stays exactly where it was. A
+ * point that lands on the background probes a small ring around itself for
+ * the nearest control, because a few pixels of drift is exactly the error a
+ * screenshot reading makes.
  */
 export function pointSnap(x, y) {
   x = Number(x);
   y = Number(y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-  let el = document.elementFromPoint(x, y);
-  while (el?.shadowRoot?.elementFromPoint) {
-    const next = el.shadowRoot.elementFromPoint(x, y);
-    if (!next || next === el) break;
-    el = next;
-  }
-  if (!el || el === document.body || el === document.documentElement) return null;
-  const control = el.closest('a[href],button,input,select,textarea,summary,label,' +
+  const deepAt = (px, py) => {
+    let node = document.elementFromPoint(px, py);
+    while (node?.shadowRoot?.elementFromPoint) {
+      const next = node.shadowRoot.elementFromPoint(px, py);
+      if (!next || next === node) break;
+      node = next;
+    }
+    return node;
+  };
+  const CONTROL = 'a[href],button,input,select,textarea,summary,label,' +
     '[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],' +
     '[role="option"],[role="switch"],[role="textbox"],[role="searchbox"],[role="combobox"],' +
-    '[role="menuitemcheckbox"],[role="menuitemradio"],[contenteditable],[onclick],[tabindex]:not([tabindex="-1"])');
-  if (!control || control === document.body || control === document.documentElement) return null;
+    '[role="menuitemcheckbox"],[role="menuitemradio"],[contenteditable],[onclick],[tabindex]:not([tabindex="-1"])';
+  let control = null;
+  let el = deepAt(x, y);
+  if (el && el !== document.body && el !== document.documentElement) {
+    control = el.closest(CONTROL);
+    if (!control || control === document.body || control === document.documentElement) control = null;
+  }
+  if (!control) {
+    ring: for (const radius of [4, 8, 12]) {
+      for (const [dx, dy] of [[radius, 0], [-radius, 0], [0, radius], [0, -radius], [radius, radius], [-radius, radius], [radius, -radius], [-radius, -radius]]) {
+        const probe = deepAt(x + dx, y + dy);
+        if (!probe || probe === document.body || probe === document.documentElement) continue;
+        const found = probe.closest(CONTROL);
+        if (found && found !== document.body && found !== document.documentElement) {
+          control = found;
+          break ring;
+        }
+      }
+    }
+  }
+  if (!control) return null;
   const rect = control.getBoundingClientRect();
   if (!rect || rect.width < 4 || rect.height < 4) return null;
   // A box that covers most of the viewport is a surface, not a control.
@@ -621,13 +623,29 @@ export function elementAction(index, action, value, quiet, rule, target) {
 
   // A click and a focus done in the frame itself: the only way to reach an
   // element that lives inside an iframe, where CDP viewport coordinates of
-  // the top document never land. Real DOM events still run the page's own
-  // handlers, React's included.
+  // the top document never land. The full pointer and mouse sequence is
+  // dispatched, because many custom controls listen for the parts of a real
+  // click rather than the click alone.
   if (action === 'activate') {
     el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
     flash();
-    if (value?.double) el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
-    el.click();
+    const box = el.getBoundingClientRect();
+    const at = {
+      bubbles: true, cancelable: true, view: window,
+      clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2),
+      button: 0,
+    };
+    const Pointer = window.PointerEvent || window.MouseEvent;
+    const Mouse = window.MouseEvent;
+    const clicks = value?.double ? 2 : 1;
+    for (let i = 1; i <= clicks; i += 1) {
+      el.dispatchEvent(new Pointer('pointerdown', { ...at, pointerId: 1, isPrimary: true, detail: i }));
+      el.dispatchEvent(new Mouse('mousedown', { ...at, detail: i }));
+      el.dispatchEvent(new Pointer('pointerup', { ...at, pointerId: 1, isPrimary: true, detail: i }));
+      el.dispatchEvent(new Mouse('mouseup', { ...at, detail: i }));
+      el.dispatchEvent(new Mouse('click', { ...at, detail: i }));
+    }
+    if (value?.double) el.dispatchEvent(new Mouse('dblclick', { ...at, detail: 2 }));
     return { ok: true, tag: el.tagName.toLowerCase() };
   }
   if (action === 'focus-el') {
@@ -640,13 +658,32 @@ export function elementAction(index, action, value, quiet, rule, target) {
     el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
     flash();
     const box = el.getBoundingClientRect();
-    const cx = Math.round(box.left + box.width / 2);
-    const cy = Math.round(box.top + box.height / 2);
-    const at = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
-    el.dispatchEvent(new MouseEvent('mouseover', at));
-    el.dispatchEvent(new MouseEvent('mouseenter', { ...at, bubbles: false }));
-    el.dispatchEvent(new MouseEvent('mousemove', at));
+    const at = {
+      bubbles: true, cancelable: true, view: window,
+      clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2),
+    };
+    // Pointer events first, then the mouse pair: script handlers of both
+    // kinds run. CSS :hover of an iframe element is not driven by synthetic
+    // events — a documented platform limit; hover-revealed controls there are
+    // still reachable, because named hidden controls join the element list.
+    const Pointer = window.PointerEvent || window.MouseEvent;
+    const Mouse = window.MouseEvent;
+    el.dispatchEvent(new Pointer('pointerover', at));
+    el.dispatchEvent(new Pointer('pointerenter', { ...at, bubbles: false }));
+    el.dispatchEvent(new Pointer('pointermove', at));
+    el.dispatchEvent(new Mouse('mouseover', at));
+    el.dispatchEvent(new Mouse('mouseenter', { ...at, bubbles: false }));
+    el.dispatchEvent(new Mouse('mousemove', at));
     return { ok: true, tag: el.tagName.toLowerCase() };
+  }
+  if (action === 'scroll-el') {
+    // A wheel on the element itself: the only way to scroll an inner pane
+    // that lives inside an iframe.
+    const sign = value?.direction === 'up' ? -1 : 1;
+    const screens = Math.min(Math.max(Number(value?.screens) || 1, 0.2), 10);
+    const page = el.clientHeight || window.innerHeight || 600;
+    el.scrollBy({ top: sign * screens * page * 0.85, behavior: 'instant' });
+    return { ok: true, top: Math.round(el.scrollTop) };
   }
   if (action === 'locate') {
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -842,6 +879,27 @@ export function suggestionAction(index, wanted, mode, rule, target) {
         body: false, label: label(option).slice(0, 80) },
     };
     return { x, y, rect: { left: r.left, top: r.top, width: r.width, height: r.height }, text: label(option), target: optionTarget };
+  }
+  if (mode === 'activate') {
+    // The option is clicked in the frame it lives in: CDP coordinates of the
+    // top document never reach a child frame's viewport.
+    if (matches.length !== 1) return { error: `The list changed: ${matches.length} options now read "${wanted}". Nothing was clicked.` };
+    const option = matches[0];
+    option.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    const r = option.getBoundingClientRect();
+    const at = {
+      bubbles: true, cancelable: true, view: window,
+      clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+      button: 0, detail: 1,
+    };
+    const Pointer = window.PointerEvent || window.MouseEvent;
+    const Mouse = window.MouseEvent;
+    option.dispatchEvent(new Pointer('pointerdown', { ...at, pointerId: 1, isPrimary: true }));
+    option.dispatchEvent(new Mouse('mousedown', at));
+    option.dispatchEvent(new Pointer('pointerup', { ...at, pointerId: 1, isPrimary: true }));
+    option.dispatchEvent(new Mouse('mouseup', at));
+    option.dispatchEvent(new Mouse('click', at));
+    return { ok: true, text: label(option) };
   }
   if (mode === 'verify') {
     // A plain autocomplete shows the choice as the field's value once its list closed;

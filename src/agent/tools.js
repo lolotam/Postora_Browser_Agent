@@ -450,8 +450,10 @@ export function createToolExecutor(rawBrowser, {
       });
       const field = await browser.element(at, 'locate', null, { guard, target });
       await overlay.pointTo(field, ['select', { option: preview(wanted) }]);
-      // The click on the field is bound to the field that was approved.
-      await browser.clickAt(field.x, field.y, { guard, target, tabId: target.tabId });
+      // The click on the field is bound to the field that was approved. A
+      // field inside an iframe takes its focus in its own frame.
+      if (browser.elementFrame(at) != null) await browser.element(at, 'focus-el', null, { guard, target });
+      else await browser.clickAt(field.x, field.y, { guard, target, tabId: target.tabId });
       await typingTarget(target, guard);
       await browser.element(at, 'select-all', null, { guard, target });
       await browser.insertText(String(text), { guard, target, tabId: target.tabId });
@@ -469,6 +471,22 @@ export function createToolExecutor(rawBrowser, {
           : scan.total ? `No option reads exactly "${wanted}"`
             : `No suggestion list tied to [${at}] appeared within ${SUGGESTION_WAIT_MS / 1000} s`;
         return observe(`Not chosen: ${why}; nothing was clicked and "${preview(text)}" is still typed in [${at}].${shown} Call again with the exact option, or click it from the element list.`);
+      }
+      if (browser.elementFrame(at) != null) {
+        // The option is activated in the frame it lives in: its coordinates
+        // are frame viewport coordinates that CDP input of the top document
+        // never reaches, and its token belongs to that frame's registry.
+        throwIfStopped(signal);
+        const chosen = await browser.suggestions(at, wanted, 'activate', { guard, target });
+        if (!chosen?.ok) return observe(`Not chosen: ${chosen?.error ?? 'the option could not be clicked in its frame'}; "${preview(text)}" is still typed in [${at}].`);
+        let shown = false;
+        for (const end = Date.now() + SUGGESTION_SETTLE_MS; ;) {
+          shown = (await browser.suggestions(at, wanted, 'verify', { guard, target }).catch(() => ({ ok: false }))).ok;
+          if (shown || Date.now() >= end || signal?.aborted) break;
+          await sleep(SUGGESTION_POLL_MS, signal);
+        }
+        if (!shown) return observe(`Clicked "${wanted}" in the list of [${at}], but the field does not show it; check the page before going on.`);
+        return observe(`Chose "${wanted}" in [${at}].`);
       }
       const spot = await browser.suggestions(at, wanted, 'locate', { guard, target });
       // The browser names the actual tied option in the same injected script
@@ -531,6 +549,14 @@ export function createToolExecutor(rawBrowser, {
         target,
         describe: `Scroll ${direction}`,
       });
+      // An element inside an iframe is scrolled in its own frame: the option
+      // is the same element list, but CDP coordinates of the top document
+      // never land there, so the wheel goes to the element itself.
+      if (browser.elementFrame(at) != null) {
+        await overlay.say(direction === 'up' ? 'scrollUp' : 'scrollDown');
+        await browser.element(at, 'scroll-el', { direction: String(direction), screens: howMany }, { guard, target });
+        return observe(`Scrolled ${direction}.`);
+      }
       const spot = at === null ? null : await browser.element(at, 'locate', null, { guard, target });
       const sign = direction === 'up' ? -1 : 1;
       const caption = [direction === 'up' ? 'scrollUp' : 'scrollDown'];
@@ -546,10 +572,13 @@ export function createToolExecutor(rawBrowser, {
       const at = { x: Number(x), y: Number(y) };
       if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) throw new Error('A scroll needs a point in the viewport.');
       const howMany = Number.isFinite(Number(screens)) ? Number(screens) : 1;
-      await permitRead({ action: 'scroll_at', args: { x: at.x, y: at.y, direction: String(direction), screens: howMany }, tabId: await currentTabId(), describe: `Scroll ${direction} at (${at.x}, ${at.y})` });
+      const tabId = await currentTabId();
+      // The guard of the approval travels with the scroll: a task that is
+      // stopped while the tab was looked up scrolls nothing.
+      const { guard } = await approve({ action: 'scroll_at', args: { x: at.x, y: at.y, direction: String(direction), screens: howMany }, tabId, target: null, describe: `Scroll ${direction} at (${at.x}, ${at.y})` });
       await overlay.say(direction === 'up' ? 'scrollUp' : 'scrollDown');
-      const result = await browser.scrollAt(at.x, at.y, String(direction), howMany, { tabId: await currentTabId() });
-      return observe(`Scrolled ${direction} ${result.inside ? 'inside the area under the point' : 'the page'}.`);
+      await browser.scrollAt(at.x, at.y, String(direction), howMany, { guard, tabId });
+      return observe(`Scrolled ${direction} at (${at.x}, ${at.y}).`);
     },
     get_text: async ({ start = 0, length = 6000 }) => {
       await permitRead({ action: 'get_text', args: { start, length }, tabId: await currentTabId(), describe: 'Read the text of the page' });

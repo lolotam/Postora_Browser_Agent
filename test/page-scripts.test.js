@@ -50,6 +50,20 @@ test('a point just outside a control is clamped inside its box', () => {
   assert.equal(pointSnap(150, 300), null);
 });
 
+test('a point on the background finds the control next to it', () => {
+  const background = { closest: () => null };
+  const button = {
+    closest: (s) => (s.includes('button') ? button : null),
+    getBoundingClientRect: () => ({ left: 104, top: 104, width: 60, height: 30, right: 164, bottom: 134 }),
+  };
+  globalThis.document = { elementFromPoint: (x, y) => (x === 100 && y === 100 ? background : button) };
+  globalThis.innerWidth = 1280;
+  globalThis.innerHeight = 800;
+  // (100, 100) is on the background; the button starts 4 px away, and the
+  // ring probe finds it.
+  assert.deepEqual(pointSnap(100, 100), { x: 106, y: 106 });
+});
+
 test('the body, a page-sized surface and nothing at all are never snapped', () => {
   const body = { closest: () => null };
   globalThis.document = { elementFromPoint: () => body };
@@ -66,16 +80,21 @@ test('the body, a page-sized surface and nothing at all are never snapped', () =
 
 test('activate clicks the element in its own frame', () => {
   let clicked = 0;
+  const events = [];
   const el = {
     isConnected: true, tagName: 'BUTTON', innerText: '', style: {},
     scrollIntoView() {},
-    click: () => { clicked += 1; },
+    dispatchEvent: (event) => { events.push(event.type); if (event.type === 'click') clicked += 1; },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
     getAttribute: () => null,
   };
-  globalThis.window = { __agentElements: [el] };
+  class FakeEvent {
+    constructor(type, init = {}) { this.type = type; Object.assign(this, init); }
+  }
+  globalThis.window = { __agentElements: [el], MouseEvent: FakeEvent, PointerEvent: FakeEvent };
   assert.deepEqual(elementAction(0, 'activate', null, true), { ok: true, tag: 'button' });
   assert.equal(clicked, 1);
+  assert.deepEqual(events, ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']);
 });
 
 test('focus-el puts the focus on the element of its own frame', () => {
@@ -90,4 +109,34 @@ test('focus-el puts the focus on the element of its own frame', () => {
   globalThis.window = { __agentElements: [el] };
   assert.deepEqual(elementAction(0, 'focus-el', null, true), { ok: true, tag: 'textarea' });
   assert.equal(focused, 1);
+});
+
+test('scroll-el scrolls the element itself by about a screen', () => {
+  let scrolled;
+  const el = {
+    isConnected: true, tagName: 'DIV', innerText: '', style: {},
+    scrollIntoView() {},
+    scrollBy: ({ top }) => { scrolled = top; el.scrollTop = top; },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 400 }),
+    getAttribute: () => null,
+  };
+  el.clientHeight = 400;
+  globalThis.window = { __agentElements: [el], innerHeight: 800 };
+  const result = elementAction(0, 'scroll-el', { direction: 'down', screens: 1 }, true);
+  assert.equal(result.ok, true);
+  assert.equal(scrolled, 1 * 400 * 0.85);
+});
+
+test('elementFrame answers null for the top document and its frame for a child frame', async () => {
+  const { BrowserController } = await import('../src/browser/controller.js');
+  const controller = Object.create(BrowserController.prototype);
+  controller.snapshotFrames = [
+    { frameId: 0, offset: 0, count: 3 },
+    { frameId: 5, offset: 3, count: 2 },
+  ];
+  assert.equal(controller.elementFrame(0), null, 'the top document takes the trusted CDP path');
+  assert.equal(controller.elementFrame(2), null);
+  assert.equal(controller.elementFrame(3), 5, 'a child frame element takes the in-frame path');
+  assert.equal(controller.elementFrame(4), 5);
+  assert.equal(controller.elementFrame(9), null, 'an index past the snapshot has no frame');
 });
