@@ -50,7 +50,7 @@ test('a point just outside a control is clamped inside its box', () => {
   assert.equal(pointSnap(150, 300), null);
 });
 
-test('a point on the background finds the control next to it', () => {
+test('a point on the background stays on the background', () => {
   const background = { closest: () => null };
   const button = {
     closest: (s) => (s.includes('button') ? button : null),
@@ -59,9 +59,9 @@ test('a point on the background finds the control next to it', () => {
   globalThis.document = { elementFromPoint: (x, y) => (x === 100 && y === 100 ? background : button) };
   globalThis.innerWidth = 1280;
   globalThis.innerHeight = 800;
-  // (100, 100) is on the background; the button starts 4 px away, and the
-  // ring probe finds it.
-  assert.deepEqual(pointSnap(100, 100), { x: 106, y: 106 });
+  // (100, 100) is a deliberate click on empty space — dismissing a dialog by
+  // clicking outside it, say. A button four pixels away must not swallow it.
+  assert.equal(pointSnap(100, 100), null);
 });
 
 test('the body, a page-sized surface and nothing at all are never snapped', () => {

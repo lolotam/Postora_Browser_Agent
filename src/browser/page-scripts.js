@@ -399,47 +399,26 @@ export function focusInFrame() {
  * on one. The model's intent is kept — the point is only clamped inside the
  * control's box, so an aim at an edge is not dragged to the centre — and a
  * point that is already inside its control stays exactly where it was. A
- * point that lands on the background probes a small ring around itself for
- * the nearest control, because a few pixels of drift is exactly the error a
- * screenshot reading makes.
+ * point that lands on the background stays there: a deliberate click outside
+ * a dialog or on empty space is a real instruction, and a search for nearby
+ * controls would turn it into a click on something the model never aimed at.
  */
 export function pointSnap(x, y) {
   x = Number(x);
   y = Number(y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-  const deepAt = (px, py) => {
-    let node = document.elementFromPoint(px, py);
-    while (node?.shadowRoot?.elementFromPoint) {
-      const next = node.shadowRoot.elementFromPoint(px, py);
-      if (!next || next === node) break;
-      node = next;
-    }
-    return node;
-  };
-  const CONTROL = 'a[href],button,input,select,textarea,summary,label,' +
+  let el = document.elementFromPoint(x, y);
+  while (el?.shadowRoot?.elementFromPoint) {
+    const next = el.shadowRoot.elementFromPoint(x, y);
+    if (!next || next === el) break;
+    el = next;
+  }
+  if (!el || el === document.body || el === document.documentElement) return null;
+  const control = el.closest('a[href],button,input,select,textarea,summary,label,' +
     '[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],' +
     '[role="option"],[role="switch"],[role="textbox"],[role="searchbox"],[role="combobox"],' +
-    '[role="menuitemcheckbox"],[role="menuitemradio"],[contenteditable],[onclick],[tabindex]:not([tabindex="-1"])';
-  let control = null;
-  let el = deepAt(x, y);
-  if (el && el !== document.body && el !== document.documentElement) {
-    control = el.closest(CONTROL);
-    if (!control || control === document.body || control === document.documentElement) control = null;
-  }
-  if (!control) {
-    ring: for (const radius of [4, 8, 12]) {
-      for (const [dx, dy] of [[radius, 0], [-radius, 0], [0, radius], [0, -radius], [radius, radius], [-radius, radius], [radius, -radius], [-radius, -radius]]) {
-        const probe = deepAt(x + dx, y + dy);
-        if (!probe || probe === document.body || probe === document.documentElement) continue;
-        const found = probe.closest(CONTROL);
-        if (found && found !== document.body && found !== document.documentElement) {
-          control = found;
-          break ring;
-        }
-      }
-    }
-  }
-  if (!control) return null;
+    '[role="menuitemcheckbox"],[role="menuitemradio"],[contenteditable],[onclick],[tabindex]:not([tabindex="-1"])');
+  if (!control || control === document.body || control === document.documentElement) return null;
   const rect = control.getBoundingClientRect();
   if (!rect || rect.width < 4 || rect.height < 4) return null;
   // A box that covers most of the viewport is a surface, not a control.
