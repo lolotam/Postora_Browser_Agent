@@ -54,9 +54,9 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
   const INTERACTIVE = [
     'a[href]', 'button', 'input:not([type="hidden"])', 'select', 'textarea', 'summary',
     '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]', '[role="tab"]',
-    '[role="menuitem"]', '[role="option"]', '[role="switch"]', '[role="combobox"]',
-    '[role="textbox"]', '[role="searchbox"]', '[role="slider"]', '[contenteditable=""]',
-    '[contenteditable="true"]', '[onclick]', '[tabindex]:not([tabindex="-1"])',
+    '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]', '[role="option"]', '[role="switch"]', '[role="combobox"]',
+    '[role="textbox"]', '[role="searchbox"]', '[role="slider"]', '[contenteditable]:not([contenteditable="false"])',
+    '[onclick]', '[tabindex]:not([tabindex="-1"])',
   ].join(',');
 
   const collect = (root, out) => {
@@ -65,12 +65,6 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
       if (el.shadowRoot) collect(el.shadowRoot, out);
     });
     return out;
-  };
-
-  const isVisible = (el, rect) => {
-    if (rect.width < 2 || rect.height < 2) return false;
-    const style = getComputedStyle(el);
-    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.05;
   };
 
   const clean = (s, n) => (s || '').replace(/\s+/g, ' ').trim().slice(0, n);
@@ -244,7 +238,15 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     if (seen.has(el)) continue;
     seen.add(el);
     const rect = el.getBoundingClientRect();
-    if (!isVisible(el, rect)) continue;
+    const style = getComputedStyle(el);
+    // Laid out and not display-gone: opacity comes later, because a control
+    // that only appears on hover (a photo grid's select circle stays at
+    // opacity 0 until its tile is hovered) is still a target the page names.
+    const laid = rect.width >= 2 && rect.height >= 2 &&
+      style.visibility !== 'hidden' && style.display !== 'none';
+    if (!laid) continue;
+    const hiddenUntilHover = Number(style.opacity) <= 0.05;
+    if (hiddenUntilHover && !el.closest('input[type="checkbox"], [role="checkbox"], [role="option"], [role="menuitemcheckbox"]')) continue;
     const near = rect.bottom > -vh * 0.25 && rect.top < vh * 1.5 && rect.right > 0 && rect.left < vw;
     if (!near || elements.length >= maxElements) {
       offscreen += 1;
@@ -254,6 +256,23 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     const owner = el.parentElement && el.parentElement.closest('a[href],button');
     if (owner && elements.includes(owner)) continue;
     elements.push(el);
+  }
+
+  // Scrollable regions the wheel can drive: a chat transcript or a feed lives
+  // in its own container, and page-level scrolling never moves it. They join
+  // the list as plain [scrollable] entries an index can address.
+  let scrollables = 0;
+  for (const el of document.querySelectorAll('div,section,main,aside,nav,ul')) {
+    if (elements.length >= maxElements || scrollables >= 6) break;
+    const style = getComputedStyle(el);
+    if (!/(auto|scroll|overlay)/.test(style.overflowY)) continue;
+    if (el.scrollHeight <= el.clientHeight + 24 || el.clientHeight < 80) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.height < 80 || rect.bottom < 0 || rect.top > vh) continue;
+    if (elements.some((listed) => listed.contains?.(el) === true)) continue;
+    el.dataset.agentScrollable = '1';
+    elements.push(el);
+    scrollables += 1;
   }
 
   // The elements of this snapshot, in the extension's own world of the frame.
@@ -267,6 +286,7 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     el.setAttribute('data-agent-idx', String(i));
     const rect = el.getBoundingClientRect();
     const where = rect.top >= 0 && rect.bottom <= vh ? '' : ' (below fold)';
+    if (el.dataset?.agentScrollable) return `[${i}] scrollable region${where}`;
     return `[${i}] ${describe(el, hidden)}${where}`;
   });
 
@@ -359,6 +379,54 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     text,
     dates: pageDates(),
   };
+}
+
+/**
+ * Whether the top document's focus chain currently sits in an iframe: a child
+ * frame keeps its own document.activeElement after the keyboard focus has
+ * moved back out of it, so a frame-local check alone can pass while the text
+ * is really going somewhere else.
+ */
+export function focusInFrame() {
+  let el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  return el?.tagName === 'IFRAME';
+}
+
+/**
+ * Snaps a screenshot point to the control that would receive the click: the
+ * model reads a JPEG, and its coordinates land near a control more often than
+ * on one. The model's intent is kept — the point is only clamped inside the
+ * control's box, so an aim at an edge is not dragged to the centre — and a
+ * point that is already inside its control stays exactly where it was. A
+ * point that lands on the background stays there: a deliberate click outside
+ * a dialog or on empty space is a real instruction, and a search for nearby
+ * controls would turn it into a click on something the model never aimed at.
+ */
+export function pointSnap(x, y) {
+  x = Number(x);
+  y = Number(y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  let el = document.elementFromPoint(x, y);
+  while (el?.shadowRoot?.elementFromPoint) {
+    const next = el.shadowRoot.elementFromPoint(x, y);
+    if (!next || next === el) break;
+    el = next;
+  }
+  if (!el || el === document.body || el === document.documentElement) return null;
+  const control = el.closest('a[href],button,input,select,textarea,summary,label,' +
+    '[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],' +
+    '[role="option"],[role="switch"],[role="textbox"],[role="searchbox"],[role="combobox"],' +
+    '[role="menuitemcheckbox"],[role="menuitemradio"],[contenteditable],[onclick],[tabindex]:not([tabindex="-1"])');
+  if (!control || control === document.body || control === document.documentElement) return null;
+  const rect = control.getBoundingClientRect();
+  if (!rect || rect.width < 4 || rect.height < 4) return null;
+  // A box that covers most of the viewport is a surface, not a control.
+  if (rect.width * rect.height > innerWidth * innerHeight * 0.6) return null;
+  const nx = Math.min(Math.max(x, rect.left + 2), rect.right - 2);
+  const ny = Math.min(Math.max(y, rect.top + 2), rect.bottom - 2);
+  if (nx === x && ny === y) return null;
+  return { x: Math.round(nx * 10) / 10, y: Math.round(ny * 10) / 10 };
 }
 
 /**
@@ -532,6 +600,78 @@ export function elementAction(index, action, value, quiet, rule, target) {
     setTimeout(() => { el.style.outline = prev; }, 700);
   };
 
+  // A click and a focus done in the frame itself: the only way to reach an
+  // element that lives inside an iframe, where CDP viewport coordinates of
+  // the top document never land. The full pointer and mouse sequence is
+  // dispatched, because many custom controls listen for the parts of a real
+  // click rather than the click alone.
+  if (action === 'activate') {
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    flash();
+    const box = el.getBoundingClientRect();
+    const at = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2),
+      button: 0,
+    };
+    const Pointer = window.PointerEvent || window.MouseEvent;
+    const Mouse = window.MouseEvent;
+    const clicks = value?.double ? 2 : 1;
+    for (let i = 1; i <= clicks; i += 1) {
+      el.dispatchEvent(new Pointer('pointerdown', { ...at, pointerId: 1, isPrimary: true, detail: i }));
+      el.dispatchEvent(new Mouse('mousedown', { ...at, detail: i }));
+      el.dispatchEvent(new Pointer('pointerup', { ...at, pointerId: 1, isPrimary: true, detail: i }));
+      el.dispatchEvent(new Mouse('mouseup', { ...at, detail: i }));
+      el.dispatchEvent(new Mouse('click', { ...at, detail: i }));
+    }
+    if (value?.double) el.dispatchEvent(new Mouse('dblclick', { ...at, detail: 2 }));
+    return { ok: true, tag: el.tagName.toLowerCase() };
+  }
+  if (action === 'focus-el') {
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    flash();
+    el.focus();
+    return { ok: true, tag: el.tagName.toLowerCase() };
+  }
+  if (action === 'hover-el') {
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    flash();
+    const box = el.getBoundingClientRect();
+    const at = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2),
+    };
+    // Pointer events first, then the mouse pair: script handlers of both
+    // kinds run. CSS :hover of an iframe element is not driven by synthetic
+    // events — a documented platform limit; hover-revealed controls there are
+    // still reachable, because named hidden controls join the element list.
+    const Pointer = window.PointerEvent || window.MouseEvent;
+    const Mouse = window.MouseEvent;
+    el.dispatchEvent(new Pointer('pointerover', at));
+    el.dispatchEvent(new Pointer('pointerenter', { ...at, bubbles: false }));
+    el.dispatchEvent(new Pointer('pointermove', at));
+    el.dispatchEvent(new Mouse('mouseover', at));
+    el.dispatchEvent(new Mouse('mouseenter', { ...at, bubbles: false }));
+    el.dispatchEvent(new Mouse('mousemove', at));
+    return { ok: true, tag: el.tagName.toLowerCase() };
+  }
+  if (action === 'scroll-el') {
+    // The wheel scrolls the scrollable pane the element sits in: a button
+    // inside a chat transcript never scrolls itself, so the deepest
+    // scrollable ancestor of the element is what turns.
+    const sign = value?.direction === 'up' ? -1 : 1;
+    const screens = Math.min(Math.max(Number(value?.screens) || 1, 0.2), 10);
+    let pane = null;
+    for (let node = el; node && !pane; node = node.parentElement ?? node.getRootNode?.()?.host ?? null) {
+      if (node === document.body || node === document.documentElement) break;
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null;
+      if (node.scrollHeight > node.clientHeight + 8 && style && /(auto|scroll|overlay)/.test(style.overflowY)) pane = node;
+    }
+    const target2 = pane ?? el;
+    const page = target2.clientHeight || window.innerHeight || 600;
+    target2.scrollBy({ top: sign * screens * page * 0.85, behavior: 'instant' });
+    return { ok: true, top: Math.round(target2.scrollTop), pane: Boolean(pane) };
+  }
   if (action === 'locate') {
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();
@@ -726,6 +866,27 @@ export function suggestionAction(index, wanted, mode, rule, target) {
         body: false, label: label(option).slice(0, 80) },
     };
     return { x, y, rect: { left: r.left, top: r.top, width: r.width, height: r.height }, text: label(option), target: optionTarget };
+  }
+  if (mode === 'activate') {
+    // The option is clicked in the frame it lives in: CDP coordinates of the
+    // top document never reach a child frame's viewport.
+    if (matches.length !== 1) return { error: `The list changed: ${matches.length} options now read "${wanted}". Nothing was clicked.` };
+    const option = matches[0];
+    option.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    const r = option.getBoundingClientRect();
+    const at = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+      button: 0, detail: 1,
+    };
+    const Pointer = window.PointerEvent || window.MouseEvent;
+    const Mouse = window.MouseEvent;
+    option.dispatchEvent(new Pointer('pointerdown', { ...at, pointerId: 1, isPrimary: true }));
+    option.dispatchEvent(new Mouse('mousedown', at));
+    option.dispatchEvent(new Pointer('pointerup', { ...at, pointerId: 1, isPrimary: true }));
+    option.dispatchEvent(new Mouse('mouseup', at));
+    option.dispatchEvent(new Mouse('click', at));
+    return { ok: true, text: label(option) };
   }
   if (mode === 'verify') {
     // A plain autocomplete shows the choice as the field's value once its list closed;

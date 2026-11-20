@@ -23,6 +23,7 @@ export const TOOL_KINDS = {
   select_option: 'observe',
   hover: 'observe',
   scroll: 'observe',
+  scroll_at: 'observe',
   history: 'observe',
   wait: 'observe',
   switch_tab: 'observe',

@@ -3,7 +3,7 @@
 // real user's, and work on sites that ignore synthetic DOM events.
 
 import { AgentOverlay } from './overlay.js';
-import { snapshotPage, elementAction, suggestionAction, pageText, pageReadyState, devicePixelRatioOf, domSettled, documentIdOf, permissionTarget } from './page-scripts.js';
+import { snapshotPage, elementAction, suggestionAction, pageText, pageReadyState, devicePixelRatioOf, domSettled, documentIdOf, permissionTarget, pointSnap, focusInFrame } from './page-scripts.js';
 import { secretRule } from '../voice/voice-safety.js';
 
 const CDP_VERSION = '1.3';
@@ -381,16 +381,78 @@ export class BrowserController {
    * looked up first, and that took time. A grant that was withdrawn while the
    * script was being prepared must not reach the page.
    */
-  async inject(func, args = [], { tabId = null, guard = null } = {}) {
+  async inject(func, args = [], { tabId = null, guard = null, frameId = null } = {}) {
     const tab = await this.pinnedTab(tabId);
     assertControllable(tab.url);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
-    const [result] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func, args });
+    const target = frameId == null ? { tabId: tab.id } : { tabId: tab.id, frameIds: [frameId] };
+    const [result] = await chrome.scripting.executeScript({ target, func, args });
     return result?.result;
   }
 
+  /**
+   * Injects into every frame of the tab: the page, the frames of its iframes
+   * and the frames inside them. A page that renders its interface inside an
+   * iframe (an app preview, an embedded editor) is otherwise invisible: only
+   * the top document was ever read, and the agent could not act on what it
+   * could not see.
+   */
+  async injectFrames(func, args = [], { tabId = null, guard = null } = {}) {
+    const tab = await this.pinnedTab(tabId);
+    assertControllable(tab.url);
+    if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
+    return chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func, args });
+  }
+
+  /** The frame of a merged snapshot index: null means the top document. */
+  frameOf(index) {
+    for (const frame of this.snapshotFrames ?? []) {
+      if (index >= frame.offset && index < frame.offset + frame.count) return { ...frame, local: index - frame.offset };
+    }
+    return null;
+  }
+
   async snapshot({ maxElements = 250, maxTextChars = 3500 } = {}) {
-    return this.inject(snapshotPage, [maxElements, maxTextChars, SECRET_RULE]);
+    const results = await this.injectFrames(snapshotPage, [maxElements, maxTextChars, SECRET_RULE]);
+    // The top document leads and owns the page text; every other frame joins
+    // with its own numbered elements, their indexes shifted so one list covers
+    // the whole page. The map is kept: an element action must run in the frame
+    // that holds the element, with the index that frame knows.
+    const ordered = (results ?? [])
+      .filter((entry) => entry && entry.result && !entry.result.error)
+      .sort((a, b) => (a.frameId === 0 ? -1 : b.frameId === 0 ? 1 : a.frameId - b.frameId));
+    const main = ordered.find((entry) => entry.frameId === 0)?.result ?? ordered[0]?.result;
+    if (!main) {
+      this.snapshotFrames = [];
+      return { url: '', title: '', scroll: { y: 0, viewport: 0, height: 0 }, elements: [], offscreen: 0, text: '', dates: [] };
+    }
+    const frames = [];
+    const lines = [];
+    const dates = [...(main.dates ?? [])];
+    let text = main.text ?? '';
+    let offset = 0;
+    for (const { frameId, result } of ordered) {
+      const count = result.elements.length;
+      frames.push({ frameId, offset, count });
+      for (let i = 0; i < count; i += 1) {
+        let line = result.elements[i];
+        if (frameId !== 0) {
+          const body = line.replace(/^\[\d+\]\s*/, '');
+          line = `[${offset + i}] ${body} (in frame)`;
+        }
+        lines.push(line);
+      }
+      offset += count;
+      // A transcript or a dialog message inside an iframe is otherwise
+      // unreadable: the page text of every frame joins the main document's,
+      // and the dates of every frame join the date list.
+      if (frameId !== 0) {
+        if (result.text) text = `${text}\n${result.text}`;
+        if (Array.isArray(result.dates)) dates.push(...result.dates);
+      }
+    }
+    this.snapshotFrames = frames;
+    return { ...main, elements: lines, text: text.slice(0, maxTextChars), dates: dates.slice(0, 60) };
   }
 
   /** Scrolls an indexed element into view and returns its centre, label and box. */
@@ -409,10 +471,11 @@ export class BrowserController {
   async element(index, action, value = null, { guard = null, target = null } = {}) {
     const tab = await this.pinnedTab(target?.tabId ?? null);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
+    const frame = this.frameOf(index);
     const result = await this.inject(
       elementAction,
-      [index, action, value, this.overlay.enabled, SECRET_RULE, target ?? null],
-      { tabId: tab.id, guard },
+      [frame ? frame.local : index, action, value, this.overlay.enabled, SECRET_RULE, target ?? null],
+      { tabId: tab.id, guard, frameId: frame ? frame.frameId : null },
     );
     if (result?.error) throw new Error(result.error);
     return result;
@@ -422,9 +485,16 @@ export class BrowserController {
   async suggestions(index, wanted, mode, { guard = null, target = null } = {}) {
     const tab = await this.pinnedTab(target?.tabId ?? null);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
-    const result = await this.inject(suggestionAction, [index, wanted, mode, SECRET_RULE, target ?? null], { tabId: tab.id, guard });
+    const frame = this.frameOf(index);
+    const result = await this.inject(suggestionAction, [frame ? frame.local : index, wanted, mode, SECRET_RULE, target ?? null], { tabId: tab.id, guard, frameId: frame ? frame.frameId : null });
     if (result?.error) throw new Error(result.error);
-    if (result?.target) result.target.tabId = tab.id;
+    if (result?.target) {
+      result.target.tabId = tab.id;
+      // The option's token lives in the frame that registered it, and the tab
+      // is what a later validation compares the address against.
+      result.target.frameId = frame ? frame.frameId : null;
+      result.target.url = tab.url ?? result.target.url;
+    }
     return result;
   }
 
@@ -489,14 +559,39 @@ export class BrowserController {
       url: tab.url ?? '',
       documentId: null,
       element: null,
+      frameId: null,
       capturedAt: Date.now(),
     };
     if (RESTRICTED.test(target.url)) return target;
     try {
-      const res = await this.inject(permissionTarget, ['capture', { kind, index, x, y }, SECRET_RULE], { tabId: tab.id });
-      if (!res?.ok) return target;
-      target.documentId = res.documentId ?? null;
-      target.element = res.element ?? null;
+      if (kind === 'focus') {
+        // The focus may live in a child frame: the top document then only
+        // holds the iframe element. Every frame is asked, and the frame whose
+        // focused element is a real element — not an iframe slot, and not an
+        // unfocused body — wins. The top frame is ordered first, so with no
+        // better answer the top document keeps what it captured.
+        const results = await this.injectFrames(permissionTarget, ['capture', { kind: 'focus' }, SECRET_RULE], { tabId: tab.id });
+        let picked = null;
+        for (const entry of results ?? []) {
+          if (!entry?.result?.ok) continue;
+          const element = entry.result.element;
+          const slot = element?.tag === 'iframe' || Boolean(element?.body);
+          if (picked && !slot && picked.result.element?.tag !== 'iframe' && !picked.result.element?.body) continue;
+          if (!picked || (picked.result.element?.tag === 'iframe' || picked.result.element?.body) && !slot) picked = entry;
+        }
+        if (picked) {
+          target.documentId = picked.result.documentId ?? null;
+          target.element = picked.result.element ?? null;
+          target.frameId = picked.frameId ? picked.frameId : null;
+        }
+      } else {
+        const frame = kind === 'element' ? this.frameOf(index) : null;
+        const res = await this.inject(permissionTarget, ['capture', { kind, index: frame ? frame.local : index, x, y }, SECRET_RULE], { tabId: tab.id, frameId: frame ? frame.frameId : null });
+        if (!res?.ok) return target;
+        target.documentId = res.documentId ?? null;
+        target.element = res.element ?? null;
+        target.frameId = frame ? frame.frameId : null;
+      }
     } catch {
       // A page that cannot be read leaves the target on the tab alone.
     }
@@ -558,7 +653,7 @@ export class BrowserController {
     }
     if (!target.element) return { ok: false, reason: 'no-element' };
     try {
-      const res = await this.inject(permissionTarget, ['resolve', { target }, SECRET_RULE], { tabId: tab });
+      const res = await this.inject(permissionTarget, ['resolve', { target }, SECRET_RULE], { tabId: tab, frameId: target.frameId ?? null });
       return res?.ok ? res : { ok: false, reason: res?.reason ?? 'no-answer' };
     } catch {
       return { ok: false, reason: 'page-unreadable' };
@@ -586,7 +681,7 @@ export class BrowserController {
     if (!(await guard())) throw new Error(INPUT_CANCELLED);
     // The guard is asked again by the injection, right before the script runs:
     // the tab was looked up first, and that took time.
-    const res = await this.inject(permissionTarget, ['read', { target }, SECRET_RULE], { tabId: target.tabId, guard });
+    const res = await this.inject(permissionTarget, ['read', { target }, SECRET_RULE], { tabId: target.tabId, guard, frameId: target.frameId ?? null });
     if (!res?.ok) throw new Error(`The field that was approved cannot be read (${res?.reason ?? 'unknown'}).`);
     return { ok: true, value: res.value, tag: res.tag ?? '', secret: Boolean(res.secret) };
   }
@@ -601,9 +696,22 @@ export class BrowserController {
     if (!check.ok) throw new Error(`The field that was approved is not there any more (${check.reason}).`);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     // The guard is asked again by the injection, right before the script runs.
-    const res = await this.inject(permissionTarget, ['apply-focus', { target }, SECRET_RULE], { tabId: target.tabId, guard });
+    const res = await this.inject(permissionTarget, ['apply-focus', { target }, SECRET_RULE], { tabId: target.tabId, guard, frameId: target.frameId ?? null });
     if (!res?.ok) throw new Error(`The focus could not be put on the approved field (${res?.reason ?? 'unknown'}).`);
     return res;
+  }
+
+  /**
+   * An iframe keeps its document.activeElement after the keyboard focus has
+   * moved back out of it: a frame-local check alone would then pass while the
+   * text is really going somewhere else. For a target inside a child frame,
+   * the top document must hold the focus chain's iframe slot as well.
+   */
+  async assertFocusChain(target, { guard = null } = {}) {
+    if (!target.frameId) return true;
+    const chained = await this.inject(focusInFrame, [], { tabId: target.tabId, guard });
+    if (!chained) throw new Error(INPUT_CANCELLED);
+    return true;
   }
 
   /**
@@ -612,23 +720,56 @@ export class BrowserController {
    * be written to (never the body, never a field that is read-only or disabled).
    */
   async assertTypingTarget(target, { guard = null } = {}) {
-    const res = await this.inject(permissionTarget, ['typing', { target }, SECRET_RULE], { tabId: target.tabId, guard });
+    await this.assertFocusChain(target, { guard });
+    const res = await this.inject(permissionTarget, ['typing', { target }, SECRET_RULE], { tabId: target.tabId, guard, frameId: target.frameId ?? null });
     if (!res?.ok) throw new Error(INPUT_CANCELLED);
     return true;
   }
 
   /** Asks the page whether the focus is still the one that was approved. */
   async assertFocusTarget(target, { guard = null } = {}) {
-    const res = await this.inject(permissionTarget, ['focus', { target }, SECRET_RULE], { tabId: target.tabId, guard });
+    await this.assertFocusChain(target, { guard });
+    const res = await this.inject(permissionTarget, ['focus', { target }, SECRET_RULE], { tabId: target.tabId, guard, frameId: target.frameId ?? null });
     if (!res?.ok) throw new Error(INPUT_CANCELLED);
     return true;
   }
 
   /** The approved original must still receive input at this exact point. */
   async assertHitTarget(target, x, y, { guard = null } = {}) {
-    const res = await this.inject(permissionTarget, ['hit', { target, x, y }, SECRET_RULE], { tabId: target.tabId, guard });
+    const res = await this.inject(permissionTarget, ['hit', { target, x, y }, SECRET_RULE], { tabId: target.tabId, guard, frameId: target.frameId ?? null });
     if (!res?.ok) throw new Error(INPUT_CANCELLED);
     return true;
+  }
+
+  /**
+   * The control a screenshot point would really land on, with the point
+   * clamped inside its box: exposed so a click_at captures and approves the
+   * snapped point instead of the raw one.
+   */
+  async snapPoint(x, y, { tabId = null } = {}) {
+    return this.inject(pointSnap, [x, y], { tabId });
+  }
+
+  /** Whether an element of the latest snapshot lives outside the top document. */
+  elementFrame(index) {
+    // Frame 0 is the top document itself: only a real child frame takes the
+    // in-frame paths. CDP input of the top document is the trusted route for
+    // everything else.
+    const frameId = this.frameOf(index)?.frameId;
+    return frameId ? frameId : null;
+  }
+
+  /**
+   * Scrolls the scrollable area under a point: a chat transcript, a feed or an
+   * inner pane has its own scroller, and a page-level wheel never moves it.
+   * Real wheel input at the point is used, because the browser hands it to the
+   * innermost scroller under the coordinates — inside iframes included — the
+   * same way it hands a user's wheel.
+   */
+  async scrollAt(x, y, direction, screens = 1, { guard = null, tabId = null } = {}) {
+    const sign = direction === 'up' ? -1 : 1;
+    const amount = sign * Math.min(Math.max(Number(screens) || 1, 0.2), 10);
+    return this.scroll(amount, { x, y }, { guard, tabId });
   }
 
   async navigate(url, { guard = null, tabId = null } = {}) {
@@ -652,6 +793,20 @@ export class BrowserController {
     // opened while it waited.
     const tab = await this.pinnedTab(tabId ?? target?.tabId ?? null);
     if (target && target.tabId !== tab.id) throw new Error(INPUT_CANCELLED);
+    // The model reads a JPEG, and its point lands near a control more often
+    // than on one: the point is clamped inside the box of the control under
+    // it, so the cursor and the press land exactly on the field. A point that
+    // is already inside its control stays exactly where the model aimed it.
+    try {
+      const snapped = await this.inject(pointSnap, [x, y], { tabId: tab.id });
+      if (snapped && Number.isFinite(snapped.x) && Number.isFinite(snapped.y)) {
+        x = snapped.x;
+        y = snapped.y;
+      }
+    } catch {
+      // An unsnappable point (a snapshot that just left, a blank page) is
+      // clicked where the model aimed it.
+    }
     const precheck = target ? () => this.assertHitTarget(target, x, y, { guard }) : null;
     await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, { guard, tabId: tab.id, precheck });
     await this.overlay.click(x, y);

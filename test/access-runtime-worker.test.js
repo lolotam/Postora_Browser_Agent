@@ -215,6 +215,7 @@ function fakeBrowser() {
       return { scope: 'element', kind, tabId: tabId ?? 7, url: 'https://shop.test/checkout', documentId: 'doc-1', element: null, capturedAt: 1_700_000_000_000 };
     },
     validateTarget: async () => ({ ok: true }),
+    elementFrame: () => null,
     element: async (index) => {
       calls.push({ name: 'element', index });
       return { x: button.x, y: button.y, tag: button.tag, label: button.label };
