@@ -58,7 +58,9 @@ lolotam/PayPos.systems#1085).
    status), «التوصية». Side tasks fold under their main task; keep any
    roadmap/status file in sync. End every report with these headings exactly:
    «المطلوب منك»، «الخطوة الجاية اللي أنصح بيها»، «ملاحظة» (write «مفيش» if
-   none).
+   none). After every report — and not only after merges — state the task
+   being worked on: whether it finished and what remains of it, then the
+   recommendation for the very next task and what it could do.
 
 The tiers add a review/merge/deploy policy; every existing project gate above
 stays in force unless a tier explicitly replaces it.

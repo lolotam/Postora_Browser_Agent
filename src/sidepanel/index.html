@@ -122,10 +122,23 @@
   <div id="approvals" class="approvals" role="region" aria-live="polite" hidden></div>
 
   <main id="chatView">
-    <section id="messages" aria-live="polite">
-      <div class="empty" id="emptyState">
-      </div>
-    </section>
+    <!-- The whole live chat folds into one list: closed by default, and the
+         user opens it to watch the chat live. While the chat is still empty
+         it stays open, so the landing examples stay visible. -->
+    <details id="chatLog" open>
+      <summary id="chatLogSummary"><span class="chat-log-dot"></span><span data-i18n="chat.live"></span></summary>
+      <section id="messages" aria-live="polite">
+        <div class="empty" id="emptyState">
+        </div>
+      </section>
+    </details>
+    <!-- The context bar: the conversation's estimated size against the model's
+         context window. It fills as the chat grows; past most of the window it
+         turns warn-coloured and its tooltip points at /compact. -->
+    <div id="contextBar" class="context-bar" hidden>
+      <div class="context-track"><div class="context-fill"></div></div>
+      <span class="context-label" dir="ltr"></span>
+    </div>
     <!-- The shared approval region docks here, directly above the controls it
          guards, while the chat is the active screen. The same single region
          re-docks beside the voice input and returns above settings when the

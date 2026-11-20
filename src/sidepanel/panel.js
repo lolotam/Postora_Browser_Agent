@@ -41,7 +41,9 @@ const resizeComposer = bindComposerSize($('input'));
 // arrives while another one is being answered is a different question.
 // `answering` is the number of the question whose answer is on its way: the
 // question is answered once, and a second answer to it is refused.
-const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
+import { contextWindowFor } from '../lib/context-window.js';
+
+const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' } };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -486,6 +488,9 @@ function onEvent(event) {
       break;
     case 'status':
       setRunning(event.running);
+      // The live dot follows the task: it pulses while a task works and goes
+      // out when the session settles, replays included.
+      $('chatLog').classList.toggle('live', Boolean(event.running));
       if (!event.running && ui.compacting) {
         // A compaction that was stopped leaves no "compacting…" line behind.
         ui.compacting.remove();
@@ -753,6 +758,16 @@ function addCompacted(event) {
 function add(className, text) {
   closeThread();
   $('emptyState').hidden = true;
+  // A report, an error, or a question the agent is waiting on is the answer
+  // the user is waiting for: the folded list opens for it, unless they closed
+  // it by hand. Ordinary messages (the user's own text, spoken echoes) stay
+  // behind the fold.
+  // A question the agent is waiting on outranks a manual fold: it blocks the
+  // task until it is answered, so the log always opens for it. A report or an
+  // error also opens the fold, unless the user closed it by hand. Ordinary
+  // messages (the user's own text, spoken echoes) stay behind the fold.
+  if (/msg ask/.test(className)) $('chatLog').open = true;
+  else if (/msg (final|error)/.test(className) && !$('chatLog').dataset.userToggled) $('chatLog').open = true;
   ui.trace = null;
   const node = document.createElement('div');
   node.className = className;
@@ -793,6 +808,14 @@ function traceBlock() {
 function openThread(step, model = '') {
   closeThread();
   $('emptyState').hidden = true;
+  // The whole chat folds into one list: closed by default while a task runs
+  // (its summary line still ticks live), unless the user chose to keep it
+  // open. The landing state keeps it open, so the examples stay visible.
+  const log = $('chatLog');
+  if (log) {
+    if (!log.dataset.userToggled) log.open = false;
+    log.classList.add('live');
+  }
   ui.trace = null;
   const box = Object.assign(document.createElement('details'), { className: 'thread', open: false });
   const summary = document.createElement('summary');
@@ -879,6 +902,15 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   } else {
     ui.stats.missing += 1;
   }
+  // The last turn's input tokens are the conversation's size as the provider
+  // counted it: this is what the context bar fills against the model window.
+  // The display label ("Provider · model") is stripped to the bare model id
+  // first, because the window table matches model ids.
+  ui.context = {
+    input: Number.isFinite(usage?.input) ? usage.input : ui.context.input,
+    model: (model || ui.context.model).split(' · ').pop(),
+  };
+  updateContextBar();
   const tokens = usage ? t('stats.tokens', { input: number(usage.input), output: number(usage.output) }) : '';
   const waited = retryWaitMs ? t('stats.retryWait', { time: formatDuration(retryWaitMs) }) : '';
   const time = Number.isFinite(ms) ? formatDuration(ms) : '';
@@ -896,6 +928,19 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   if (time) row.append(span('time', time));
   traceBlock().append(row);
   scrollDown();
+}
+
+/** Under the final report: the whole task's time and tokens. */
+function updateContextBar() {
+  const bar = $('contextBar');
+  if (!bar) return;
+  const windowTokens = contextWindowFor(ui.context.model);
+  const pct = windowTokens ? Math.min(100, Math.round((ui.context.input / windowTokens) * 100)) : 0;
+  bar.hidden = !ui.context.input;
+  bar.querySelector('.context-fill').style.width = `${pct}%`;
+  bar.querySelector('.context-label').textContent = `${pct}% · ${number(ui.context.input)}/${number(windowTokens)}`;
+  bar.classList.toggle('context-hot', pct >= 80);
+  bar.title = pct >= 60 ? t('chat.compactHint') : '';
 }
 
 /** Under the final report: the whole task's time and tokens. */
@@ -999,6 +1044,16 @@ function clearMessages() {
   $('messages').querySelectorAll('.msg, .trace, .thread').forEach((n) => n.remove());
   ui.pending = [];
   renderPending();
+  ui.context = { input: 0, model: '' };
+  updateContextBar();
+  // An empty chat is the landing state: the log opens again, so the examples
+  // are visible, and the live dot goes out.
+  const log = $('chatLog');
+  if (log) {
+    delete log.dataset.userToggled;
+    log.open = true;
+    log.classList.remove('live');
+  }
   ui.steps.clear();
   ui.trace = null;
   ui.notices = [];
@@ -2029,6 +2084,11 @@ $('newChatBtn').addEventListener('click', async () => {
   syncHeaderContext();
   placeApprovals('chat');
 });
+// The chat log's own bar: a click opens or closes the whole live list, and the
+// user's choice survives the turns that follow.
+$('chatLogSummary').addEventListener('click', () => {
+  $('chatLog').dataset.userToggled = '1';
+});
 document.querySelectorAll('.examples li').forEach((li) => li.addEventListener('click', () => {
   $('input').value = li.textContent;
   resizeComposer();
@@ -2090,6 +2150,13 @@ async function openSession(id) {
   projectUi.reset();
   ui.replayed = false;
   ui.running = false;
+  // A session that is left takes its live dot with it; the fold state resets,
+  // because the fold belongs to the chat that is left too.
+  const log = $('chatLog');
+  if (log) {
+    delete log.dataset.userToggled;
+    log.classList.remove('live');
+  }
   // The mode belonged to the chat that is left: it goes with it, so a warning
   // or a Full label of the old chat cannot survive into the new one.
   accessUi.reset();

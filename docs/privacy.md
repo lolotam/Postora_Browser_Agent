@@ -1,6 +1,6 @@
 # Privacy Policy — Postora Browser Agent
 
-Last updated: 27 October 2026
+Last updated: 20 November 2026
 
 Postora Browser Agent ("the extension") is an AI agent in Chrome's side panel. You give it a task, and it reads and operates the web pages needed to carry it out, then writes you a report. This policy explains what data the extension handles, where it goes, and how to delete it.
 
@@ -11,7 +11,7 @@ The extension has no server of its own. The developer does not receive your task
 | Data | When | Where it goes |
 |---|---|---|
 | Your tasks and the agent's replies | Every task | Stored on your computer; sent to the AI provider you chose |
-| Content of the pages the agent works on: address, title, visible text, the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
+| Content of the pages the agent works on: address, title, visible text (including text inside embedded frames/iframes), the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
 | API keys and account sign-in tokens (ChatGPT, Claude, Grok, Kimi Code) you enter | When you save settings or finish sign-in | Stored on your computer; each key/token is sent only to its own provider |
 | Settings | When you save them | Stored on your computer |
 | Speech and its transcript | Only after voice listening is enabled | Chrome's Web Speech recognition service processes speech; the resulting command is sent to your selected execution provider |
