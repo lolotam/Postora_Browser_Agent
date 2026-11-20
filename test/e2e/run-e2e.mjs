@@ -1113,10 +1113,15 @@ async function runVoiceWindowScenario(context, extensionId) {
     if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the command did not act on the page the user was on');
     if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
 
-    // Back closes the microphone window.
+    // Back closes the microphone window: the removal is asynchronous, so the
+    // check polls for the tab disappearing instead of sleeping a fixed beat
+    // a loaded runner cannot keep.
     await panel.click('#voiceBackBtn');
     await panel.waitForSelector('#voiceView', { state: 'hidden' });
-    await panel.waitForTimeout(500);
+    await panel.waitForFunction(async () => {
+      const tabs = await chrome.tabs.query({});
+      return !tabs.some((t) => (t.url ?? '').includes('mic.html'));
+    }, { timeout: 10000 }).catch(() => {});
     const left = await panel.evaluate(async () => (await chrome.tabs.query({})).some((t) => (t.url ?? '').includes('mic.html')));
     if (left) failures.push('the microphone window stayed open after Back');
 
@@ -1323,10 +1328,16 @@ async function runVoiceSwitchScenario(context, extensionId) {
     if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
     if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
 
-    // Back closes the microphone window, so the next scenario starts clean.
+    // Back closes the microphone window, so the next scenario starts clean:
+    // the removal is asynchronous, so the check polls for the tab
+    // disappearing instead of sleeping a fixed beat a loaded runner cannot
+    // keep.
     await panel.click('#voiceBackBtn');
     await panel.waitForSelector('#voiceView', { state: 'hidden' });
-    await panel.waitForTimeout(500);
+    await panel.waitForFunction(async () => {
+      const tabs = await chrome.tabs.query({});
+      return !tabs.some((t) => (t.url ?? '').includes('mic.html'));
+    }, { timeout: 10000 }).catch(() => {});
     const left = await panel.evaluate(async () => (await chrome.tabs.query({})).some((t) => (t.url ?? '').includes('mic.html')));
     if (left) failures.push('the microphone window stayed open after Back');
 
