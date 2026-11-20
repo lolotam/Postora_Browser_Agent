@@ -61,7 +61,10 @@ Full access authorizes supported browser actions, including requested deletion,
 form entry, and explicit reads/copies of sensitive field values, without another
 Postora approval for each action. Values read by the model reach the configured AI
 provider and saved conversation history. Ordinary page snapshots still mask secret
-fields; `read_field` reads the particular field required by the task.
+fields; `read_field` reads the particular field required by the task. Snapshots
+cover the whole tab: the visible text and controls inside embedded frames
+(iframes) are read and acted on exactly like the top document, and their content
+reaches the configured AI provider like the rest of the page.
 
 ## Local PowerShell, files, and clipboard
 

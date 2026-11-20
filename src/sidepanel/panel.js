@@ -793,6 +793,14 @@ function traceBlock() {
 function openThread(step, model = '') {
   closeThread();
   $('emptyState').hidden = true;
+  // The whole chat folds into one list: closed by default while a task runs
+  // (its summary line still ticks live), unless the user chose to keep it
+  // open. The landing state keeps it open, so the examples stay visible.
+  const log = $('chatLog');
+  if (log) {
+    if (!log.dataset.userToggled) log.open = false;
+    log.classList.add('live');
+  }
   ui.trace = null;
   const box = Object.assign(document.createElement('details'), { className: 'thread', open: false });
   const summary = document.createElement('summary');
@@ -999,6 +1007,14 @@ function clearMessages() {
   $('messages').querySelectorAll('.msg, .trace, .thread').forEach((n) => n.remove());
   ui.pending = [];
   renderPending();
+  // An empty chat is the landing state: the log opens again, so the examples
+  // are visible, and the live dot goes out.
+  const log = $('chatLog');
+  if (log) {
+    delete log.dataset.userToggled;
+    log.open = true;
+    log.classList.remove('live');
+  }
   ui.steps.clear();
   ui.trace = null;
   ui.notices = [];
@@ -2029,6 +2045,11 @@ $('newChatBtn').addEventListener('click', async () => {
   syncHeaderContext();
   placeApprovals('chat');
 });
+// The chat log's own bar: a click opens or closes the whole live list, and the
+// user's choice survives the turns that follow.
+$('chatLogSummary').addEventListener('click', () => {
+  $('chatLog').dataset.userToggled = '1';
+});
 document.querySelectorAll('.examples li').forEach((li) => li.addEventListener('click', () => {
   $('input').value = li.textContent;
   resizeComposer();
@@ -2090,6 +2111,13 @@ async function openSession(id) {
   projectUi.reset();
   ui.replayed = false;
   ui.running = false;
+  // A session that is left takes its live dot with it; the fold state resets,
+  // because the fold belongs to the chat that is left too.
+  const log = $('chatLog');
+  if (log) {
+    delete log.dataset.userToggled;
+    log.classList.remove('live');
+  }
   // The mode belonged to the chat that is left: it goes with it, so a warning
   // or a Full label of the old chat cannot survive into the new one.
   accessUi.reset();

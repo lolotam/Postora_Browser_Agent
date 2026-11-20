@@ -176,7 +176,7 @@ Logging out: Settings → **تسجيل خروج** (Log out). This deletes the st
 ## 8. Security and privacy
 
 - Tokens and API keys are stored in `chrome.storage.local` on your machine. They are **not encrypted**, so don't use this on a shared computer profile.
-- The page text, element list and screenshots of the pages the agent works on are sent to the model provider you chose (OpenAI for a ChatGPT account, Anthropic for Claude, xAI for Grok).
+- The page text, element list and screenshots of the pages the agent works on are sent to the model provider you chose (OpenAI for a ChatGPT account, Anthropic for Claude, xAI for Grok). This includes content inside embedded frames (iframes), which the agent reads and acts on like the top document.
 - Page content is treated as untrusted (prompt-injection defense in the system prompt). That lowers the risk but does not remove it. Don't point the agent at sites where one wrong click can spend money without a confirmation step.
 - The extension asks for broad permissions (`<all_urls>`, `debugger`, `tabs`, `scripting`) because it has to operate any site you choose.
 
