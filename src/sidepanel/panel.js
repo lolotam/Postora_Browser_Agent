@@ -762,7 +762,12 @@ function add(className, text) {
   // the user is waiting for: the folded list opens for it, unless they closed
   // it by hand. Ordinary messages (the user's own text, spoken echoes) stay
   // behind the fold.
-  if (/msg (final|error|ask)/.test(className) && !$('chatLog').dataset.userToggled) $('chatLog').open = true;
+  // A question the agent is waiting on outranks a manual fold: it blocks the
+  // task until it is answered, so the log always opens for it. A report or an
+  // error also opens the fold, unless the user closed it by hand. Ordinary
+  // messages (the user's own text, spoken echoes) stay behind the fold.
+  if (/msg ask/.test(className)) $('chatLog').open = true;
+  else if (/msg (final|error)/.test(className) && !$('chatLog').dataset.userToggled) $('chatLog').open = true;
   ui.trace = null;
   const node = document.createElement('div');
   node.className = className;
