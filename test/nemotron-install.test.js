@@ -202,6 +202,18 @@ test('the Visual C++ runtime version is compared with the minimum this build nee
   assert.ok(VCPP_INSTRUCTION.includes('vc_redist'), 'the instruction says what to install');
 });
 
+test('the Visual C++ parser reads the real registry answer, whose version carries a v prefix', async () => {
+  const { visualCppRuntimeVersion } = await import('../native/runtime-check.mjs');
+  // The exact shape reg.exe prints on a machine with the redistributable installed.
+  const stdout = '\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64\n    Version    REG_SZ    v14.44.35211.00\n\n';
+  const exec = async (file, args) => {
+    assert.equal(file, 'reg.exe');
+    assert.ok(args.includes('HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64'), 'the query targets the x64 runtimes key');
+    return { stdout };
+  };
+  assert.equal(await visualCppRuntimeVersion({ execFile: exec }), '14.44.35211.00');
+});
+
 test('the runtime check reads the answer of a child, and a child that dies is a result', async () => {
   const ready = await checkRuntime({ execFile: async () => ({ stdout: JSON.stringify({ ok: true, version: '14.40.1', reason: null }), stderr: '' }) });
   assert.equal(ready.ok, true);

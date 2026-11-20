@@ -23,7 +23,8 @@ const REGISTRY_KEY = 'HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtime
 export async function visualCppRuntimeVersion({ execFile: exec = run } = {}) {
   try {
     const { stdout } = await exec('reg.exe', ['query', REGISTRY_KEY, '/v', 'Version'], { windowsHide: true });
-    const match = String(stdout).match(/Version\s+REG_SZ\s+(\d+(?:\.\d+)*)/i);
+    // The registry value is written with a v prefix, e.g. "v14.44.35211.00".
+    const match = String(stdout).match(/Version\s+REG_SZ\s+v?(\d+(?:\.\d+)*)/i);
     return match ? match[1] : null;
   } catch {
     return null;

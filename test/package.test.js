@@ -145,6 +145,16 @@ test('private package selection includes Nemotron runtime closure and speech doc
     assert.ok(names.includes('node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/transcribe.dll'));
   }
   assert.ok(names.some((name) => /^node_modules\/koffi\/.+\/LICENSE/i.test(name) || /LICENSE/i.test(name) && name.startsWith('node_modules/transcribe-cpp')));
+  // koffi 3.x loads its native module from the @koromix scope package next to
+  // koffi itself (src/koffi/index.cjs). Without it the installed host and the
+  // private package cannot load Nemotron at all on a fresh machine.
+  const koromix = path.join(root, 'node_modules', '@koromix');
+  if (fs.existsSync(koromix)) {
+    for (const entry of fs.readdirSync(koromix)) {
+      assert.ok(names.some((name) => name.startsWith(`node_modules/@koromix/${entry}/`)), `@koromix/${entry} is missing from the runtime closure`);
+      assert.ok(names.some((name) => name.startsWith(`node_modules/@koromix/${entry}/`) && name.endsWith('koffi.node')), `the koffi.node of @koromix/${entry} is missing from the runtime closure`);
+    }
+  }
   assert.equal(names.some((name) => name.endsWith('.gguf')), false);
 });
 

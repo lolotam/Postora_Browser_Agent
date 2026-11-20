@@ -5,6 +5,11 @@ const PINNED = Object.freeze({
   transcribe: 'node_modules/transcribe-cpp',
   platform: 'node_modules/@transcribe-cpp/win32-x64-cpu-vulkan',
   koffi: 'node_modules/koffi',
+  // koffi 3.x requires its native module from the @koromix scope package
+  // (src/koffi/index.cjs: @koromix/koffi-<os>-<arch>). npm installs only the
+  // package matching the install platform, so walking the whole scope covers
+  // every machine and keeps the loader's version match intact.
+  koffiPrebuilt: 'node_modules/@koromix',
 });
 
 function walk(dir, root, out) {
@@ -69,8 +74,17 @@ function koffiFiles(root) {
     file.startsWith(`${base}/vendor/`));
 }
 
+function koffiPrebuiltFiles(root) {
+  const base = PINNED.koffiPrebuilt;
+  const dir = path.join(root, base);
+  if (!fs.existsSync(dir)) return [];
+  const all = [];
+  walk(dir, root, all);
+  return all;
+}
+
 export function runtimeFiles(root) {
-  const files = [...transcribeFiles(root), ...platformFiles(root), ...koffiFiles(root)];
+  const files = [...transcribeFiles(root), ...platformFiles(root), ...koffiFiles(root), ...koffiPrebuiltFiles(root)];
   const unique = [...new Set(files)].sort();
   for (const file of unique) {
     if (file.startsWith('../') || file.includes('/../') || path.isAbsolute(file)) throw new Error(`Runtime file escapes root: ${file}`);
