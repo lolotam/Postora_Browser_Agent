@@ -1484,6 +1484,14 @@ function closeMicWindow() {
   micEpoch += 1; // what the old window says from now on is stale
   chrome.runtime.sendMessage({ source: MIC_PANEL, kind: 'cancel', epoch }).catch(() => {});
   if (winId != null) chrome.windows.remove(winId).catch(() => {});
+  // The window handle can be lost (a stale id after a panel reload, a
+  // windows.remove that failed), so the microphone's own tabs are removed by
+  // address as well: the window closes either way.
+  chrome.tabs.query({}).then((tabs) => {
+    for (const tab of tabs) {
+      if ((tab.url ?? '').includes('mic.html')) chrome.tabs.remove(tab.id).catch(() => {});
+    }
+  }).catch(() => {});
 }
 
 /** What the microphone window heard. Only the window of this epoch counts. */
