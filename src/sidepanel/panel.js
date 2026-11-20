@@ -41,7 +41,9 @@ const resizeComposer = bindComposerSize($('input'));
 // arrives while another one is being answered is a different question.
 // `answering` is the number of the question whose answer is on its way: the
 // question is answered once, and a second answer to it is refused.
-const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats() };
+import { contextWindowFor } from '../lib/context-window.js';
+
+const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' } };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -887,6 +889,13 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   } else {
     ui.stats.missing += 1;
   }
+  // The last turn's input tokens are the conversation's size as the provider
+  // counted it: this is what the context bar fills against the model window.
+  ui.context = {
+    input: Number.isFinite(usage?.input) ? usage.input : ui.context.input,
+    model: model || ui.context.model,
+  };
+  updateContextBar();
   const tokens = usage ? t('stats.tokens', { input: number(usage.input), output: number(usage.output) }) : '';
   const waited = retryWaitMs ? t('stats.retryWait', { time: formatDuration(retryWaitMs) }) : '';
   const time = Number.isFinite(ms) ? formatDuration(ms) : '';
@@ -904,6 +913,19 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   if (time) row.append(span('time', time));
   traceBlock().append(row);
   scrollDown();
+}
+
+/** Under the final report: the whole task's time and tokens. */
+function updateContextBar() {
+  const bar = $('contextBar');
+  if (!bar) return;
+  const windowTokens = contextWindowFor(ui.context.model);
+  const pct = windowTokens ? Math.min(100, Math.round((ui.context.input / windowTokens) * 100)) : 0;
+  bar.hidden = !ui.context.input;
+  bar.querySelector('.context-fill').style.width = `${pct}%`;
+  bar.querySelector('.context-label').textContent = `${pct}% · ${number(ui.context.input)}/${number(windowTokens)}`;
+  bar.classList.toggle('context-hot', pct >= 80);
+  bar.title = pct >= 60 ? t('chat.compactHint') : '';
 }
 
 /** Under the final report: the whole task's time and tokens. */
@@ -1007,6 +1029,8 @@ function clearMessages() {
   $('messages').querySelectorAll('.msg, .trace, .thread').forEach((n) => n.remove());
   ui.pending = [];
   renderPending();
+  ui.context = { input: 0, model: '' };
+  updateContextBar();
   // An empty chat is the landing state: the log opens again, so the examples
   // are visible, and the live dot goes out.
   const log = $('chatLog');
