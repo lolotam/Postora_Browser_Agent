@@ -1309,8 +1309,8 @@ test('a pre-write guard preserves the pending revocation target when the subsequ
   assert.equal('accessPreference' in storage.data, false);
 });
 
-test('a successful live elevation reports persisted: false when neither guard removal nor fallback rewrite succeeds', async () => {
-  const { store, sessionStorage } = await started({});
+test('a successful live elevation reports persisted: false and removes the local grant when neither guard removal nor fallback rewrite succeeds', async () => {
+  const { store, storage, sessionStorage } = await started({});
   const raised = await store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     {
@@ -1325,6 +1325,7 @@ test('a successful live elevation reports persisted: false when neither guard re
   assert.equal(raised.ok, true);
   assert.equal(raised.persisted, false);
   assert.equal(raised.warning, 'not-remembered');
+  assert.equal('accessPreference' in storage.data, false, 'unpersisted record was removed from local storage');
   assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
   assert.equal(store.snapshot().mode, ASK);
 });

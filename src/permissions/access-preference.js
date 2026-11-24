@@ -975,6 +975,7 @@ export function createAccessPreferenceStore({
     if (!guardCleared && wrotePreWriteGuard) {
       state.mode = ASK_FIRST;
       state.profileRevision += 1;
+      await clearStored('remove');
       notify();
       return { ok: true, changed: Boolean(applied.changed), persisted: false, warning: 'not-remembered', preference: snapshot() };
     }
