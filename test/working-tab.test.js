@@ -243,3 +243,57 @@ test('close_tab closes a tab of this session and refuses a tab of somebody else'
   assert.match(foreign.output, /not one of your tabs/);
   assert.deepEqual(browser.closed, [1, 2], 'the tab of the user was not closed');
 });
+
+test('the loss of the working tab is told once, at the moment the tab goes', async () => {
+  resetTabs();
+  let told = 0;
+  const browser = new BrowserController({ title: 'Mine', isTakenByOther: () => null, onLost: () => { told += 1; } });
+  await browser.startOn();
+  closeTab(1);
+  await assert.rejects(browser.currentTab(), { name: 'WorkingTabClosedError' });
+  assert.equal(told, 1, 'the runner is told at once, and only once');
+});
+
+test('a tab claimed while the working tab closes does not hide the loss', async () => {
+  resetTabs();
+  const browser = new BrowserController({ title: 'Mine', isTakenByOther: () => null });
+  await browser.startOn();
+  const publish = browser.publishTab.bind(browser);
+  browser.publishTab = (id) => {
+    closeTab(1); // the working tab goes while the new one is being taken, before it is published
+    publish(id);
+  };
+  await assert.rejects(browser.useTab(2), { name: 'WorkingTabClosedError' });
+  assert.notEqual(browser.tabId, 2, 'the new tab did not become the working tab');
+});
+
+test('an approved action does not run once the working tab is gone', async () => {
+  const browser = { ...fakeBrowser({ owned: [1, 2], disposable: [] }), workingTabLost: () => false };
+  let lost = false;
+  browser.workingTabLost = () => lost;
+  browser.closeOwnedTab = async (id, { guard }) => {
+    lost = true; // the working tab goes while the action is on its way
+    await guard();
+    browser.closed.push(id);
+  };
+  tabs = { 1: { id: 1 }, 2: { id: 2 } };
+  const execute = createToolExecutor(browser, { access: fullAccess() });
+  await assert.rejects(execute('close_tab', { tab_id: 2 }), { name: 'WorkingTabClosedError' });
+  assert.deepEqual(browser.closed, []);
+});
+
+test('close_tab checks again after approval that the tab is still of this session', async () => {
+  const owned = [1, 2];
+  const browser = fakeBrowser({ owned, disposable: [] });
+  browser.closeOwnedTab = async (id, { guard }) => {
+    owned.splice(owned.indexOf(2), 1); // the tab left the session while the card was open
+    await guard();
+    browser.closed.push(id);
+  };
+  tabs = { 1: { id: 1 }, 2: { id: 2 } };
+  const execute = createToolExecutor(browser, { access: fullAccess() });
+  const result = await execute('close_tab', { tab_id: 2 });
+  assert.equal(result.isError, true);
+  assert.match(result.output, /not one of your tabs/);
+  assert.deepEqual(browser.closed, []);
+});

@@ -50,7 +50,10 @@ const SETTLE_MAX_MS = 800;
  * never brought to the front; input and screenshots go through CDP.
  */
 export class BrowserController {
-  constructor({ title = 'Postora', color = 'cyan', isTakenByOther = () => null, reservation = null } = {}) {
+  constructor({ title = 'Postora', color = 'cyan', isTakenByOther = () => null, reservation = null, onLost = null } = {}) {
+    // Told once when the tab the task works on is gone, so the task is ended at
+    // once: a model turn, an approval or a question it waits on does not go on.
+    this.onLost = onLost;
     this.title = title;
     this.color = color;
     this.isTakenByOther = isTakenByOther;
@@ -81,7 +84,7 @@ export class BrowserController {
       if (tabId === this.tabId) {
         this.tabId = null;
         // The tab the task works on was closed: the task ends here.
-        if (this.started) this.lost = true;
+        this.markLost();
       }
     });
   }
@@ -93,7 +96,7 @@ export class BrowserController {
       } catch {
         this.tabId = null;
         // The tab is gone. A task that had one cannot go on without it.
-        if (this.started) this.lost = true;
+        this.markLost();
       }
     }
     // A borrowed tab is never replaced by another one: the command that
@@ -103,6 +106,17 @@ export class BrowserController {
     // The user chose that tab for this task, and it is not there any more.
     if (this.started) throw new WorkingTabClosedError(this.homeTabId);
     return this.startOn();
+  }
+
+  /** The tab the task works on is gone: noted once, and the task is told. */
+  markLost() {
+    if (!this.started || this.lost) return;
+    this.lost = true;
+    try {
+      this.onLost?.();
+    } catch {
+      // The flag alone still ends the task at its next tool.
+    }
   }
 
   /** Whether the tab the task works on is gone: the task cannot go on. */
@@ -161,6 +175,12 @@ export class BrowserController {
     // The claiming took time: the command may have been withdrawn while it
     // waited, and a tab that was withdrawn is not taken.
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
+    // The working tab was closed while the new one was being claimed: the
+    // claim does not hide the loss, and the claimed tab is not worked on.
+    if (this.lost) {
+      this.tabId = null;
+      throw new WorkingTabClosedError(this.homeTabId);
+    }
     this.tabId = tabId;
     this.borrowed = false;
     if (previous !== null && previous !== tabId) {
@@ -234,7 +254,7 @@ export class BrowserController {
     if (this.tabId === tabId) {
       this.tabId = null;
       // The tab the task works on was closed: the task ends here.
-      if (this.started) this.lost = true;
+      this.markLost();
     }
   }
 

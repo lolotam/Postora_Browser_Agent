@@ -164,6 +164,9 @@ export function createToolExecutor(rawBrowser, {
     // The grant is asked again every time the browser is about to change
     // something: a mode change, a stop or the end of the run withdraws it.
     const granted = () => {
+      // The tab the task works on is gone: an approved action does not run
+      // anywhere else, even one that was already on its way.
+      if (browser.workingTabLost?.()) throw new WorkingTabClosedError();
       if (signal?.aborted) throw new Error('The task was stopped before this action could run.');
       if (!authority.grantValid(permit, operation)) throw new Error('The approval for this action is no longer valid.');
     };
@@ -670,14 +673,18 @@ export function createToolExecutor(rawBrowser, {
     },
     close_tab: async ({ tab_id }) => {
       const tab = tabIdOf(tab_id);
-      const live = await chrome.tabs.get(tab);
-      const owner = browser.isTakenByOther(live);
-      if (owner) throw new Error(`Tab ${tab} belongs to session "${owner}".`);
       // Only a tab of this session is closed: one it owns, or one it opened
-      // itself. A tab of the user is never closed by the model.
-      if (!browser.ownsTab(live) && !browser.disposable?.has(live.id)) {
-        throw new Error(`Tab ${tab} is not one of your tabs. Close only a tab of your own session.`);
-      }
+      // itself. A tab of the user is never closed by the model. It is checked
+      // again after the approval: the tab may have changed hands meanwhile.
+      const mine = async () => {
+        const live = await chrome.tabs.get(tab);
+        const owner = browser.isTakenByOther(live);
+        if (owner) throw new Error(`Tab ${tab} belongs to session "${owner}".`);
+        if (!browser.ownsTab(live) && !browser.disposable?.has(live.id)) {
+          throw new Error(`Tab ${tab} is not one of your tabs. Close only a tab of your own session.`);
+        }
+      };
+      await mine();
       const scope = await tabScope(tab);
       const { guard } = await approve({
         action: 'close_tab',
@@ -687,7 +694,7 @@ export function createToolExecutor(rawBrowser, {
         describe: `Close tab ${tab}`,
       });
       await guard();
-      await browser.closeOwnedTab(tab, { guard });
+      await browser.closeOwnedTab(tab, { guard: async () => (await guard()) && (await mine(), true) });
       return `Closed tab ${tab}.`;
     },
     // @store-strip-start
