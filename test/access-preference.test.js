@@ -1402,6 +1402,122 @@ test('a candidate-only guard does not revoke an older valid saved grant with a d
   assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
 });
 
+test('unreadable startup with an optOutOnly guard that also has a candidateRevision retains the candidate and revokes the uncommitted grant on retry', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: {
+      accessPreference: record({
+        remember: true,
+        mode: FULL,
+        revision: 7,
+        supersedesMarkerId: 'dg-7-optout-candidate',
+      }),
+    },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-7-optout-candidate',
+        kind: 'remember-off',
+        staleRevision: null,
+        candidateRevision: 7,
+        optOutOnly: true,
+        maxRevision: 7,
+        at: NOW - 15,
+      },
+    },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal(store.snapshot().unpersisted, true, 'candidateRevision prevents treating Full access as already gone while unreadable');
+
+  storage.failGet = false;
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK, 'uncommitted Full-access candidate was revoked and replaced by opt-out');
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('elevation recovery discovering an explicit remember: false opt-out rejects the in-flight remembered elevation as stale-profile-revision', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: false, mode: ASK, revision: 4 }) },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-6-candidate-only',
+        kind: 'remove',
+        staleRevision: null,
+        candidateRevision: 6,
+        candidateOnly: true,
+        maxRevision: 6,
+        at: NOW - 10,
+      },
+    },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.snapshot().remember, true, 'provisional state defaults to remember: true');
+
+  storage.failGet = false;
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'stale-profile-revision');
+  assert.equal(store.snapshot().remember, false, 'explicit remember: false opt-out was restored and not overwritten');
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+});
+
+test('when both storage reads fail at startup, a later elevation verifies and retains a recovered revocation in its replacement guard', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 4 }) },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-4-revoked',
+        kind: 'remove',
+        staleRevision: 4,
+        maxRevision: 4,
+        at: NOW - 20,
+      },
+    },
+  });
+  storage.failGet = true;
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+
+  // Session storage becomes readable while local storage is still unreadable: elevation must refuse rather than overwriting the marker.
+  sessionStorage.failGet = false;
+  const whileLocalUnreadable = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(whileLocalUnreadable.ok, false);
+  assert.equal(whileLocalUnreadable.reason, 'storage-failed');
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4);
+
+  // Local storage becomes readable for get, while set fails during elevation: the pre-write guard and rollback preserve staleRevision: 4.
+  storage.failGet = false;
+  storage.failSet = true;
+  const writeFailed = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(writeFailed.ok, false);
+  assert.equal(writeFailed.reason, 'storage-failed');
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4, 'recovered revocation target was retained');
+  assert.equal(Boolean(sessionStorage.data.accessPreferenceDowngrade?.candidateOnly), false);
+
+  // Restart still recognizes revision 4 as revoked.
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK);
+});
+
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {
   const { storage, sessionStorage } = makeStorage({
     initial: {},
@@ -1414,6 +1530,7 @@ test('a recovered marker revision floor is retained across a failed local prefer
   assert.equal(store.profileRevision, 1);
 
   // First Full-access attempt reads the session marker (staleRevision: 2) while local storage.set fails.
+  storage.failGet = false;
   sessionStorage.failGet = false;
   storage.failSet = true;
   const failedRaise = await store.setMode(
@@ -1433,7 +1550,6 @@ test('a recovered marker revision floor is retained across a failed local prefer
   assert.equal(succeededRaise.ok, true);
   assert.ok(storage.data.accessPreference.revision > 2, 'recovered revision floor was retained across the failed write');
 
-  storage.failGet = false;
   const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
   await restarted.init();
   assert.equal(restarted.effectiveDefaultMode(), FULL, 'leftover exact marker with staleRevision 2 does not match the new grant');
