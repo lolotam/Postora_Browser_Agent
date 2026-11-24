@@ -116,6 +116,7 @@ export function createAccessPreferenceStore({
   // A downgrade that is not in storage yet: { kind, forRevision, staleRevision }.
   let pending = null;
   let lastMarkerId = null;
+  let markerRevisionFloor = 1;
   let unpersisted = false;
   let optOutUnpersisted = false;
   const listeners = new Set();
@@ -310,7 +311,7 @@ export function createAccessPreferenceStore({
    * persisting a new choice that supersedes it.
    */
   async function bindToSupersedingMarker() {
-    let minRevision = state.profileRevision;
+    let minRevision = Math.max(state.profileRevision, markerRevisionFloor);
     if (markerUnknown) {
       if (!sessionStorage?.get) return { ok: false };
       let currentMarker = null;
@@ -321,11 +322,12 @@ export function createAccessPreferenceStore({
         return { ok: false };
       }
       if (currentMarker) {
-        minRevision = Math.max(
-          minRevision,
+        markerRevisionFloor = Math.max(
+          markerRevisionFloor,
           currentMarker.staleRevision ?? 1,
           currentMarker.maxRevision ?? 1,
         );
+        minRevision = Math.max(minRevision, markerRevisionFloor);
         if (!currentMarker.id) {
           const upgradedId = makeMarkerId(currentMarker.at ?? now(), minRevision);
           const upgraded = await writeMarker({
@@ -362,8 +364,8 @@ export function createAccessPreferenceStore({
   }
 
   /** The newer choice settles the old downgrade: its retries stop. */
-  function supersede({ keepMarker = false } = {}) {
-    if (!keepMarker) forgetMarker();
+  async function supersede({ keepMarker = false } = {}) {
+    if (!keepMarker) await forgetMarker();
     if (!pending && !unpersisted && !optOutUnpersisted) return;
     pending = null;
     unpersisted = false;
@@ -463,7 +465,7 @@ export function createAccessPreferenceStore({
     if (outcome.persisted) {
       unpersisted = false;
       optOutUnpersisted = false;
-      forgetMarker();
+      await forgetMarker();
       return { persisted: true };
     }
     if (outcome.fullCleared) {
@@ -495,7 +497,7 @@ export function createAccessPreferenceStore({
         scheduleRetry(0, revision);
       } else {
         optOutUnpersisted = false;
-        forgetMarker();
+        await forgetMarker();
       }
       return { persisted: false, warning: 'not-remembered' };
     }
@@ -562,7 +564,7 @@ export function createAccessPreferenceStore({
         pending = null;
         unpersisted = false;
         optOutUnpersisted = false;
-        forgetMarker();
+        await forgetMarker();
         notify();
         return;
       }
@@ -604,7 +606,7 @@ export function createAccessPreferenceStore({
       pending = null;
       unpersisted = false;
       optOutUnpersisted = false;
-      forgetMarker();
+      await forgetMarker();
       notify();
       return;
     }
@@ -633,7 +635,7 @@ export function createAccessPreferenceStore({
       } else {
         optOutUnpersisted = false;
         pending = null;
-        forgetMarker();
+        await forgetMarker();
         notify();
       }
       return;
@@ -688,7 +690,7 @@ export function createAccessPreferenceStore({
     };
     storageUnknown = false;
     restoreFailed = false;
-    supersede();
+    await supersede();
     const applied = hooks?.applyFull?.();
     if (!applied?.ok) {
       // No chat took it: it must not stay remembered.
@@ -792,7 +794,7 @@ export function createAccessPreferenceStore({
     };
     storageUnknown = false;
     restoreFailed = false;
-    supersede();
+    await supersede();
     notify();
     return {
       ok: true,

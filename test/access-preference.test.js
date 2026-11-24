@@ -1118,6 +1118,73 @@ test('a retry that writes the marker and clears the grant tracks its marker ID e
   assert.equal(restarted.effectiveDefaultMode(), FULL, 'leftover retry marker does not revoke the bound grant on restart');
 });
 
+test('verification retry awaits marker cleanup so a subsequent grant still binds if sessionStorage.remove rejects asynchronously', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: {},
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: null, at: NOW - 20 } },
+  });
+  storage.failGet = true;
+  sessionStorage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // Retry sees empty local storage and attempts to remove the legacy wildcard marker, which fails.
+  storage.failGet = false;
+  await scheduler.runNext();
+
+  // Next Full-access grant must re-read, upgrade, and bind to the leftover legacy marker.
+  const raised = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(raised.ok, true);
+  const upgradedId = sessionStorage.data.accessPreferenceDowngrade?.id;
+  assert.equal(typeof upgradedId, 'string');
+  assert.equal(storage.data.accessPreference.supersedesMarkerId, upgradedId);
+
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL);
+});
+
+test('a recovered marker revision floor is retained across a failed local preference write', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: {},
+    session: { accessPreferenceDowngrade: { id: 'dg-2-exact', kind: 'remove', staleRevision: 2, maxRevision: 2, at: NOW - 30 } },
+  });
+  storage.failGet = true;
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+  assert.equal(store.profileRevision, 1);
+
+  // First Full-access attempt reads the session marker (staleRevision: 2) while local storage.set fails.
+  sessionStorage.failGet = false;
+  storage.failSet = true;
+  const failedRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: 1 },
+    makeHooks(),
+  );
+  assert.equal(failedRaise.ok, false);
+  assert.equal(failedRaise.reason, 'storage-failed');
+
+  // Second Full-access attempt succeeds (while sessionStorage.remove fails); it must still use revision > 2.
+  storage.failSet = false;
+  sessionStorage.failRemove = true;
+  const succeededRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: 1 },
+    makeHooks(),
+  );
+  assert.equal(succeededRaise.ok, true);
+  assert.ok(storage.data.accessPreference.revision > 2, 'recovered revision floor was retained across the failed write');
+
+  storage.failGet = false;
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL, 'leftover exact marker with staleRevision 2 does not match the new grant');
+});
+
 test('an explicit new revocation after an unreadable startup journals against the current grant on disk', async () => {
   const scheduler = makeScheduler();
   const { storage, sessionStorage } = makeStorage({
