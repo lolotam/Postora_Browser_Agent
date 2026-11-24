@@ -542,3 +542,45 @@ test('downgrading via changeProfileMode emits access-mode-note once', async () =
     runner.dispose();
   }
 });
+
+test('a disconnected panel port does not stop profile-wide downgrade across runners', async () => {
+  const first = await profileRunner({ initialAccessMode: 'full-access' });
+  const second = await profileRunner({ initialAccessMode: 'full-access' });
+  try {
+    let calls = 0;
+    const throwingPort = {
+      name: `panel:${first.id}:dead-panel`,
+      sender: { id: EXTENSION_ID, url: PANEL_URL },
+      postMessage: () => {
+        calls += 1;
+        if (calls > 1) throw new Error('Attempting to use a disconnected port object');
+      },
+      onMessage: { addListener() {}, removeListener() {} },
+      onDisconnect: { addListener() {} },
+    };
+    first.attach(throwingPort);
+    attachPanel(second);
+
+    for (const runner of [first, second]) runner.forceDowngradeToAskFirst();
+    assert.equal(first.access.mode, 'ask-first');
+    assert.equal(second.access.mode, 'ask-first');
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
+});
+
+test('forceDowngradeToAskFirst stops an already Ask-first chat that is still running', async () => {
+  const runner = await profileRunner({ initialAccessMode: 'ask-first' });
+  try {
+    attachPanel(runner);
+    runner.abort = new AbortController();
+    const pending = runner.access.requestApproval({ action: 'click', args: {}, tabId: 1 });
+    runner.forceDowngradeToAskFirst();
+    assert.equal(runner.abort.signal.aborted, true);
+    assert.equal(runner.access.pendingCount, 0);
+    assert.equal((await pending.promise).reason, 'mode-changed');
+  } finally {
+    runner.dispose();
+  }
+});

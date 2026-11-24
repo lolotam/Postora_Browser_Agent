@@ -391,6 +391,7 @@ export class SessionRunner {
       return result;
     }
     this.access.cancel('mode-changed');
+    this.stop();
     return { ok: true, changed: false, ...this.access.state() };
   }
 
@@ -567,7 +568,7 @@ export class SessionRunner {
       if (event.type === 'final') this.transition('finished');
       else if (event.type === 'ask') this.transition('ask', `ask-${(this.asks += 1)}`);
     }
-    for (const port of this.ports) port.postMessage(event);
+    this.broadcast(event);
   }
 
   /** Shows a notice and returns its id; `{ dismiss: id }` withdraws one (a retry that ended). */

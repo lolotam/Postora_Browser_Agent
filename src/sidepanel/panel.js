@@ -486,10 +486,20 @@ function onEvent(event) {
     case 'access-preference-state':
       // The profile's remembered choice moved, here or in another panel.
       accessUi.applyPreference(event.accessPreference);
+      if (!accessUi.preference?.unpersisted) {
+        if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
+        if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
+      }
+      renderRemember();
       renderAccessError();
       break;
     case 'access-preference-notice':
       if (replaying) break;
+      if (event.reason === 'not-cleared') {
+        renderRemember();
+        renderAccessError();
+        break;
+      }
       accessErrorKey = preferenceNoticeKey(event.reason) || 'access.error.send';
       renderAccessError();
       break;
@@ -2995,8 +3005,9 @@ let rememberBusy = false;
 function renderRemember() {
   const node = $('rememberAccessError');
   if (!node) return;
-  node.textContent = rememberErrorKey ? t(rememberErrorKey) : '';
-  node.hidden = !rememberErrorKey;
+  const key = rememberErrorKey || (accessUi.preference?.unpersisted ? 'access.notice.notCleared' : '');
+  node.textContent = key ? t(key) : '';
+  node.hidden = !key;
 }
 
 /** The worker is asked once; whatever it answers is what the panel shows. */
@@ -3014,7 +3025,7 @@ async function changeRemember(remember, acknowledged) {
       // Another chat is in Full access: the same warning is read first.
       if (result?.reason === 'needs-acknowledgement' && !acknowledged && accessUi.askRememberAcknowledgement(() => changeRemember(true, true))) return;
       rememberErrorKey = preferenceNoticeKey(result?.reason) || 'access.error.send';
-    } else if (result.warning) {
+    } else if (result.warning && result.warning !== 'not-cleared') {
       rememberErrorKey = preferenceNoticeKey(result.warning);
     }
   } catch {
@@ -3055,6 +3066,10 @@ $('rememberAccessMode').addEventListener('change', (event) => {
 async function refreshAccessPreference() {
   try {
     accessUi.applyPreference(await request('get-access-preference'));
+    if (!accessUi.preference?.unpersisted) {
+      if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
+      if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
+    }
   } catch {
     // The replay of the connection carries it too.
   }

@@ -439,7 +439,121 @@ test('turning "remember" off falls back to removing Full access when the larger 
   assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
   assert.equal(store.snapshot().remember, false);
   assert.equal(store.snapshot().unpersisted, false);
-  assert.equal(scheduler.queue.length, 0);
+  assert.equal(scheduler.queue.length, 1, 'still schedules retry to persist explicit opt-out');
+  storage.failSet = false;
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+});
+
+test('startup fails closed when the downgrade marker store cannot be read', async () => {
+  const { storage, sessionStorage } = makeStorage({ initial: { accessPreference: record() } });
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: () => 0 });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal(store.snapshot().restoreFailed, true);
+});
+
+test('startup keeps a readable downgrade marker when local storage cannot be read, and completes removal on retry', async () => {
+  const scheduler = makeScheduler();
+  const marker = { accessPreferenceDowngrade: { kind: 'remove', staleRevision: 4, at: NOW - 5 } };
+  const { storage, sessionStorage } = makeStorage({ initial: { accessPreference: record() }, session: marker });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal(store.snapshot().unpersisted, true);
+  assert.ok('accessPreferenceDowngrade' in sessionStorage.data, 'readable marker is preserved when local storage fails');
+  storage.failGet = false;
+  await scheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+  assert.equal(store.snapshot().unpersisted, false);
+});
+
+test('downgrade journals the session marker before touching local storage and removes it on success', async () => {
+  const { store, storage, sessionStorage } = await started({ accessPreference: record() });
+  let markerAtRemove = null;
+  const origRemove = storage.remove.bind(storage);
+  storage.remove = async (keys) => {
+    markerAtRemove = structuredClone(sessionStorage.data.accessPreferenceDowngrade ?? null);
+    return origRemove(keys);
+  };
+  const result = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(result.ok, true);
+  assert.equal(result.persisted, true);
+  assert.equal(markerAtRemove?.staleRevision, 4);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('a downgrade after an unreadable startup attempts local removal instead of early-returning success', async () => {
+  const { storage, sessionStorage } = makeStorage({ initial: { accessPreference: record() } });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: () => 0 });
+  await store.init();
+  storage.failGet = false;
+  const result = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: false }));
+  assert.equal(result.ok, true);
+  assert.equal(result.persisted, true);
+  assert.equal('accessPreference' in storage.data, false, 'stale grant on disk was removed');
+});
+
+test('downgrade retries use the remove fallback and keep retrying the explicit opt-out', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage, sessionStorage } = await started({ accessPreference: record() }, { scheduler });
+  storage.failSet = true;
+  storage.failRemove = true;
+  await store.setRemember({ remember: false, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(store.snapshot().unpersisted, true);
+
+  storage.failRemove = false;
+  await scheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false, 'fallback removed Full access on retry');
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+
+  storage.failSet = false;
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+});
+
+test('a failed elevation on another chat preserves an existing remembered Full-access grant', async () => {
+  const { store, storage } = await started({ accessPreference: record() });
+  const result = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    { ...makeHooks({ full: true }), applyFull: () => ({ ok: false, reason: 'disposed' }) },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'disposed');
+  assert.equal(store.effectiveDefaultMode(), FULL);
+  assert.equal(storage.data.accessPreference.mode, FULL);
+});
+
+test('profile-wide Ask first advances profileRevision even with no stored Full grant', async () => {
+  const { store } = await started({});
+  const oldRev = store.profileRevision;
+  const downgrade = await store.setMode({ mode: ASK, expectedProfileRevision: oldRev }, makeHooks({ full: false }));
+  assert.equal(downgrade.ok, true);
+  assert.ok(store.profileRevision > oldRev);
+  const staleElevate = await store.setMode({ mode: FULL, acknowledged: true, expectedProfileRevision: oldRev }, makeHooks());
+  assert.equal(staleElevate.ok, false);
+  assert.equal(staleElevate.reason, 'stale-profile-revision');
+});
+
+test('lowering to Ask first preserves a pending remember-off opt-out', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage } = await started({ accessPreference: record() }, { scheduler });
+  storage.failSet = true;
+  storage.failRemove = true;
+  await store.setRemember({ remember: false, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  await store.setMode({ mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision }, makeHooks());
+  storage.failSet = false;
+  storage.failRemove = false;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
 });
 
 test('turning "remember" on without a profile revision is refused', async () => {

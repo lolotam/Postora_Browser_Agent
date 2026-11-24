@@ -157,7 +157,15 @@ async function runnerFor(sessionId) {
 function liveAccessHooks() {
   return {
     anyFull: () => [...runners.values()].some((runner) => runner.access.mode === FULL_ACCESS),
-    downgradeAll: () => { for (const runner of runners.values()) runner.forceDowngradeToAskFirst(); },
+    downgradeAll: () => {
+      for (const runner of [...runners.values()]) {
+        try {
+          runner.forceDowngradeToAskFirst();
+        } catch {
+          // Never let one runner failure stop remaining profile-wide revocations.
+        }
+      }
+    },
   };
 }
 
