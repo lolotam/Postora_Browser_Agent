@@ -91,6 +91,7 @@ export function preferenceOf(value) {
     profileRevision: value.profileRevision,
     restoreFailed: value.restoreFailed === true,
     unpersisted: value.unpersisted === true,
+    optOutUnpersisted: value.optOutUnpersisted === true,
   };
 }
 

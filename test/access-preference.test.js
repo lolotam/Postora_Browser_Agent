@@ -197,7 +197,19 @@ test('Full access with "remember" on is written first, then applied', async () =
   const { store, storage } = await started({});
   const hooks = makeHooks();
   const before = store.profileRevision;
-  const result = await store.setMode({ mode: FULL, acknowledged: true, expectedProfileRevision: before }, hooks);
+  let releaseWrite;
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+  const origSet = storage.set.bind(storage);
+  storage.set = async (values) => {
+    await writeGate;
+    return origSet(values);
+  };
+  const pendingMode = store.setMode({ mode: FULL, acknowledged: true, expectedProfileRevision: before }, hooks);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(hooks.calls, [], 'Full access stays unapplied while the storage write is pending');
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  releaseWrite();
+  const result = await pendingMode;
   assert.equal(result.ok, true);
   assert.equal(result.persisted, true);
   assert.deepEqual(hooks.calls, ['applyFull']);
@@ -436,14 +448,103 @@ test('turning "remember" off falls back to removing Full access when the larger 
   assert.equal(result.persisted, false);
   assert.equal(result.warning, 'not-remembered');
   assert.equal('accessPreference' in storage.data, false, 'Full access was removed from storage');
-  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.optOutOnly, true, 'opt-out recovery marker stays until opt-out is saved');
   assert.equal(store.snapshot().remember, false);
   assert.equal(store.snapshot().unpersisted, false);
+  assert.equal(store.snapshot().optOutUnpersisted, true);
   assert.equal(scheduler.queue.length, 1, 'still schedules retry to persist explicit opt-out');
   storage.failSet = false;
   await scheduler.runNext();
   assert.equal(storage.data.accessPreference.remember, false);
   assert.equal(storage.data.accessPreference.mode, ASK);
+  assert.equal(store.snapshot().optOutUnpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('a worker that restarts after fallback removal still restores the pending remember-off opt-out', async () => {
+  const scheduler = makeScheduler();
+  const marker = { accessPreferenceDowngrade: { kind: 'remember-off', staleRevision: null, optOutOnly: true, at: NOW - 5 } };
+  const { store, storage, sessionStorage } = await started({}, { scheduler, session: marker });
+  assert.equal(store.snapshot().remember, false);
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal(store.snapshot().optOutUnpersisted, true);
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+  assert.equal(store.snapshot().optOutUnpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('retries repair a failed session-marker write and bind each timer to its own downgrade', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage, sessionStorage } = await started({ accessPreference: record() }, { scheduler });
+  storage.failRemove = true;
+  sessionStorage.failSet = true;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+  assert.equal(scheduler.queue.length, 1);
+
+  // Session storage recovers while local removal still fails: retry repairs the marker.
+  sessionStorage.failSet = false;
+  await scheduler.runNext();
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4);
+  assert.equal(scheduler.queue.length, 1);
+  const oldRetry = scheduler.queue.shift();
+
+  // Supersede with a new Full choice, then fail a second downgrade: the old timer must not retry the new downgrade.
+  storage.failRemove = false;
+  await store.setMode({ mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision }, makeHooks());
+  storage.failRemove = true;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(scheduler.queue.length, 1, 'second downgrade has its own timer');
+  storage.failRemove = false;
+  await oldRetry.fn();
+  assert.equal(store.snapshot().unpersisted, true, 'stale timer from first downgrade was ignored');
+  await scheduler.runNext();
+  assert.equal(store.snapshot().unpersisted, false);
+});
+
+test('repeated revocation keeps its existing recovery marker when the replacement write fails', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage, sessionStorage } = await started({ accessPreference: record() }, { scheduler });
+  storage.failRemove = true;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4);
+
+  sessionStorage.failSet = true;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: false }));
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4, 'existing marker was not deleted before replacement succeeded');
+});
+
+test('a marker recovered during an unreadable startup does not overwrite a newer confirmed preference once reads recover', async () => {
+  const scheduler = makeScheduler();
+  const marker = { accessPreferenceDowngrade: { kind: 'remove', staleRevision: 4, at: NOW - 5 } };
+  const newer = record({ revision: 9, mode: FULL, remember: true });
+  const { storage, sessionStorage } = makeStorage({ initial: { accessPreference: newer }, session: marker });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+
+  storage.failGet = false;
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.revision, 9, 'newer record was not deleted');
+  assert.equal(store.effectiveDefaultMode(), FULL);
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('a fresh preference write clears restoreFailed from startup', async () => {
+  const { storage, sessionStorage } = makeStorage({ initial: { accessPreference: record() } });
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: () => 0 });
+  await store.init();
+  assert.equal(store.snapshot().restoreFailed, true);
+
+  const elevated = await store.setMode({ mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision }, makeHooks());
+  assert.equal(elevated.ok, true);
+  assert.equal(store.snapshot().restoreFailed, false);
+  assert.equal(store.effectiveDefaultMode(), FULL);
 });
 
 test('startup fails closed when the downgrade marker store cannot be read', async () => {
@@ -511,12 +612,15 @@ test('downgrade retries use the remove fallback and keep retrying the explicit o
   await scheduler.runNext();
   assert.equal('accessPreference' in storage.data, false, 'fallback removed Full access on retry');
   assert.equal(store.snapshot().unpersisted, false);
-  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+  assert.equal(store.snapshot().optOutUnpersisted, true);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.optOutOnly, true);
 
   storage.failSet = false;
   await scheduler.runNext();
   assert.equal(storage.data.accessPreference.remember, false);
   assert.equal(storage.data.accessPreference.mode, ASK);
+  assert.equal(store.snapshot().optOutUnpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
 });
 
 test('a failed elevation on another chat preserves an existing remembered Full-access grant', async () => {

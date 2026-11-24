@@ -483,19 +483,28 @@ function onEvent(event) {
       // requests it still waits for under it.
       applyAccessReplay(event.access, event.permissions, event.accessPreference);
       break;
-    case 'access-preference-state':
+    case 'access-preference-state': {
       // The profile's remembered choice moved, here or in another panel.
+      const previousRevision = accessUi.preference?.profileRevision ?? null;
       accessUi.applyPreference(event.accessPreference);
+      if ((accessUi.preference?.profileRevision ?? null) !== previousRevision) {
+        rememberErrorKey = '';
+      }
       if (!accessUi.preference?.unpersisted) {
         if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
         if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
       }
+      if (!accessUi.preference?.optOutUnpersisted) {
+        if (accessErrorKey === 'access.notice.notRemembered') accessErrorKey = '';
+        if (rememberErrorKey === 'access.notice.notRemembered') rememberErrorKey = '';
+      }
       renderRemember();
       renderAccessError();
       break;
+    }
     case 'access-preference-notice':
       if (replaying) break;
-      if (event.reason === 'not-cleared') {
+      if (event.reason === 'not-cleared' || (event.reason === 'not-remembered' && accessUi.preference?.optOutUnpersisted)) {
         renderRemember();
         renderAccessError();
         break;
@@ -3005,7 +3014,12 @@ let rememberBusy = false;
 function renderRemember() {
   const node = $('rememberAccessError');
   if (!node) return;
-  const key = rememberErrorKey || (accessUi.preference?.unpersisted ? 'access.notice.notCleared' : '');
+  const key = rememberErrorKey
+    || (accessUi.preference?.unpersisted
+      ? 'access.notice.notCleared'
+      : accessUi.preference?.optOutUnpersisted
+        ? 'access.notice.notRemembered'
+        : '');
   node.textContent = key ? t(key) : '';
   node.hidden = !key;
 }
@@ -3025,7 +3039,7 @@ async function changeRemember(remember, acknowledged) {
       // Another chat is in Full access: the same warning is read first.
       if (result?.reason === 'needs-acknowledgement' && !acknowledged && accessUi.askRememberAcknowledgement(() => changeRemember(true, true))) return;
       rememberErrorKey = preferenceNoticeKey(result?.reason) || 'access.error.send';
-    } else if (result.warning && result.warning !== 'not-cleared') {
+    } else if (result.warning && result.warning !== 'not-cleared' && result.warning !== 'not-remembered') {
       rememberErrorKey = preferenceNoticeKey(result.warning);
     }
   } catch {
@@ -3069,6 +3083,10 @@ async function refreshAccessPreference() {
     if (!accessUi.preference?.unpersisted) {
       if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
       if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
+    }
+    if (!accessUi.preference?.optOutUnpersisted) {
+      if (accessErrorKey === 'access.notice.notRemembered') accessErrorKey = '';
+      if (rememberErrorKey === 'access.notice.notRemembered') rememberErrorKey = '';
     }
   } catch {
     // The replay of the connection carries it too.
