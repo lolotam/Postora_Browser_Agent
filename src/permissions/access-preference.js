@@ -690,6 +690,11 @@ export function createAccessPreferenceStore({
     };
     storageUnknown = false;
     restoreFailed = false;
+    if (pending || unpersisted || optOutUnpersisted) {
+      pending = null;
+      unpersisted = false;
+      optOutUnpersisted = false;
+    }
     const applied = hooks?.applyFull?.();
     if (!applied?.ok) {
       // No chat took it: it must not stay remembered.
@@ -698,11 +703,6 @@ export function createAccessPreferenceStore({
       await clearStored('remove');
       notify();
       return refuse(applied?.reason ?? 'refused');
-    }
-    if (pending || unpersisted || optOutUnpersisted) {
-      pending = null;
-      unpersisted = false;
-      optOutUnpersisted = false;
     }
     notify();
     await forgetMarker();

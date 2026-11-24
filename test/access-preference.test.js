@@ -1208,6 +1208,31 @@ test('applyFull runs synchronously right after storage.set without waiting for m
   assert.equal(store.effectiveDefaultMode(), FULL);
 });
 
+test('a rollback after applyFull refusal clears any superseded pending downgrade', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage } = await started({ accessPreference: record() }, { scheduler });
+  storage.failRemove = true;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(store.snapshot().unpersisted, true);
+
+  // Now storage works, and an elevation supersedes the pending downgrade but applyFull refuses.
+  storage.failRemove = false;
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    { ...makeHooks(), applyFull: () => ({ ok: false, reason: 'disposed' }) },
+  );
+  assert.equal(refused.ok, false);
+  assert.equal('accessPreference' in storage.data, false, 'rollback removed the grant');
+  assert.equal(store.snapshot().unpersisted, false);
+
+  // A subsequent Ask-first request sees no obsolete pending downgrade even if storage.remove fails again.
+  storage.failRemove = true;
+  const lowered = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks());
+  assert.equal(lowered.ok, true);
+  assert.equal(lowered.persisted, true);
+  assert.equal(store.snapshot().unpersisted, false);
+});
+
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {
   const { storage, sessionStorage } = makeStorage({
     initial: {},
