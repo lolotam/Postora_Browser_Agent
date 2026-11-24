@@ -836,6 +836,8 @@ export class SessionRunner {
       // Pages opened for reading are done once the task is. The starting tab stays.
       await this.browser.closeDisposableTabs().catch(() => {});
       await this.browser.detachAll();
+      // The task is over: its tab closing later does not end other work.
+      this.browser.finishTask?.();
       this.turnAbort = null;
       this.emit({ type: 'status', running: false });
       this.onSessionsChanged();

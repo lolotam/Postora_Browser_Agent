@@ -136,8 +136,14 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
           // The task cannot go on (the tab it works on is gone). The call still
           // gets a result, so the conversation stays valid for the next task.
           if (isWorkingTabClosed(err)) {
-            emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: false, summary: firstLine(err.message), ms: Date.now() - started });
+            // The history is repaired first: a panel that is gone must not
+            // leave a call without a result.
             session.addToolResult(call.id, `Error: ${err.message}`);
+            try {
+              emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: false, summary: firstLine(err.message), ms: Date.now() - started });
+            } catch {
+              // The task ends with the error below either way.
+            }
           }
           throw err;
         }

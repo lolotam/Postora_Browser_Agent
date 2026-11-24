@@ -297,3 +297,14 @@ test('close_tab checks again after approval that the tab is still of this sessio
   assert.match(result.output, /not one of your tabs/);
   assert.deepEqual(browser.closed, []);
 });
+
+test('a finished task\'s tab closing later is no loss and ends nothing', async () => {
+  resetTabs();
+  let told = 0;
+  const browser = new BrowserController({ title: 'Mine', isTakenByOther: () => null, onLost: () => { told += 1; } });
+  await browser.startOn();
+  browser.finishTask();
+  closeTab(1);
+  assert.equal(told, 0);
+  assert.equal(browser.workingTabLost(), false);
+});

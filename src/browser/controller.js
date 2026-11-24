@@ -108,6 +108,14 @@ export class BrowserController {
     return this.startOn();
   }
 
+  /**
+   * The task is over: a tab it worked on that closes later is no loss, and
+   * nothing is told about it.
+   */
+  finishTask() {
+    this.started = false;
+  }
+
   /** The tab the task works on is gone: noted once, and the task is told. */
   markLost() {
     if (!this.started || this.lost) return;
@@ -150,11 +158,12 @@ export class BrowserController {
       ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
       : await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error('No active tab found.');
+    // The task has a tab of its own from the claim on: when that tab is closed,
+    // even before the claim finished, the task ends instead of continuing
+    // somewhere else.
+    this.started = true;
     const claimed = await this.useTab(tab.id);
     this.homeTabId = claimed.id;
-    // The task has a tab of its own from now on: when that tab is closed, the
-    // task ends instead of continuing somewhere else.
-    this.started = true;
     return claimed;
   }
 

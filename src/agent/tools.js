@@ -694,7 +694,9 @@ export function createToolExecutor(rawBrowser, {
         describe: `Close tab ${tab}`,
       });
       await guard();
-      await browser.closeOwnedTab(tab, { guard: async () => (await guard()) && (await mine(), true) });
+      // The ownership lookup comes first, so the grant is the last thing asked
+      // before the tab goes.
+      await browser.closeOwnedTab(tab, { guard: async () => { await mine(); return guard(); } });
       return `Closed tab ${tab}.`;
     },
     // @store-strip-start
@@ -718,7 +720,10 @@ export function createToolExecutor(rawBrowser, {
       const clean = String(text ?? '').trim();
       if (!clean) throw new Error('The note is empty.');
       if (clean.length > NOTE_MAX_CHARS) throw new Error(`The note is ${clean.length} characters; the limit is ${NOTE_MAX_CHARS}. Split it into several notes.`);
-      const url = (await browser.currentTab().catch(() => null))?.url ?? '';
+      // The loss of the working tab is not swallowed: a task that ended keeps no
+      // note it was writing.
+      const url = (await currentTab())?.url ?? '';
+      if (browser.workingTabLost?.()) throw new WorkingTabClosedError();
       const count = notebook.add(clean, url);
       onNotebookChange();
       return `Saved (${count} note${count === 1 ? '' : 's'}).`;
