@@ -6,6 +6,7 @@
 import { askJev } from './jev-client.js';
 import { formatSnapshot } from '../agent/tools.js';
 import { isFastAccessFailure } from './errors.js';
+import { isWorkingTabClosed } from '../browser/working-tab.js';
 
 export const DEFAULT_GATE = {
   minProb: 0.6, // probability of the chosen option
@@ -194,9 +195,11 @@ export function createFastLayer({ config, browser, execute, task, ask = askJev }
       let snapshot;
       try {
         snapshot = await browser.snapshot();
-      } catch {
+      } catch (err) {
+        // The tab the task works on is gone: the task ends, it is not a hand-over.
+        if (isWorkingTabClosed(err)) throw err;
         // A new tab or chrome:// page is no web page yet: the LLM opens one, no notice needed.
-        const url = (await browser.currentTab().catch(() => null))?.url ?? '';
+        const url = await currentUrl(browser);
         return { kind: 'escalate', reason: /^(https?|file):/.test(url) ? 'page cannot be read' : '', snapshot: null, hints: '' };
       }
       let answers;
@@ -235,10 +238,23 @@ export function createFastLayer({ config, browser, execute, task, ask = askJev }
 
   /** Counts down one LLM turn of the pause and tells whether it still holds; a page change ends it early. */
   async function advancePause() {
-    const url = (await browser.currentTab().catch(() => null))?.url;
+    const url = await currentUrl(browser);
     pause.turns -= 1;
     if (pause.turns < 0 || url !== pause.url) pause = null;
     return Boolean(pause);
+  }
+}
+
+/**
+ * The address of the tab the task works on, or '' when it cannot be named.
+ * The loss of that tab ends the task, so it is never swallowed here.
+ */
+async function currentUrl(browser) {
+  try {
+    return (await browser.currentTab())?.url ?? '';
+  } catch (err) {
+    if (isWorkingTabClosed(err)) throw err;
+    return '';
   }
 }
 

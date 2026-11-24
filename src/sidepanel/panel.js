@@ -32,6 +32,7 @@ import { playReply } from '../voice/playback.js';
 import { runFastCommand } from '../voice/voice-runner.js';
 import { SECRET_TOKENS } from '../voice/voice-safety.js';
 import { createChromeBrowser } from '../voice/voice-browser.js';
+import { WORKING_TAB_CLOSED } from '../browser/working-tab.js';
 
 const $ = (id) => document.getElementById(id);
 $('extensionVersion').textContent = `v${chrome.runtime.getManifest().version}`;
@@ -436,6 +437,15 @@ function resetApprovals() {
   syncApprovals();
 }
 
+/**
+ * The words of a failure. A code is the stable name of the problem, and the
+ * panel has its own words for the ones it knows; the message is what a reader
+ * without such a code sees.
+ */
+function errorText(event) {
+  return event.code === WORKING_TAB_CLOSED ? t('error.working-tab-closed') : event.message;
+}
+
 function onEvent(event) {
   switch (event.type) {
     case 'access-mode-note':
@@ -657,13 +667,15 @@ function onEvent(event) {
       }
       break;
     }
-    case 'error':
-      add('msg error', event.message);
+    case 'error': {
+      const text = errorText(event);
+      add('msg error', text);
       if (voiceEntryFor(event)) {
-        voiceEntryFor(event).setErr(event.message);
+        voiceEntryFor(event).setErr(text);
         if (!replaying) completeVoiceTaskAfterCleanup(voiceTask);
       }
       break;
+    }
     case 'compacting':
       ui.compacting?.remove();
       ui.compacting = add('msg compact working', t(event.auto ? 'compact.workingAuto' : 'compact.working'));

@@ -13,6 +13,7 @@
 import { NOTE_MAX_CHARS, NOTEBOOK_MAX_CHARS, quoteNotebookHeader } from './notebook.js';
 import { projectContextBlock } from './prompt.js';
 import { FULL_ACCESS } from '../permissions/policy.js';
+import { WorkingTabClosedError, isWorkingTabClosed } from '../browser/working-tab.js';
 // @store-strip-start
 import { runNativeCommand, nativeRequest } from '../native/client.js';
 // @store-strip-end
@@ -113,7 +114,17 @@ export function createToolExecutor(rawBrowser, {
   // The page counts as changed when its URL or its document is new: a form post or
   // a reload can replace the document at the same URL, and then indexes are stale.
   let call = { brief: false, at: null, pageChanged: false, notes: false };
-  const where = async () => [(await browser.currentTab().catch(() => null))?.url ?? null, await browser.documentId?.()].join(' ');
+  // The tab the task works on. Its loss ends the task, so it is never
+  // swallowed here: a task without its tab has nothing to go on with.
+  const currentTab = async () => {
+    try {
+      return await browser.currentTab();
+    } catch (err) {
+      if (isWorkingTabClosed(err)) throw err;
+      return null;
+    }
+  };
+  const where = async () => [(await currentTab())?.url ?? null, await browser.documentId?.()].join(' ');
   const observe = async (prefix) => {
     if (call.brief) {
       if ((await where()) === call.at) return `${prefix} (Page state follows the last action of this turn.)`;
@@ -186,7 +197,7 @@ export function createToolExecutor(rawBrowser, {
   };
 
   /** The tab this session works on, when it can be named. */
-  const currentTabId = async () => (await browser.currentTab().catch(() => null))?.id ?? null;
+  const currentTabId = async () => (await currentTab())?.id ?? null;
 
   /**
    * The identity of an element of the latest snapshot, captured before
@@ -659,8 +670,14 @@ export function createToolExecutor(rawBrowser, {
     },
     close_tab: async ({ tab_id }) => {
       const tab = tabIdOf(tab_id);
-      const owner = browser.isTakenByOther(await chrome.tabs.get(tab));
+      const live = await chrome.tabs.get(tab);
+      const owner = browser.isTakenByOther(live);
       if (owner) throw new Error(`Tab ${tab} belongs to session "${owner}".`);
+      // Only a tab of this session is closed: one it owns, or one it opened
+      // itself. A tab of the user is never closed by the model.
+      if (!browser.ownsTab(live) && !browser.disposable?.has(live.id)) {
+        throw new Error(`Tab ${tab} is not one of your tabs. Close only a tab of your own session.`);
+      }
       const scope = await tabScope(tab);
       const { guard } = await approve({
         action: 'close_tab',
@@ -728,6 +745,9 @@ export function createToolExecutor(rawBrowser, {
     const handler = !allowed || allowed.has(name) ? handlers[name] : null;
     if (!handler) return { output: `Unknown tool "${name}".`, isError: true };
     const brief = !full && name !== 'read_page';
+    // The tab the task works on is gone: no tool of this task runs any more.
+    // The task ends, it does not go on in a tab nobody chose for it.
+    if (browser.workingTabLost?.()) throw new WorkingTabClosedError();
     call = { brief, at: brief ? await where() : null, pageChanged: false, notes: false };
     try {
       // A command that was stopped runs nothing at all: not a question, not a
@@ -740,6 +760,9 @@ export function createToolExecutor(rawBrowser, {
       const output = [quoteNotebookHeader(out.output ?? ''), notes].filter(Boolean).join('\n\n');
       return { ...out, output, ...(call.pageChanged ? { pageChanged: true } : {}) };
     } catch (err) {
+      // The loss of the working tab is not a tool error the model may read and
+      // work around: it ends the task.
+      if (isWorkingTabClosed(err)) throw err;
       return { output: `Error: ${err.message}`, isError: true };
     }
   };

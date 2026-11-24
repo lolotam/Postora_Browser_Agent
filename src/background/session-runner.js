@@ -813,7 +813,10 @@ export class SessionRunner {
     } catch (err) {
       const stopped = abort.signal.aborted || err.name === 'AbortError';
       if (!stopped) this.continuation = null;
-      this.emit(stopped ? { type: 'stopped' } : { type: 'error', message: err.message });
+      // The code is the stable name of the failure: the panel translates it, and
+      // the message is what a reader without the code sees.
+      const code = typeof err?.code === 'string' ? err.code : '';
+      this.emit(stopped ? { type: 'stopped' } : { type: 'error', message: err.message, code });
       if (!stopped) this.transition('failed'); // stopped by the user: they know
     } finally {
       clearInterval(keepAlive);

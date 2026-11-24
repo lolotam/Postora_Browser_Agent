@@ -5,6 +5,7 @@
 import { AgentOverlay } from './overlay.js';
 import { snapshotPage, elementAction, suggestionAction, pageText, pageReadyState, devicePixelRatioOf, domSettled, documentIdOf, permissionTarget, pointSnap, focusInFrame } from './page-scripts.js';
 import { secretRule } from '../voice/voice-safety.js';
+import { WorkingTabClosedError } from './working-tab.js';
 
 const CDP_VERSION = '1.3';
 const RESTRICTED = /^(chrome|chrome-extension|edge|about|devtools|view-source):|^https:\/\/chrome(webstore)?\.google\.com\/webstore/;
@@ -67,11 +68,21 @@ export class BrowserController {
     this.disposable = new Set();
     this.justClosed = null;
     this.attached = new Set();
+    // True once a task has claimed the tab it works on. From then on a missing
+    // tab is the loss of that tab, not the start of a new one.
+    this.started = false;
+    // True once the tab the task works on is gone. The task ends then: it does
+    // not move on to another tab, which the user never chose for it.
+    this.lost = false;
     this.overlay = new AgentOverlay(this);
     chrome.debugger.onDetach.addListener(({ tabId }) => this.attached.delete(tabId));
     chrome.tabs.onRemoved.addListener((tabId) => {
       this.attached.delete(tabId);
-      if (tabId === this.tabId) this.tabId = null;
+      if (tabId === this.tabId) {
+        this.tabId = null;
+        // The tab the task works on was closed: the task ends here.
+        if (this.started) this.lost = true;
+      }
     });
   }
 
@@ -81,12 +92,22 @@ export class BrowserController {
         return await chrome.tabs.get(this.tabId);
       } catch {
         this.tabId = null;
+        // The tab is gone. A task that had one cannot go on without it.
+        if (this.started) this.lost = true;
       }
     }
     // A borrowed tab is never replaced by another one: the command that
     // borrowed it acts on no tab at all when that tab is gone.
     if (this.borrowed) throw new Error('The tab this command acts on is gone.');
+    // The task has started: its tab is gone, and no other tab takes its place.
+    // The user chose that tab for this task, and it is not there any more.
+    if (this.started) throw new WorkingTabClosedError(this.homeTabId);
     return this.startOn();
+  }
+
+  /** Whether the tab the task works on is gone: the task cannot go on. */
+  workingTabLost() {
+    return Boolean(this.lost);
   }
 
   /**
@@ -108,12 +129,18 @@ export class BrowserController {
    * for the permission must not become the target.
    */
   async startOn(tabId = null) {
+    // A new task starts fresh: the loss of the previous task's tab does not
+    // follow this one.
+    this.lost = false;
     const tab = tabId == null
       ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
       : await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error('No active tab found.');
     const claimed = await this.useTab(tab.id);
     this.homeTabId = claimed.id;
+    // The task has a tab of its own from now on: when that tab is closed, the
+    // task ends instead of continuing somewhere else.
+    this.started = true;
     return claimed;
   }
 
@@ -123,6 +150,9 @@ export class BrowserController {
    * before the tab that is left behind is closed.
    */
   async useTab(tabId, { guard = null } = {}) {
+    // The tab the task works on is gone: the task ends, it does not move on to
+    // a tab nobody chose for it.
+    if (this.lost) throw new WorkingTabClosedError(this.homeTabId);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     // The tab this controller had before is remembered before the new one is
     // claimed: claiming publishes the new tab.
@@ -201,7 +231,11 @@ export class BrowserController {
     }
     this.disposable.delete(tabId);
     if (this.homeTabId === tabId) this.homeTabId = null;
-    if (this.tabId === tabId) this.tabId = null;
+    if (this.tabId === tabId) {
+      this.tabId = null;
+      // The tab the task works on was closed: the task ends here.
+      if (this.started) this.lost = true;
+    }
   }
 
   ownsTab(tab) {

@@ -6,6 +6,7 @@
 import { escalationMessage } from '../fast/fast-layer.js';
 import { kindOf } from './tool-kinds.js';
 import { normalizeUsage } from '../lib/usage.js';
+import { isWorkingTabClosed } from '../browser/working-tab.js';
 
 const SKIPPED_PAGE_CHANGED = 'Not executed: the page changed after an earlier action in this turn. Decide again from the new page state.';
 const SKIPPED_AFTER_ERROR = 'Not executed: an earlier action in this turn failed. Decide again.';
@@ -128,7 +129,15 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
         const last = boundary || !pending.some((c) => ['observe', 'boundary'].includes(kindOf(c.name)));
         emit({ type: 'tool-start', step, callId: call.id, name: call.name, args: call.args });
         const started = Date.now();
-        const result = await execute(call.name, call.args, { observe: last });
+        let result;
+        try {
+          result = await execute(call.name, call.args, { observe: last });
+        } catch (err) {
+          // The task cannot go on (the tab it works on is gone). The call still
+          // gets a result, so the conversation stays valid for the next task.
+          if (isWorkingTabClosed(err)) session.addToolResult(call.id, `Error: ${err.message}`);
+          throw err;
+        }
         emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: !result.isError, summary: firstLine(result.output), ms: Date.now() - started });
         session.addToolResult(call.id, result.output, result.images ?? []);
         fast?.recordLlmAction(call.name, call.args);
