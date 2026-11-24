@@ -1668,6 +1668,34 @@ test('retrying a pending remember-off opt-out does not call downgradeAll on a ne
   assert.equal(storage.data.accessPreference.mode, ASK);
 });
 
+test('upgrading a restored legacy marker during a failed elevation does not invalidate its startup retry timer', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 4 }) },
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: 4, at: NOW - 15 } },
+  });
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal(store.snapshot().unpersisted, true);
+
+  // An elevation attempt upgrades the legacy marker in sessionStorage, then fails on local storage.set.
+  storage.failSet = true;
+  const failedRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(failedRaise.ok, false);
+  assert.equal(failedRaise.reason, 'storage-failed');
+  assert.equal(typeof sessionStorage.data.accessPreferenceDowngrade?.id, 'string', 'legacy marker was upgraded with an id');
+
+  // The startup retry timer still fires and removes the revoked Full-access record.
+  storage.failSet = false;
+  await scheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false, 'startup retry timer still executed after marker upgrade');
+  assert.equal(store.snapshot().unpersisted, false);
+});
+
 test('a matching wildcard recovery includes the verified local record revision in the allocation floor', async () => {
   const scheduler = makeScheduler();
   const { storage, sessionStorage } = makeStorage({

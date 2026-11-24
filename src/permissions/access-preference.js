@@ -253,7 +253,7 @@ export function createAccessPreferenceStore({
         const { fullAlreadyGone } = classification;
         state.profileRevision += 1;
         pending = {
-          id: marker.id,
+          id: marker.id ?? makeMarkerId(marker.at ?? now(), state.profileRevision),
           kind: marker.kind,
           forRevision: state.profileRevision,
           staleRevision: fullAlreadyGone ? null : (record?.revision ?? marker.staleRevision),
@@ -262,7 +262,7 @@ export function createAccessPreferenceStore({
           maxRevision: marker.maxRevision ?? state.profileRevision,
           at: marker.at,
           fullCleared: fullAlreadyGone,
-          markerWritten: true,
+          markerWritten: Boolean(marker.id),
           needsVerification: unreadable,
         };
         if (marker.kind === 'remember-off') state.remember = false;
