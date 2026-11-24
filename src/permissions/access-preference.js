@@ -58,7 +58,16 @@ function readableMarker(raw) {
   const maxRevision = Number.isInteger(raw.maxRevision) ? raw.maxRevision : null;
   const at = typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : null;
   const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
-  return { kind: raw.kind, staleRevision: stale, candidateRevision: candidate, optOutOnly: raw.optOutOnly === true, maxRevision, at, id };
+  return {
+    kind: raw.kind,
+    staleRevision: stale,
+    candidateRevision: candidate,
+    candidateOnly: raw.candidateOnly === true,
+    optOutOnly: raw.optOutOnly === true,
+    maxRevision,
+    at,
+    id,
+  };
 }
 
 /**
@@ -67,7 +76,7 @@ function readableMarker(raw) {
  */
 function classifyMarker(marker, record) {
   if (!record) {
-    if (marker.kind === 'remember-off') {
+    if (marker.kind === 'remember-off' && !marker.candidateOnly) {
       return { matches: true, fullAlreadyGone: true };
     }
     return { matches: false, fullAlreadyGone: true };
@@ -80,6 +89,9 @@ function classifyMarker(marker, record) {
       matches: true,
       fullAlreadyGone: record.mode !== FULL_ACCESS,
     };
+  }
+  if (marker.candidateOnly) {
+    return { matches: false, fullAlreadyGone: record.mode !== FULL_ACCESS };
   }
   if (marker.staleRevision !== null) {
     return {
@@ -243,6 +255,7 @@ export function createAccessPreferenceStore({
           forRevision: state.profileRevision,
           staleRevision: fullAlreadyGone ? null : (record?.revision ?? marker.staleRevision),
           candidateRevision: fullAlreadyGone ? null : marker.candidateRevision,
+          candidateOnly: marker.candidateOnly === true,
           maxRevision: marker.maxRevision ?? state.profileRevision,
           at: marker.at,
           fullCleared: fullAlreadyGone,
@@ -320,6 +333,45 @@ export function createAccessPreferenceStore({
    * persisting a new choice that supersedes it.
    */
   async function bindToSupersedingMarker() {
+    if (pending?.needsVerification) {
+      let current = null;
+      try {
+        const got = await storage.get(ACCESS_PREFERENCE_KEY);
+        current = readableRecord(got?.[ACCESS_PREFERENCE_KEY]);
+        storageUnknown = false;
+      } catch {
+        return { ok: false };
+      }
+      const { matches: stillMatches, fullAlreadyGone } = classifyMarker(pending, current);
+      state.stored = current;
+      if (!stillMatches) {
+        if (current) {
+          state.remember = current.remember;
+          state.mode = current.mode;
+          markerRevisionFloor = Math.max(markerRevisionFloor, current.revision);
+        }
+        restoreFailed = !protectedOk && Boolean(current?.remember) && current?.mode === FULL_ACCESS;
+        pending = null;
+        unpersisted = false;
+        optOutUnpersisted = false;
+        await forgetMarker();
+      } else {
+        restoreFailed = false;
+        pending.needsVerification = false;
+        pending.fullCleared = fullAlreadyGone;
+        unpersisted = !fullAlreadyGone;
+        optOutUnpersisted = fullAlreadyGone && pending.kind === 'remember-off';
+        if (fullAlreadyGone) {
+          pending.staleRevision = current ? current.revision : null;
+          pending.candidateRevision = null;
+          pending.candidateOnly = false;
+        } else if (current) {
+          pending.staleRevision = current.revision;
+          pending.candidateRevision = null;
+          pending.candidateOnly = false;
+        }
+      }
+    }
     let minRevision = Math.max(state.profileRevision, markerRevisionFloor);
     if (markerUnknown) {
       if (!sessionStorage?.get) return { ok: false };
@@ -691,6 +743,7 @@ export function createAccessPreferenceStore({
         kind: priorPending?.kind ?? 'remove',
         staleRevision: priorPending ? priorPending.staleRevision : null,
         candidateRevision: revision,
+        ...(priorPending ? {} : { candidateOnly: true }),
         maxRevision: Math.max(revision, priorPending?.maxRevision ?? 0),
         ...(priorPending?.fullCleared ? { optOutOnly: true } : {}),
         at: now(),
@@ -713,6 +766,10 @@ export function createAccessPreferenceStore({
             id: priorPending.id,
             kind: priorPending.kind,
             staleRevision: priorPending.staleRevision,
+            ...(priorPending.candidateRevision !== null && priorPending.candidateRevision !== undefined
+              ? { candidateRevision: priorPending.candidateRevision }
+              : {}),
+            ...(priorPending.candidateOnly ? { candidateOnly: true } : {}),
             maxRevision: priorPending.maxRevision ?? priorPending.forRevision,
             ...(priorPending.fullCleared ? { optOutOnly: true } : {}),
             at: priorPending.at ?? now(),
@@ -748,7 +805,6 @@ export function createAccessPreferenceStore({
       notify();
       return refuse(applied?.reason ?? 'refused');
     }
-    notify();
     let guardCleared = await forgetMarker();
     if (!guardCleared && wrotePreWriteGuard) {
       guardCleared = await writeMarker({
@@ -760,8 +816,11 @@ export function createAccessPreferenceStore({
       });
     }
     if (!guardCleared && wrotePreWriteGuard) {
+      state.mode = ASK_FIRST;
+      notify();
       return { ok: true, changed: Boolean(applied.changed), persisted: false, warning: 'not-remembered', preference: snapshot() };
     }
+    notify();
     return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
   }
 

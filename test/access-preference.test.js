@@ -1325,6 +1325,81 @@ test('a successful live elevation reports persisted: false when neither guard re
   assert.equal(raised.ok, true);
   assert.equal(raised.persisted, false);
   assert.equal(raised.warning, 'not-remembered');
+  assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
+  assert.equal(store.snapshot().mode, ASK);
+});
+
+test('an elevation during an unverified candidate recovery refuses when local storage is unreadable and preserves candidateRevision', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: {
+      accessPreference: record({
+        remember: true,
+        mode: FULL,
+        revision: 5,
+        supersedesMarkerId: 'dg-5-refused',
+      }),
+    },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-5-refused',
+        kind: 'remove',
+        staleRevision: null,
+        candidateRevision: 5,
+        candidateOnly: true,
+        maxRevision: 5,
+        at: NOW - 20,
+      },
+    },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // While local storage remains unreadable, a new elevation cannot verify the pending candidate and is refused.
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'storage-failed');
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.candidateRevision, 5, 'unverified candidateRevision was preserved');
+
+  // Once local storage recovers on restart, the refused revision 5 grant is still recognized as revoked.
+  storage.failGet = false;
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW + 50,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK, 'refused revision 5 grant is revoked on restart');
+
+  await restartedScheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false);
+});
+
+test('a candidate-only guard does not revoke an older valid saved grant with a different revision', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 3 }) },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-6-candidate-only',
+        kind: 'remove',
+        staleRevision: null,
+        candidateRevision: 6,
+        candidateOnly: true,
+        maxRevision: 6,
+        at: NOW - 10,
+      },
+    },
+  });
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), FULL, 'unrelated valid grant (revision 3) was not revoked by candidateOnly guard for revision 6');
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
 });
 
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {
