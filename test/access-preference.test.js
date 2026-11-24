@@ -1333,6 +1333,14 @@ test('a successful live elevation reports persisted: false and removes the local
   assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
   assert.equal(store.snapshot().mode, ASK);
 
+  // A panel that saw the candidate profileRevision can still lower to Ask first without being rejected as stale.
+  const lowered = await store.setMode(
+    { mode: ASK, expectedProfileRevision: raised.preference.profileRevision },
+    { ...makeHooks({ full: true }), downgradeAll: () => { downgraded += 1; } },
+  );
+  assert.equal(lowered.ok, true);
+  assert.equal(downgraded, 1);
+
   // When storage.remove also fails during that fallback removal, warning propagates 'not-cleared'.
   const { store: store2, storage: storage2, sessionStorage: sessionStorage2 } = await started({});
   const raisedUnremovable = await store2.setMode(

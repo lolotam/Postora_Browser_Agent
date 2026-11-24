@@ -973,7 +973,6 @@ export function createAccessPreferenceStore({
     }
     if (!guardCleared && wrotePreWriteGuard) {
       state.mode = ASK_FIRST;
-      state.profileRevision += 1;
       const cleared = await clearStored('remove');
       const warning = cleared.persisted ? 'not-remembered' : (cleared.warning ?? 'not-cleared');
       notify();

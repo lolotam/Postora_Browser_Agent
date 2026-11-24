@@ -358,6 +358,7 @@ export class SessionRunner {
   async changeProfileMode(msg, mode) {
     const before = this.access.mode;
     let result;
+    this.suppressAccessBroadcast = mode === FULL_ACCESS;
     try {
       result = await this.onAccessModeChange({
         runner: this,
@@ -368,10 +369,12 @@ export class SessionRunner {
       });
     } catch {
       result = { ok: false, changed: false, reason: 'storage-failed' };
+    } finally {
+      this.suppressAccessBroadcast = false;
     }
     if (this.disposed) return result;
-    // Always refresh the panel's access-state after changeAccessMode settles
-    // so it reflects the final committed profile accessPreference snapshot.
+    // The mode in force comes first: the panel clears its notice when it is
+    // told the mode, so a notice that came before it would never be read.
     this.broadcastAccess();
     if (mode === FULL_ACCESS && this.access.mode !== before) this.emit({ type: 'access-mode-note', mode: this.access.mode });
     if (!result?.ok) this.broadcast({ type: 'access-preference-notice', reason: result?.reason ?? 'refused' });
@@ -532,7 +535,7 @@ export class SessionRunner {
     // setMode already withdrew old approvals and permits. An explicit upgrade
     // must not abort the task whose pending action the user wants to release.
     if (this.access.mode !== FULL_ACCESS) this.stop();
-    this.broadcastAccess();
+    if (!this.suppressAccessBroadcast) this.broadcastAccess();
   }
 
   /** The mode that is really in force, to every panel of this session. */
