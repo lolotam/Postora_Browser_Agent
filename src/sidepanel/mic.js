@@ -3,6 +3,7 @@
 // can show, and the words go back to the panel as a task.
 
 import { heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey } from './voice.js';
+import { isSidePanelSender } from '../permissions/panel-sender.js';
 import { setLanguage, t } from './i18n.js';
 import { loadSettings } from '../lib/settings.js';
 import { createConfiguredRecognition } from '../voice/recognition-factory.js';
@@ -222,7 +223,9 @@ button.addEventListener('click', () => {
   start();
 });
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, sender) => {
+  // Only our side panel controls this window, never a page's content script.
+  if (!isSidePanelSender(sender)) return;
   if (message?.source !== MIC_PANEL) return;
   // Only the panel that opened this window may stop it.
   if (Number(message.epoch) !== epoch) return;

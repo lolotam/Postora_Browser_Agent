@@ -1,6 +1,7 @@
 import { renderMarkdown, reportFileName } from './markdown.js';
 import { contentDirection } from './content-direction.js';
 import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
+import { isMicWindowSender, isWorkerSender } from '../permissions/panel-sender.js';
 import { currentLanguage, resolveLanguage, setLanguage, t, translateFor } from './i18n.js';
 import { createAccessUi } from './access.js';
 import { createProjectUi } from './project.js';
@@ -1507,7 +1508,10 @@ function closeMicWindow() {
 }
 
 /** What the microphone window heard. Only the window of this epoch counts. */
-function onMicMessage(message) {
+function onMicMessage(message, sender) {
+  // Only our own microphone window speaks for the user: a content script can
+  // send runtime messages too, and must not inject what was "heard".
+  if (!isMicWindowSender(sender)) return;
   if (message?.source !== MIC_WINDOW || Number(message.epoch) !== micEpoch) return;
   if (message.kind === 'partial') {
     voiceController?.handlePartial(message.text || '');
@@ -2070,8 +2074,10 @@ chrome.runtime.onMessage.addListener(onMicMessage);
 // Auth events arrive via runtime messages too, so a panel without a port
 // (e.g. after a worker restart) still hears the failure or device code.
 const AUTH_RUNTIME_EVENTS = new Set(['auth-success', 'auth-event', 'auth-prompt', 'auth-error']);
-chrome.runtime.onMessage.addListener((message) => {
-  if (AUTH_RUNTIME_EVENTS.has(message?.type)) onEvent(message);
+chrome.runtime.onMessage.addListener((message, sender) => {
+  // Only the worker reports sign-in events: a page's content script must not
+  // show a sign-in prompt or code of its own in the panel.
+  if (AUTH_RUNTIME_EVENTS.has(message?.type) && isWorkerSender(sender)) onEvent(message);
 });
 chrome.windows.onRemoved.addListener((id) => {
   if (id !== micWindowId) return;
