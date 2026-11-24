@@ -37,7 +37,7 @@ function makeMarkerId(at, revision) {
 }
 
 /** The record as it is stored, or null when it is not a record this version wrote. */
-function readableRecord(raw) {
+  function readableRecord(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   if (raw.version !== ACCESS_PREFERENCE_VERSION) return null;
   if (typeof raw.remember !== 'boolean') return null;
@@ -671,12 +671,30 @@ export function createAccessPreferenceStore({
     const bound = await bindToSupersedingMarker();
     if (!bound.ok) return refuse('storage-failed');
     const revision = Math.max(state.profileRevision, bound.minRevision, pending?.maxRevision ?? 0) + 1;
-    const { supersedesMarkerId } = bound;
+    let { supersedesMarkerId } = bound;
+    let wrotePreWriteGuard = false;
+    if (sessionStorage?.set) {
+      const guardId = supersedesMarkerId ?? makeMarkerId(now(), revision);
+      const guarded = await writeMarker({
+        id: guardId,
+        kind: pending?.kind ?? 'remove',
+        staleRevision: revision,
+        maxRevision: revision,
+        at: now(),
+      });
+      if (!guarded && pending) return refuse('storage-failed');
+      if (guarded) {
+        wrotePreWriteGuard = true;
+        lastMarkerId = guardId;
+        supersedesMarkerId = guardId;
+      }
+    }
     const next = recordFor({ remember: true, mode: FULL_ACCESS, revision, supersedesMarkerId });
     try {
       // Written first: a Full access that was not stored is not remembered.
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
     } catch {
+      if (wrotePreWriteGuard && !pending) await forgetMarker();
       return refuse('storage-failed');
     }
     state.mode = FULL_ACCESS;
@@ -705,7 +723,16 @@ export function createAccessPreferenceStore({
       return refuse(applied?.reason ?? 'refused');
     }
     notify();
-    await forgetMarker();
+    const removedGuard = await forgetMarker();
+    if (!removedGuard && wrotePreWriteGuard) {
+      await writeMarker({
+        id: supersedesMarkerId,
+        kind: 'remove',
+        staleRevision: null,
+        maxRevision: revision - 1,
+        at: now(),
+      });
+    }
     return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
   }
 

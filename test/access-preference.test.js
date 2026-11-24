@@ -1225,12 +1225,49 @@ test('a rollback after applyFull refusal clears any superseded pending downgrade
   assert.equal('accessPreference' in storage.data, false, 'rollback removed the grant');
   assert.equal(store.snapshot().unpersisted, false);
 
-  // A subsequent Ask-first request sees no obsolete pending downgrade even if storage.remove fails again.
+  // Next Full-access request sees no obsolete pending downgrade even if storage.remove fails again.
   storage.failRemove = true;
   const lowered = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks());
   assert.equal(lowered.ok, true);
   assert.equal(lowered.persisted, true);
   assert.equal(store.snapshot().unpersisted, false);
+});
+
+test('a refused Full-access grant does not survive a worker restart even when rollback cannot write or remove', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage, sessionStorage } = await started({}, { scheduler });
+
+  // Rollback fails both sessionStorage.set and storage.remove after applyFull refuses.
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    {
+      ...makeHooks(),
+      applyFull: () => {
+        sessionStorage.failSet = true;
+        storage.failRemove = true;
+        return { ok: false, reason: 'disposed' };
+      },
+    },
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'disposed');
+  assert.equal(storage.data.accessPreference?.mode, FULL, 'rollback removal failed');
+
+  // Worker restarts while the unapplied record is still in local storage: pre-write guard marker revokes it!
+  sessionStorage.failSet = false;
+  storage.failRemove = false;
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW + 50,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK, 'refused grant is not restored on restart');
+
+  await restartedScheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false, 'recovery removed the refused grant');
 });
 
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {
