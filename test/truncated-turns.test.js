@@ -75,6 +75,28 @@ test('a text-only request keeps a long answer that ran out of output room', asyn
   }
 });
 
+test('a text-only request neither returns nor keeps a call the endpoint sent anyway', async () => {
+  const original = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return sse({ choices: [{ delta: { content: 'Report', tool_calls: [{ index: 0, id: 'c1', function: { name: 'navigate', arguments: '{"url":"https://exa' } }] }, finish_reason: 'length' }] });
+  };
+  try {
+    const s = session();
+    s.addUserMessage('summarize');
+    const turn = await s.next({ toolChoice: 'none' });
+    assert.equal(turn.text, 'Report');
+    assert.deepEqual(turn.toolCalls, []);
+    await s.next({ toolChoice: 'none' });
+    const assistant = bodies[1].messages.filter((m) => m.role === 'assistant');
+    assert.equal(assistant.length, 1);
+    assert.equal(assistant[0].tool_calls, undefined);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('a turn that is not cut off keeps its calls and its history', async () => {
   const original = globalThis.fetch;
   const bodies = [];

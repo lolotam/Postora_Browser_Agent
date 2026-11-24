@@ -188,6 +188,13 @@ export class CompatibleSession {
       if (answer) onEvent({ type: 'text-reset' }); // the cut-off text is withdrawn before the retry
       return { truncated: true, text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
     }
+    // A text-only request asked for no call. An endpoint that ignores
+    // `tool_choice: 'none'` and sends one anyway is not obeyed: the call is
+    // neither run nor kept, so the history never holds a call without a result.
+    if (toolChoice === 'none') {
+      result.toolCalls = [];
+      result.rawToolCalls = [];
+    }
     if (!answer.trim() && !result.toolCalls.length) {
       throw new Error(`Model request failed: the model returned no text or tool calls (${result.finishReason ?? 'empty completion'}). Choose a chat model with tool support.`);
     }
