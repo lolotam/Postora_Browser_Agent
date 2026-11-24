@@ -516,6 +516,10 @@ export function createAccessPreferenceStore({
         id: upgradedId,
         kind: pending.kind,
         staleRevision: pending.staleRevision,
+        ...(pending.candidateRevision !== null && pending.candidateRevision !== undefined
+          ? { candidateRevision: pending.candidateRevision }
+          : {}),
+        ...(pending.candidateOnly ? { candidateOnly: true } : {}),
         maxRevision: pending.maxRevision ?? pending.forRevision,
         ...(mayHaveFull ? {} : { optOutOnly: true }),
         at: pending.at ?? now(),
@@ -712,6 +716,10 @@ export function createAccessPreferenceStore({
             id: pending.id,
             kind: pending.kind,
             staleRevision: pending.staleRevision,
+            ...(pending.candidateRevision !== null && pending.candidateRevision !== undefined
+              ? { candidateRevision: pending.candidateRevision }
+              : {}),
+            ...(pending.candidateOnly ? { candidateOnly: true } : {}),
             maxRevision: pending.maxRevision,
             ...(pending.fullCleared ? { optOutOnly: true } : {}),
             at: pending.at ?? now(),
@@ -754,8 +762,12 @@ export function createAccessPreferenceStore({
       optOutUnpersisted = nextOptOutUnpersisted;
       if (fullAlreadyGone) {
         pending.staleRevision = current ? current.revision : null;
+        pending.candidateRevision = null;
+        pending.candidateOnly = false;
       } else if (current) {
         pending.staleRevision = current.revision;
+        pending.candidateRevision = null;
+        pending.candidateOnly = false;
       }
       if (warningChanged) notify();
     }
@@ -767,6 +779,10 @@ export function createAccessPreferenceStore({
         id: pending.id,
         kind,
         staleRevision: pending.staleRevision,
+        ...(pending.candidateRevision !== null && pending.candidateRevision !== undefined
+          ? { candidateRevision: pending.candidateRevision }
+          : {}),
+        ...(pending.candidateOnly ? { candidateOnly: true } : {}),
         maxRevision: pending.maxRevision ?? forRevision,
         ...(mayHaveFull ? {} : { optOutOnly: true }),
         at: pending.at ?? now(),

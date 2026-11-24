@@ -1696,6 +1696,39 @@ test('upgrading a restored legacy marker during a failed elevation does not inva
   assert.equal(store.snapshot().unpersisted, false);
 });
 
+test('rewriting an ID-less candidate-only marker during an unreadable retry preserves candidateRevision and candidateOnly across restart', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 3 }) },
+    session: {
+      accessPreferenceDowngrade: {
+        kind: 'remove',
+        staleRevision: null,
+        candidateRevision: 6,
+        candidateOnly: true,
+        maxRevision: 6,
+        at: NOW - 10,
+      },
+    },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // First retry runs while local storage is still unreadable and upgrades the ID-less marker in sessionStorage.
+  await scheduler.runNext();
+  assert.equal(typeof sessionStorage.data.accessPreferenceDowngrade?.id, 'string');
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.candidateRevision, 6);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.candidateOnly, true);
+
+  // Worker restarts once local storage is readable: the upgraded candidate-only marker does not revoke unrelated revision 3.
+  storage.failGet = false;
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL, 'unrelated saved grant (revision 3) was preserved on restart');
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
 test('a matching wildcard recovery includes the verified local record revision in the allocation floor', async () => {
   const scheduler = makeScheduler();
   const { storage, sessionStorage } = makeStorage({
