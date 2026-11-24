@@ -1309,14 +1309,12 @@ test('a pre-write guard preserves the pending revocation target when the subsequ
   assert.equal('accessPreference' in storage.data, false);
 });
 
-test('a live elevation that cannot clear or rewrite its pre-write guard downgrades live chats and refuses the unpersisted grant', async () => {
-  const { store, storage, sessionStorage } = await started({});
-  let downgraded = 0;
-  const refused = await store.setMode(
+test('a successful live elevation reports persisted: false when neither guard removal nor fallback rewrite succeeds', async () => {
+  const { store, sessionStorage } = await started({});
+  const raised = await store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     {
       ...makeHooks(),
-      downgradeAll: () => { downgraded += 1; },
       applyFull: () => {
         sessionStorage.failRemove = true;
         sessionStorage.failSet = true;
@@ -1324,11 +1322,9 @@ test('a live elevation that cannot clear or rewrite its pre-write guard downgrad
       },
     },
   );
-  assert.equal(refused.ok, false);
-  assert.equal(refused.reason, 'storage-failed');
-  assert.equal(refused.persisted, false);
-  assert.equal(downgraded, 1, 'live chats were downgraded when guard cleanup failed');
-  assert.equal('accessPreference' in storage.data, false, 'unpersisted record was removed from local storage');
+  assert.equal(raised.ok, true);
+  assert.equal(raised.persisted, false);
+  assert.equal(raised.warning, 'not-remembered');
   assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
   assert.equal(store.snapshot().mode, ASK);
 });
@@ -1977,4 +1973,61 @@ test('a remembered elevation refuses before storage.set when the pre-write sessi
   assert.equal(refused.reason, 'storage-failed');
   assert.equal('accessPreference' in storage.data, false, 'storage.set was not called when pre-write guard failed');
 });
+
+test('markerUnknown with an already-pending unjournaled downgrade writes the pending downgrade marker rather than upgrading an older unrelated marker', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6 }) },
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: 2, at: NOW - 50 } },
+  });
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // Explicit downgrade fails both sessionStorage.set and storage.remove, creating a pending downgrade for revision 6 with markerWritten: false.
+  sessionStorage.failSet = true;
+  storage.failRemove = true;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+
+  // Now sessionStorage.get and set work once (for bindToSupersedingMarker), while storage.set fails for the elevation.
+  sessionStorage.failGet = false;
+  sessionStorage.failSet = false;
+  storage.failSet = true;
+  const failedRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(failedRaise.ok, false);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 6, 'pending downgrade target revision 6 was written, not older revision 2');
+});
+
+test('a second chat elevation reuses an already-confirmed Full-access grant after verifying markerUnknown without writing a replacement record', async () => {
+  const { store, storage, sessionStorage } = await started({});
+  // First elevation succeeds via fallback marker rewrite when sessionStorage.remove fails.
+  const firstRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    {
+      ...makeHooks(),
+      applyFull: () => {
+        sessionStorage.failRemove = true;
+        return { ok: true, changed: true };
+      },
+    },
+  );
+  assert.equal(firstRaise.ok, true);
+  assert.equal(firstRaise.persisted, true);
+  const confirmedRevision = storage.data.accessPreference.revision;
+
+  // Second chat elevates while sessionStorage.set fails; after verifying the leftover marker does not revoke the confirmed grant, it reuses the grant!
+  sessionStorage.failSet = true;
+  const secondRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(secondRaise.ok, true);
+  assert.equal(secondRaise.persisted, true);
+  assert.equal(storage.data.accessPreference.revision, confirmedRevision, 'reused existing confirmed grant without writing a replacement');
+  assert.equal(store.effectiveDefaultMode(), FULL);
+});
+
 

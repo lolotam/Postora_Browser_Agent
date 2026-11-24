@@ -473,9 +473,9 @@ export function createAccessPreferenceStore({
           notify();
           return { ok: false, reason: 'stale-profile-revision' };
         }
-        if (currentMarker) {
+        if (currentMarker && !pending) {
           if (!currentMarker.id) {
-            const upgradedId = pending?.id ?? makeMarkerId(currentMarker.at ?? now(), minRevision);
+            const upgradedId = makeMarkerId(currentMarker.at ?? now(), minRevision);
             const upgraded = await writeMarker({
               ...currentMarker,
               id: upgradedId,
@@ -487,10 +487,6 @@ export function createAccessPreferenceStore({
             if (recoveredRevocation) {
               recoveredRevocation.id = upgradedId;
               recoveredRevocation.markerWritten = true;
-            }
-            if (pending) {
-              pending.id = upgradedId;
-              pending.markerWritten = true;
             }
           }
           lastMarkerId = currentMarker.id;
@@ -882,6 +878,18 @@ export function createAccessPreferenceStore({
     }
     const bound = await bindToSupersedingMarker();
     if (!bound.ok) return refuse(bound.reason ?? 'storage-failed');
+    if (
+      state.mode === FULL_ACCESS
+      && state.stored?.remember === true
+      && state.stored?.mode === FULL_ACCESS
+      && !pending
+      && !storageUnknown
+      && !markerUnknown
+    ) {
+      const applied = hooks?.applyFull?.();
+      if (!applied?.ok) return refuse(applied?.reason ?? 'refused');
+      return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
+    }
     const revision = Math.max(state.profileRevision, bound.minRevision, pending?.maxRevision ?? 0) + 1;
     let { supersedesMarkerId } = bound;
     let wrotePreWriteGuard = false;
@@ -965,12 +973,10 @@ export function createAccessPreferenceStore({
       });
     }
     if (!guardCleared && wrotePreWriteGuard) {
-      hooks?.downgradeAll?.();
       state.mode = ASK_FIRST;
       state.profileRevision += 1;
-      await clearStored('remove');
       notify();
-      return refuse('storage-failed');
+      return { ok: true, changed: Boolean(applied.changed), persisted: false, warning: 'not-remembered', preference: snapshot() };
     }
     notify();
     return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
