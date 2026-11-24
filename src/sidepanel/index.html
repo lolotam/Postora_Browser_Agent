@@ -787,6 +787,11 @@
           <input id="autoCompactTokens" type="number" min="8000" max="1000000" step="1000" dir="ltr" />
         </label>
         <p class="muted" data-i18n="settings.autoCompactHint"></p>
+        <!-- A choice of the profile, not a setting: it is kept by the worker, never
+             read by the settings form, never saved with it, never in a backup. -->
+        <label class="check"><input type="checkbox" id="rememberAccessMode" checked /> <span data-i18n="settings.rememberAccess"></span></label>
+        <p class="muted" data-i18n="settings.rememberAccessHint"></p>
+        <p class="access-error" id="rememberAccessError" role="status" hidden></p>
       </div>
     </div>
 
@@ -892,6 +897,7 @@
   <dialog id="accessWarning" class="access-warning" aria-labelledby="accessWarningTitle" aria-describedby="accessWarningDesc">
     <h2 id="accessWarningTitle" data-i18n="access.warning.title"></h2>
     <p id="accessWarningDesc" class="access-warning-desc" data-i18n="access.warning.desc"></p>
+    <p id="accessWarningScope" class="access-warning-desc" data-i18n="access.warning.scopeRemembered"></p>
     <ul class="access-warning-list">
       <li data-i18n="access.warning.forms"></li>
       <li data-i18n="access.warning.data"></li>
@@ -904,7 +910,7 @@
     </ul>
     <label class="check access-ack">
       <input type="checkbox" id="accessAcknowledge" />
-      <span data-i18n="access.warning.acknowledge"></span>
+      <span id="accessAcknowledgeText" data-i18n="access.warning.acknowledge"></span>
     </label>
     <div class="row end access-warning-actions">
       <button type="button" class="ghost" id="accessCancel" data-i18n="access.warning.cancel"></button>

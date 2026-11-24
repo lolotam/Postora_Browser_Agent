@@ -54,7 +54,7 @@ export function accessView(state, t) {
  *
  * Asking first is always allowed: it only takes authority away.
  */
-export function accessRequest(mode, { acknowledged = false, sessionId = null, expectedRevision = null } = {}) {
+export function accessRequest(mode, { acknowledged = false, sessionId = null, expectedRevision = null, expectedProfileRevision = null } = {}) {
   if (!MODES.includes(mode)) return null;
   const chat = typeof sessionId === 'string' && sessionId.trim() !== '' ? sessionId : null;
   const revision = typeof expectedRevision === 'number' && Number.isFinite(expectedRevision) && expectedRevision > 0
@@ -64,13 +64,47 @@ export function accessRequest(mode, { acknowledged = false, sessionId = null, ex
     if (acknowledged !== true) return null;
     if (!chat || !revision) return null;
   }
+  const profileRevision = Number.isInteger(expectedProfileRevision) && expectedProfileRevision > 0 ? expectedProfileRevision : null;
   return {
     type: ACCESS_CHANGE,
     mode,
     acknowledged: mode === FULL_ACCESS,
     sessionId: chat,
     expectedRevision: revision,
+    // The profile's own revision, when the worker told it: the worker refuses
+    // a request that was made against a profile that has moved on.
+    ...(profileRevision ? { expectedProfileRevision: profileRevision } : {}),
   };
+}
+
+/**
+ * The remembered choice of the profile, as the worker told it, or nothing at
+ * all when what arrived is not one. The panel never writes it.
+ */
+export function preferenceOf(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (!Number.isInteger(value.profileRevision) || value.profileRevision <= 0) return null;
+  if (typeof value.remember !== 'boolean') return null;
+  return {
+    remember: value.remember,
+    mode: MODES.includes(value.mode) ? value.mode : ASK_FIRST,
+    profileRevision: value.profileRevision,
+    restoreFailed: value.restoreFailed === true,
+    unpersisted: value.unpersisted === true,
+  };
+}
+
+/** The words for a reason the worker gave for a refusal or a warning, or '' when the panel has none. */
+export function preferenceNoticeKey(reason) {
+  switch (reason) {
+    case 'storage-failed': return 'access.notice.storageFailed';
+    case 'not-cleared': return 'access.notice.notCleared';
+    case 'not-remembered': return 'access.notice.notRemembered';
+    case 'protection-unavailable': return 'access.notice.protectionUnavailable';
+    case 'stale-profile-revision': return 'access.notice.stale';
+    case 'needs-acknowledgement': return 'access.notice.needsAcknowledgement';
+    default: return '';
+  }
 }
 
 /**
@@ -84,7 +118,7 @@ export function accessRequest(mode, { acknowledged = false, sessionId = null, ex
  * built, because the chat can change under it.
  */
 export function createAccessUi({ elements, t, request, getSessionId } = {}) {
-  const { select, state, risk, voice, warning, acknowledge, confirm, cancel } = elements ?? {};
+  const { select, state, risk, voice, warning, acknowledge, acknowledgeText, scope, remember, confirm, cancel } = elements ?? {};
   let translator = typeof t === 'function' ? t : (key) => key;
   const sender = typeof request === 'function' ? request : null;
   const sessionGetter = typeof getSessionId === 'function' ? getSessionId : null;
@@ -97,9 +131,14 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   let connected = true;
   let pending = null; // an elevation that is on its way to the worker
   let lastFailure = null;
+  // What the profile remembers, as the worker told it. It carries the revision
+  // a request is bound to, so it is dropped with the connection.
+  let preference = null;
 
   // The warning belongs to the chat and the revision it was opened for.
-  const warningState = { isOpen: false, sessionId: null, revision: 0, acknowledged: false };
+  // `purpose` is what the acknowledgment is for: Full access in this chat, or
+  // remembering Full access that is already on (the "remember" switch).
+  const warningState = { isOpen: false, sessionId: null, revision: 0, acknowledged: false, purpose: 'elevate', onConfirm: null };
 
   /** The worker's snapshot, or nothing at all when the state is not one. */
   function snapshotOf(value) {
@@ -159,6 +198,8 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   function dismissWarning({ focus = true } = {}) {
     warningState.isOpen = false;
     warningState.acknowledged = false;
+    warningState.purpose = 'elevate';
+    warningState.onConfirm = null;
     if (acknowledge) acknowledge.checked = false;
     if (confirm) confirm.disabled = true;
     restore();
@@ -166,15 +207,53 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     if (focus) select?.focus?.();
   }
 
+  /**
+   * What the warning says about its reach. With "remember" on, Full access
+   * also applies to new chats and survives a restart; with it off, it is for
+   * this chat only. Local commands ask in both cases.
+   */
+  function renderScope(remembered) {
+    if (scope) scope.textContent = translator(remembered ? 'access.warning.scopeRemembered' : 'access.warning.scopeChatOnly');
+    if (acknowledgeText) acknowledgeText.textContent = translator(remembered ? 'access.warning.acknowledgeRemembered' : 'access.warning.acknowledge');
+  }
+
+  /** Whether Full access reaches new chats now: "remember" is on, or unknown. */
+  function remembering() {
+    return preference?.remember !== false;
+  }
+
   /** The user picked Full access: the warning opens for this chat, right now. */
   function openWarning() {
     warningState.isOpen = true;
+    warningState.purpose = 'elevate';
+    warningState.onConfirm = null;
     warningState.sessionId = boundSession();
     warningState.revision = confirmedRevision;
     warningState.acknowledged = false;
     if (acknowledge) acknowledge.checked = false;
     if (confirm) confirm.disabled = true;
+    renderScope(remembering());
     warning?.showModal?.();
+  }
+
+  /**
+   * "Remember my choice" is turned on while Full access is on: the same
+   * warning opens, and only an explicit acknowledgment lets `onConfirm` run.
+   * Nothing is sent by the control itself.
+   */
+  function askRememberAcknowledgement(onConfirm) {
+    if (typeof onConfirm !== 'function' || !connected) return false;
+    warningState.isOpen = true;
+    warningState.purpose = 'remember';
+    warningState.onConfirm = onConfirm;
+    warningState.sessionId = boundSession();
+    warningState.revision = confirmedRevision;
+    warningState.acknowledged = false;
+    if (acknowledge) acknowledge.checked = false;
+    if (confirm) confirm.disabled = true;
+    renderScope(true);
+    warning?.showModal?.();
+    return true;
   }
 
   /** The send went nowhere: the control keeps the mode the worker confirmed. */
@@ -221,6 +300,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     const message = accessRequest(ASK_FIRST, {
       sessionId: boundSession(),
       expectedRevision: confirmedRevision > 0 ? confirmedRevision : null,
+      expectedProfileRevision: preference?.profileRevision ?? null,
     });
     if (message) sendMessage(message);
   }
@@ -235,6 +315,17 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     if (!connected) { dismissWarning(); return; }
     if (warningState.acknowledged !== true) { dismissWarning(); return; }
     if (acknowledge && acknowledge.checked !== true) { dismissWarning(); return; }
+    if (warningState.purpose === 'remember') {
+      // The acknowledgment was read for turning "remember" on, in this chat
+      // and under this policy: a chat or a policy that moved on is not it.
+      const onConfirm = warningState.onConfirm;
+      const chat = boundSession();
+      if (!onConfirm || !chat || chat !== warningState.sessionId || warningState.revision !== confirmedRevision) { dismissWarning(); return; }
+      warning?.close?.();
+      dismissWarning({ focus: false });
+      onConfirm();
+      return;
+    }
     const chat = boundSession();
     if (!chat || chat !== warningState.sessionId) { dismissWarning(); return; }
     if (confirmedSession !== null && confirmedSession !== warningState.sessionId) { dismissWarning(); return; }
@@ -243,6 +334,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
       acknowledged: true,
       sessionId: warningState.sessionId,
       expectedRevision: warningState.revision,
+      expectedProfileRevision: preference?.profileRevision ?? null,
     });
     if (!message) { dismissWarning(); return; }
     // The warning has done its work; the worker still has to confirm it.
@@ -265,6 +357,8 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   function apply(next) {
     const snapshot = snapshotOf(next);
     if (!snapshot) return view();
+    // The profile's remembered choice rides on the worker's state for this chat.
+    if (next.accessPreference !== undefined) applyPreference(next.accessPreference);
     const chat = currentSession();
     // No chat is selected: there is nothing this state could belong to.
     if (sessionGetter && !chat) return view();
@@ -294,6 +388,20 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     return view();
   }
 
+  /** The worker told what the profile remembers: a newer revision replaces an older one. */
+  function applyPreference(next) {
+    const known = preferenceOf(next);
+    if (!known) return preference;
+    if (preference && known.profileRevision < preference.profileRevision) return preference;
+    const rememberChanged = preference !== null && preference.remember !== known.remember;
+    preference = known;
+    // The switch shows what the worker confirmed, and nothing else.
+    if (remember) remember.checked = known.remember;
+    // The warning was read against the old setting of "remember".
+    if (rememberChanged && warningState.isOpen && warningState.purpose === 'elevate') renderScope(remembering());
+    return preference;
+  }
+
   /**
    * The connection is gone. Everything the panel thought it knew is dropped:
    * the control goes back to Ask first and waits for the worker to replay the
@@ -302,6 +410,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   function reset() {
     connected = false;
     pending = null;
+    preference = null;
     confirmedMode = ASK_FIRST;
     confirmedRevision = 0;
     dismissWarning({ focus: false });
@@ -323,6 +432,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   /** The panel changed language: the words change, the mode does not. */
   function updateLanguage(nextT) {
     if (typeof nextT === 'function') translator = nextT;
+    if (warningState.isOpen) renderScope(warningState.purpose === 'remember' ? true : remembering());
     render();
     return view();
   }
@@ -363,6 +473,8 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
 
   return {
     apply,
+    applyPreference,
+    askRememberAcknowledgement,
     restore,
     render,
     updateLanguage,
@@ -370,6 +482,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     reconnect,
     get confirmed() { return view(); },
     get pending() { return pending; },
+    get preference() { return preference; },
     get connected() { return connected; },
     get lastFailure() { return lastFailure; },
   };
