@@ -679,6 +679,7 @@ export function createAccessPreferenceStore({
     } catch {
       return refuse('storage-failed');
     }
+    await supersede();
     state.mode = FULL_ACCESS;
     state.profileRevision = revision;
     state.stored = {
@@ -690,7 +691,6 @@ export function createAccessPreferenceStore({
     };
     storageUnknown = false;
     restoreFailed = false;
-    await supersede();
     const applied = hooks?.applyFull?.();
     if (!applied?.ok) {
       // No chat took it: it must not stay remembered.

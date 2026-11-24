@@ -1125,19 +1125,39 @@ test('verification retry awaits marker cleanup so a subsequent grant still binds
     session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: null, at: NOW - 20 } },
   });
   storage.failGet = true;
-  sessionStorage.failRemove = true;
   const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
   await store.init();
 
-  // Retry sees empty local storage and attempts to remove the legacy wildcard marker, which fails.
-  storage.failGet = false;
-  await scheduler.runNext();
+  // Gate sessionStorage.remove with a deferred promise so the grant is submitted while cleanup is still blocked.
+  let rejectRemove;
+  const originalRemove = sessionStorage.remove;
+  sessionStorage.remove = (keys) => new Promise((_, reject) => {
+    rejectRemove = () => {
+      sessionStorage.log.push(['remove', [].concat(keys)]);
+      reject(new Error('remove failed'));
+    };
+  });
 
-  // Next Full-access grant must re-read, upgrade, and bind to the leftover legacy marker.
-  const raised = await store.setMode(
+  storage.failGet = false;
+  const retryPromise = scheduler.runNext();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Submit the Full-access grant while verification's sessionStorage.remove is still in flight.
+  const raisePromise = store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     makeHooks(),
   );
+  await Promise.resolve();
+  assert.equal('accessPreference' in storage.data, false, 'grant cannot proceed while marker cleanup is in flight');
+
+  // Now fail the deferred marker removal and restore normal remove behavior.
+  sessionStorage.remove = originalRemove;
+  sessionStorage.failRemove = true;
+  rejectRemove();
+  await retryPromise;
+
+  const raised = await raisePromise;
   assert.equal(raised.ok, true);
   const upgradedId = sessionStorage.data.accessPreferenceDowngrade?.id;
   assert.equal(typeof upgradedId, 'string');
@@ -1146,6 +1166,36 @@ test('verification retry awaits marker cleanup so a subsequent grant still binds
   const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
   await restarted.init();
   assert.equal(restarted.effectiveDefaultMode(), FULL);
+});
+
+test('effectiveDefaultMode stays Ask first while marker cleanup is in flight and applyFull has not yet succeeded', async () => {
+  const { storage, sessionStorage } = makeStorage({ initial: {} });
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+
+  let resolveRemove;
+  const removeCalled = new Promise((resolve) => {
+    const originalRemove = sessionStorage.remove;
+    sessionStorage.remove = (keys) => new Promise((res) => {
+      resolveRemove = () => {
+        sessionStorage.remove = originalRemove;
+        res(originalRemove(keys));
+      };
+      resolve();
+    });
+  });
+
+  const raisePromise = store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    { ...makeHooks(), applyFull: () => ({ ok: false, reason: 'disposed' }) },
+  );
+  await removeCalled;
+  assert.equal(store.effectiveDefaultMode(), ASK, 'new chats do not observe Full access before applyFull succeeds');
+
+  resolveRemove();
+  const result = await raisePromise;
+  assert.equal(result.ok, false);
+  assert.equal(store.effectiveDefaultMode(), ASK);
 });
 
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {
