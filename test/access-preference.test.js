@@ -1018,6 +1018,106 @@ test('a new grant after a repeated revocation whose marker write failed writes t
   assert.equal(restarted.effectiveDefaultMode(), FULL, 'grant bound to the written marker ID survives restart');
 });
 
+test('startup failing to delete a leftover legacy remove marker still upgrades and binds it before the next Full-access grant', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: {},
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: null, at: NOW - 30 } },
+  });
+  sessionStorage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.ok('accessPreferenceDowngrade' in sessionStorage.data, 'legacy remove marker survived startup because remove failed');
+
+  const raised = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(raised.ok, true);
+  const upgradedId = sessionStorage.data.accessPreferenceDowngrade?.id;
+  assert.equal(typeof upgradedId, 'string');
+  assert.equal(storage.data.accessPreference.supersedesMarkerId, upgradedId);
+
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL, 'upgraded and bound leftover marker does not revoke the new grant on restart');
+});
+
+test('a failed Full-access binding that discovers an older high-revision marker does not disable pending downgrade retries', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6 }) },
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: 8, maxRevision: 8, at: NOW - 50 } },
+  });
+  storage.failGet = true;
+  storage.failRemove = true;
+  sessionStorage.failGet = true;
+  sessionStorage.failSet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // Downgrade queues a retry at the current profileRevision while both storages fail.
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  const downgradeRev = store.profileRevision;
+
+  // sessionStorage.get recovers so bindToSupersedingMarker reads the older marker (revision 8),
+  // while sessionStorage.set still fails so upgrading the pending marker fails.
+  sessionStorage.failGet = false;
+  const failedRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: downgradeRev },
+    makeHooks(),
+  );
+  assert.equal(failedRaise.ok, false);
+  assert.equal(failedRaise.reason, 'storage-failed');
+  assert.equal(store.profileRevision, downgradeRev, 'profileRevision was not mutated before replacement committed');
+
+  // Now local storage recovers and the queued downgrade retry still executes and removes the revoked grant.
+  storage.failGet = false;
+  storage.failRemove = false;
+  sessionStorage.failSet = false;
+  await scheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false, 'pending downgrade retry was not dropped');
+});
+
+test('a retry that writes the marker and clears the grant tracks its marker ID even when sessionStorage.remove fails', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 4 }) },
+    session: {},
+  });
+  storage.failGet = true;
+  storage.failRemove = true;
+  sessionStorage.failSet = true;
+  sessionStorage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // Initial downgrade fails to write the marker and fails to clear local storage.
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+
+  // On retry, sessionStorage.set and local storage succeed, while sessionStorage.remove still fails.
+  sessionStorage.failSet = false;
+  storage.failGet = false;
+  storage.failRemove = false;
+  await scheduler.runNext();
+  const retryMarkerId = sessionStorage.data.accessPreferenceDowngrade?.id;
+  assert.equal(typeof retryMarkerId, 'string', 'retry wrote the marker');
+  assert.equal('accessPreference' in storage.data, false, 'retry cleared local storage');
+
+  // Next Full-access grant binds to retryMarkerId so the leftover marker on disk cannot revoke it on restart.
+  const raised = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(raised.ok, true);
+  assert.equal(storage.data.accessPreference.supersedesMarkerId, retryMarkerId);
+
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL, 'leftover retry marker does not revoke the bound grant on restart');
+});
+
 test('an explicit new revocation after an unreadable startup journals against the current grant on disk', async () => {
   const scheduler = makeScheduler();
   const { storage, sessionStorage } = makeStorage({
