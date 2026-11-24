@@ -154,11 +154,12 @@ async function runnerFor(sessionId) {
 }
 
 /** What the store needs from the live chats; each request adds what is its own. */
-function liveAccessHooks() {
+function liveAccessHooks(exceptRunner = null) {
   return {
     anyFull: () => [...runners.values()].some((runner) => runner.access.mode === FULL_ACCESS),
-    downgradeAll: () => {
+    downgradeAll: ({ exceptOriginating = false } = {}) => {
       for (const runner of [...runners.values()]) {
+        if (exceptOriginating && exceptRunner && runner === exceptRunner) continue;
         try {
           runner.forceDowngradeToAskFirst();
         } catch {
@@ -176,7 +177,7 @@ function liveAccessHooks() {
  */
 function changeAccessMode({ runner, mode, acknowledged, expectedRevision, expectedProfileRevision }) {
   return accessPref.setMode({ mode, acknowledged, expectedProfileRevision }, {
-    ...liveAccessHooks(),
+    ...liveAccessHooks(runner),
     precheckFull: () => {
       if (runner.disposed) return { reason: 'disposed' };
       return typeof expectedRevision === 'number' && expectedRevision === runner.access.revision
