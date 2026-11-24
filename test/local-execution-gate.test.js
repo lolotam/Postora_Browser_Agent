@@ -287,3 +287,16 @@ test('the card writes out characters that hide or reorder text, and names a defa
   assert.ok(detail.textContent.includes('safe\\u{202E}\\u{200B}evil'), 'each hidden character is written as its code');
   assert.ok(detail.textContent.includes('access.approval.exec.defaultDirectory'), 'a missing folder is named as the default');
 });
+
+test('a command that types an escape does not look like one that holds the character', () => {
+  const shown = (command) => cardFor({ action: 'run_terminal', kind: 'local-execution', execDetail: { command, cwd: 'C:\\work' } })
+    .find((node) => node.className === 'permission-exec-detail').textContent;
+  const typed = shown('echo \\u{202E}');
+  const hidden = shown('echo \u202E');
+  const slashThenHidden = shown('echo \\\u202E');
+  assert.notEqual(typed, hidden);
+  assert.notEqual(typed, slashThenHidden);
+  assert.ok(hidden.includes('echo \\u{202E}'));
+  assert.ok(typed.includes('echo \\\\u{202E}'));
+  assert.ok(shown('dir C:\\Users').includes('dir C:\\Users'), 'an ordinary path keeps single backslashes');
+});

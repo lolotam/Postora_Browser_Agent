@@ -54,6 +54,10 @@ const MAX_FIELD = 300;
 /** The actions that can type into a terminal that runs inside a web page. */
 const TERMINAL_ACTIONS = new Set(['insert_text', 'press_key', 'type_text']);
 const COMMAND_ACTIONS = new Set(['project_run', 'run_terminal']);
+// Characters that do not show, or that reorder the text around them.
+const HIDDEN_CHARS = '\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u00AD\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\uFEFF';
+const HIDDEN = new RegExp(`[${HIDDEN_CHARS}]`, 'g');
+const HAS_HIDDEN = new RegExp(`[${HIDDEN_CHARS}]`);
 
 /**
  * The panel helper for dedicated approvals.
@@ -245,9 +249,16 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
    * what is shown (control characters, zero-width and bidirectional marks),
    * are written out as \u{...}, so the card cannot look like a different
    * command. Tabs and line breaks stay as they are.
+   *
+   * Text that needs no escape, and holds no "\u{" of its own, is shown as is,
+   * so an ordinary Windows path keeps single backslashes. Otherwise every
+   * backslash is doubled first: then a single "\u{" can only be an escape,
+   * and a command that types "\u{202E}" cannot pass for one that holds U+202E.
    */
   function visibleText(text) {
-    return String(text).replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g,
+    const value = String(text);
+    if (!HAS_HIDDEN.test(value) && !value.includes('\\u{')) return value;
+    return value.replace(/\\/g, '\\\\').replace(HIDDEN,
       (ch) => `\\u{${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}}`);
   }
 
