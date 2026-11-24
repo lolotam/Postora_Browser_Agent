@@ -45,6 +45,10 @@ const NO_VISION = /image input|support(?:s)? images?|does not support vision|vis
 const NO_VISION_STATUS = new Set([400, 404, 415, 422]);
 // finish_reason values that mean the answer is complete.
 const COMPLETE = new Set(['stop', 'tool_calls', 'function_call']);
+// The finish reason of a reply that ran out of output room. It is not an
+// answer: the call it was writing is half a call, and running it would act on
+// arguments nobody finished writing.
+const TRUNCATED_FINISH = 'length';
 
 // The only MiniMax model that reads reasoning_effort; the others think at their
 // own depth and ignore it.
@@ -170,10 +174,37 @@ export class CompatibleSession {
       if (answer) onEvent({ type: 'text-reset' }); // withdrawn before the backup or the error shows
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
     }
+    this.turn += 1;
+    // A reply that ran out of output room, or a call whose arguments are not
+    // JSON, was cut off. It is not a turn that can be run: the call was cut off
+    // half written, and running it would act on arguments nobody finished.
+    // The turn is reported as `truncated` and is not committed to the
+    // conversation, so the request that asks again is a valid one and nothing
+    // of this turn is run.
+    // A text-only request (`toolChoice: 'none'`: the step-limit report, a
+    // compaction summary, the connection test) has no call to cut in half and
+    // no caller that asks again, so a long text answer is kept as it was.
+    if (toolChoice !== 'none' && (result.finishReason === TRUNCATED_FINISH || result.brokenCalls.length)) {
+      if (answer) onEvent({ type: 'text-reset' }); // the cut-off text is withdrawn before the retry
+      return { truncated: true, text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
+    }
+    // A text-only request asked for no call. An endpoint that ignores
+    // `tool_choice: 'none'` and sends one anyway is not obeyed: the call is
+    // neither run nor kept, so the history never holds a call without a result.
+    if (toolChoice === 'none' && result.toolCalls.length) {
+      result.toolCalls = [];
+      result.rawToolCalls = [];
+      // A reply that was only a call has no text to give: it is an empty
+      // answer, which the caller handles (the step-limit report falls back to
+      // its own words), and nothing of it is kept in the history.
+      // Only a reply that finished normally: a filtered or otherwise failed
+      // one still fails below.
+      const finished = COMPLETE.has(result.finishReason) || (done && !result.finishReason);
+      if (!answer.trim() && finished) return { text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
+    }
     if (!answer.trim() && !result.toolCalls.length) {
       throw new Error(`Model request failed: the model returned no text or tool calls (${result.finishReason ?? 'empty completion'}). Choose a chat model with tool support.`);
     }
-    this.turn += 1;
     const complete = COMPLETE.has(result.finishReason) || (done && !result.finishReason);
     if (complete && !result.toolCalls.length && toolChoice !== 'none' && this.textToolCalls) {
       const calls = parseTextToolCalls(answer, this.tools);
@@ -299,6 +330,7 @@ export function createAccumulator({ reasoningDetails = false } = {}) {
     },
     result() {
       const present = calls.filter(Boolean).map((c, n) => ({ ...c, id: c.id || `call_${n}_${Date.now()}` }));
+      const parsed = present.map((c) => ({ id: c.id, name: c.name, parsed: toolArgs(c.arguments) }));
       return {
         text,
         usage,
@@ -309,7 +341,10 @@ export function createAccumulator({ reasoningDetails = false } = {}) {
           function: { name: c.name, arguments: c.arguments || '{}' },
           ...(c.extra ? { extra_content: c.extra } : {}),
         })),
-        toolCalls: present.map((c) => ({ id: c.id, name: c.name, args: safeJson(c.arguments) })),
+        toolCalls: parsed.map((c) => ({ id: c.id, name: c.name, args: c.parsed.args })),
+        // The calls whose arguments are not JSON: they were cut off, and
+        // running them would act on arguments nobody finished writing.
+        brokenCalls: parsed.filter((c) => !c.parsed.ok).map((c) => c.id),
         reasoning,
         reasoningField,
         reasoningDetails: detailEntries,
@@ -499,11 +534,15 @@ function userMessage(text, images = []) {
   };
 }
 
-function safeJson(text) {
+/**
+ * The arguments of a call. Arguments that are not JSON are not arguments: the
+ * call was cut off, and running it would act on a half-written instruction.
+ */
+function toolArgs(text) {
   try {
-    return JSON.parse(text || '{}');
+    return { ok: true, args: JSON.parse(text || '{}') };
   } catch {
-    return { _raw: text };
+    return { ok: false, args: { _raw: text } };
   }
 }
 
