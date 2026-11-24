@@ -356,3 +356,63 @@ Files: `src/agent/agent.js` as well as the provider.
 
 **Tiers.** The voice approval focus fix (Phase 1, item 6) is Medium, like the
 rest of Phase 1; it guards an approval.
+
+### Second round (2026-11-24)
+
+**Remembered access mode.**
+
+- Fail closed on protection: remembered Full access is honoured only after
+  `setAccessLevel` has resolved in this worker start. If it rejects, every
+  session starts at Ask first and the panel says the remembered mode could not
+  be restored.
+- Creating an authority is ordered with preference changes: a runner reads the
+  profile revision immediately before it is published in the live runner map
+  and starts at Ask first if the revision moved while it loaded.
+- A downgrade that cannot be stored must not come back after a restart. The
+  worker retries the write; until it succeeds it also sets a
+  `chrome.storage.session` revocation marker, and a restore that finds the
+  marker, or cannot prove the record is current, is Ask first. The message says
+  plainly that Full access may need to be turned off again after a browser
+  restart if the write keeps failing.
+- "Remember" off means a Full access choice applies to that chat only. Chats
+  opened afterwards start at Ask first.
+- The Full access warning is rewritten for the new scope: with "remember" on it
+  says the choice applies to new chats and survives a restart. Turning
+  "remember" on while a chat is in Full access shows that warning again. The
+  earlier contract in `docs/plans/chat-permission-modes.md` ("for this chat,
+  not globally") is updated in the same PR.
+- The `localExecution` field is reserved. Until the owner approves the switch,
+  the first delivery ignores any stored value and always asks.
+
+**Truncated calls.** The provider must not leave the cut-off assistant turn in
+its history: it either does not commit the turn or removes it before returning
+`truncated`, so the retry is a valid conversation. Tested by a second request
+after a truncated one.
+
+**Timeouts.**
+
+- Three outcomes, not two: cancelled before dispatch, confirmed stopped, and
+  **unknown** (the command had already reached Chrome or the native host). An
+  unknown result is reported as such to the model, which must check the page
+  state before repeating the action; the agent never repeats it by itself.
+- The per-call signal reaches `native/host.mjs` and `native/project.mjs`:
+  `projectOperation` takes the signal and checks it immediately before the
+  rename that commits a write. Tested by a write paused before commit that
+  leaves the original file unchanged.
+- A pending dialog has its own deadline, independent of the action timer, and
+  is dismissed when the task stops, fails or the deadline passes. Tested with
+  Stop after `dialog-pending` and before any reply.
+- Answering a dialog is an action of its own class. In Ask first, accepting a
+  `confirm` or answering a `prompt` needs a fresh approval bound to that
+  dialog; dismissing does not. It does not inherit the approval of the click
+  that opened it.
+
+**Phase 2.**
+
+- 2.2: path segments that look like tokens (long high-entropy segments) are
+  masked in the preview as well as credentials and query values.
+- 2.3: protected names are compared case-insensitively, as Windows does, in
+  list, read and write checks.
+- 2.9: a Drive restore keeps local credentials that the backup omits; omission
+  is not deletion. The consent to include credentials is local to the profile,
+  stored outside `settings`, and is never exported, imported or restored.
