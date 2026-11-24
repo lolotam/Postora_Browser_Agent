@@ -1309,12 +1309,14 @@ test('a pre-write guard preserves the pending revocation target when the subsequ
   assert.equal('accessPreference' in storage.data, false);
 });
 
-test('a successful live elevation reports persisted: false when neither guard removal nor fallback rewrite succeeds', async () => {
-  const { store, sessionStorage } = await started({});
-  const raised = await store.setMode(
+test('a live elevation that cannot clear or rewrite its pre-write guard downgrades live chats and refuses the unpersisted grant', async () => {
+  const { store, storage, sessionStorage } = await started({});
+  let downgraded = 0;
+  const refused = await store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     {
       ...makeHooks(),
+      downgradeAll: () => { downgraded += 1; },
       applyFull: () => {
         sessionStorage.failRemove = true;
         sessionStorage.failSet = true;
@@ -1322,9 +1324,11 @@ test('a successful live elevation reports persisted: false when neither guard re
       },
     },
   );
-  assert.equal(raised.ok, true);
-  assert.equal(raised.persisted, false);
-  assert.equal(raised.warning, 'not-remembered');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'storage-failed');
+  assert.equal(refused.persisted, false);
+  assert.equal(downgraded, 1, 'live chats were downgraded when guard cleanup failed');
+  assert.equal('accessPreference' in storage.data, false, 'unpersisted record was removed from local storage');
   assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
   assert.equal(store.snapshot().mode, ASK);
 });
@@ -1902,5 +1906,75 @@ test('verification transitioning from unpersisted Full-access warning to optOutU
   await scheduler.runNext();
   assert.equal(store.snapshot().unpersisted, false);
   assert.equal(store.snapshot().optOutUnpersisted, true);
-  assert.ok(views.some((v) => v.unpersisted === false && v.optOutUnpersisted === true), 'panel listener was notified of the updated warning flags');
+  assert.equal(views.some((v) => v.unpersisted === false && v.optOutUnpersisted === true), true, 'panel listener was notified of the updated warning flags');
 });
+
+test('a recovered revocation starts a bounded retry and keeps it active when a replacement elevation fails', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 3 }) },
+    session: { accessPreferenceDowngrade: { id: 'dg-3-rec', kind: 'remove', staleRevision: 3, maxRevision: 3, at: NOW - 20 } },
+  });
+  storage.failGet = true;
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.snapshot().unpersisted, false);
+
+  // Storage reads recover, while local storage.set fails for the replacement elevation.
+  storage.failGet = false;
+  sessionStorage.failGet = false;
+  storage.failSet = true;
+  const failedRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(failedRaise.ok, false);
+  assert.equal(failedRaise.reason, 'storage-failed');
+  assert.equal(store.snapshot().unpersisted, true, 'recovered revocation entered pending retry state');
+
+  // Bounded retry runs and removes the revoked Full-access record without needing a restart.
+  await scheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false, 'bounded retry cleared the recovered revocation');
+  assert.equal(store.snapshot().unpersisted, false);
+});
+
+test('a replacement Full-access grant after an unreadable startup and unreadable downgrade uses a revision above the durable record', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 9 }) },
+    session: {},
+  });
+  storage.failGet = true;
+  storage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // Downgrade while storage is still unreadable leaves pending with needsVerification: false and storageUnknown: true.
+  const lowered = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(lowered.ok, true);
+  assert.equal(lowered.persisted, false);
+
+  // Now storage recovers and a new elevation supersedes the pending downgrade.
+  storage.failGet = false;
+  storage.failRemove = false;
+  const raised = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(raised.ok, true);
+  assert.ok(storage.data.accessPreference.revision > 9, 'new grant revision exceeds durable record revision 9');
+});
+
+test('a remembered elevation refuses before storage.set when the pre-write session guard fails without priorPending', async () => {
+  const { store, storage, sessionStorage } = await started({});
+  sessionStorage.failSet = true;
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'storage-failed');
+  assert.equal('accessPreference' in storage.data, false, 'storage.set was not called when pre-write guard failed');
+});
+
