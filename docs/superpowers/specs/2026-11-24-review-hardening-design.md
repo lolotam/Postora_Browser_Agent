@@ -369,11 +369,14 @@ rest of Phase 1; it guards an approval.
   profile revision immediately before it is published in the live runner map
   and starts at Ask first if the revision moved while it loaded.
 - A downgrade that cannot be stored must not come back after a restart. The
-  worker retries the write; until it succeeds it also sets a
-  `chrome.storage.session` revocation marker, and a restore that finds the
-  marker, or cannot prove the record is current, is Ask first. The message says
-  plainly that Full access may need to be turned off again after a browser
-  restart if the write keeps failing.
+  worker retries the write, and each retry is bound to the profile revision it
+  was made for, so a late retry never overwrites a newer choice. A
+  `chrome.storage.session` marker covers a worker restart only: Chrome clears
+  it on a browser restart. The durable rule is therefore in the record itself:
+  Full access is restored only from a record whose last write was confirmed,
+  and a downgrade first tries the smallest possible write (removing the
+  record). If even that fails, the panel says plainly that Full access will
+  return after a browser restart and must be turned off again then.
 - "Remember" off means a Full access choice applies to that chat only. Chats
   opened afterwards start at Ask first.
 - The Full access warning is rewritten for the new scope: with "remember" on it
@@ -416,3 +419,27 @@ after a truncated one.
 - 2.9: a Drive restore keeps local credentials that the backup omits; omission
   is not deletion. The consent to include credentials is local to the profile,
   stored outside `settings`, and is never exported, imported or restored.
+
+### Third round: points for the implementing tasks (2026-11-24)
+
+Recorded from the last review of this document. They are requirements for the
+task named, to be designed in that task's PR; this document is not revised
+again for them.
+
+- A5: native cancellation needs a confirmed-stop reply from the host. Today the
+  client disconnects and reports "cancelled" at once; until the host confirms,
+  the result is "unknown".
+- A5: an unknown result of a native write or command cannot be settled by
+  looking at the page. The model is told to check the file or the command's
+  effect (for a write: read the file and compare its hash) before repeating.
+- A5: the abort check before commit covers both commit paths in
+  `native/project.mjs`: the rename for an existing file and the hard link for
+  a new one.
+- A5: a `dialog-pending` result ends the rest of that tool batch; the
+  remaining calls get "not executed: a dialog is open".
+- B9: a Drive restore keeps a local key only for the same provider endpoint.
+  If the restored slot points at a different base URL, the key is not paired
+  with it and the slot asks for a key.
+- B9: the consent key lives outside `settings`, so the Drive backup trigger in
+  `service-worker.js` must also fire when that key changes; turning consent
+  off uploads the credential-free file at once.
