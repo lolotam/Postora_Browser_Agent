@@ -97,6 +97,26 @@ test('a text-only request neither returns nor keeps a call the endpoint sent any
   }
 });
 
+test('a text-only request answered with only a call is an empty answer, not an error', async () => {
+  const original = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'navigate', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] });
+  };
+  try {
+    const s = session();
+    s.addUserMessage('summarize');
+    const turn = await s.next({ toolChoice: 'none' });
+    assert.equal(turn.text, '');
+    assert.deepEqual(turn.toolCalls, []);
+    await s.next({ toolChoice: 'none' });
+    assert.equal(bodies[1].messages.filter((m) => m.role === 'assistant').length, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('a turn that is not cut off keeps its calls and its history', async () => {
   const original = globalThis.fetch;
   const bodies = [];
