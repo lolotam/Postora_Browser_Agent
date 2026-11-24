@@ -166,6 +166,12 @@ function broadcastSessions() {
 }
 
 chrome.runtime.onConnect.addListener((port) => {
+  // Authenticate before the port joins any panel set: an untrusted port gets
+  // no replay, no queued message and no place in the worker's state.
+  if (!isSidePanelSender(port.sender)) {
+    port.disconnect();
+    return;
+  }
   // The port name carries the panel: 'panel:<session>' or, when the panel
   // takes part in the voice path, 'panel:<session>:<panel>'.
   const [kind, sessionId, panelId] = port.name.split(':');
@@ -211,6 +217,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function handleRequest(msg, sender) {
+  // The overlay's Stop is a page's only request. Everything else comes from
+  // our own side panel, before any storage read, write or runner is touched.
+  if (msg.type !== 'overlay-stop' && !isSidePanelSender(sender)) throw new Error('untrusted sender');
   switch (msg.type) {
     case 'openrouter-login':
       if (!isSidePanelSender(sender)) throw new Error('Sign-in requires the extension settings panel.');
