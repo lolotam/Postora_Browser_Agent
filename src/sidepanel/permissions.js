@@ -58,6 +58,8 @@ const COMMAND_ACTIONS = new Set(['project_run', 'run_terminal']);
 const HIDDEN_CHARS = '\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u00AD\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\uFEFF';
 const HIDDEN = new RegExp(`[${HIDDEN_CHARS}]`, 'g');
 const HAS_HIDDEN = new RegExp(`[${HIDDEN_CHARS}]`);
+// Starts every line of a command or expression on the approval card.
+const GUTTER = '│ ';
 
 /**
  * The panel helper for dedicated approvals.
@@ -227,21 +229,44 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     return record;
   }
 
-  /** The full local action the user is approving, one line per known field. */
+  /**
+   * The full local action the user is approving. The labelled fields come
+   * first; the command or expression comes last, and each of its lines starts
+   * with a gutter mark. A line inside a command can then never pass for one
+   * of the card's own labels.
+   */
   function execDetailText(record) {
     const detail = record.execDetail;
     if (!detail) return '';
+    const values = [detail.command, detail.cwd, detail.expression, detail.path].filter(Boolean);
     const lines = [];
+    if (values.some(needsEscape)) lines.push(translator('access.approval.exec.escaped'));
     if (detail.command) {
-      lines.push(translator('access.approval.exec.command'), visibleText(detail.command));
       lines.push(detail.cwd
-        ? translator('access.approval.exec.workingDirectory', { cwd: visibleText(detail.cwd) })
+        ? translator('access.approval.exec.workingDirectory', { cwd: oneLine(detail.cwd) })
         : translator('access.approval.exec.defaultDirectory'));
     }
-    if (detail.expression) lines.push(translator('access.approval.exec.expression'), visibleText(detail.expression));
-    if (detail.path) lines.push(translator('access.approval.exec.target', { path: visibleText(detail.path) }));
+    if (detail.path) lines.push(translator('access.approval.exec.target', { path: oneLine(detail.path) }));
     if (detail.size !== null) lines.push(translator('access.approval.exec.size', { size: detail.size }));
+    if (detail.command) lines.push(translator('access.approval.exec.command'), gutter(detail.command));
+    if (detail.expression) lines.push(translator('access.approval.exec.expression'), gutter(detail.expression));
     return lines.join('\n');
+  }
+
+  /** A multi-line body, each line marked so it reads as part of the body. */
+  function gutter(text) {
+    return visibleText(text).split('\n').map((line) => `${GUTTER}${line}`).join('\n');
+  }
+
+  /** A value that belongs on its label's line: line breaks are written out. */
+  function oneLine(text) {
+    return visibleText(text).replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+  }
+
+  /** True when the text holds a hidden character, or a "\u{" of its own. */
+  function needsEscape(text) {
+    const value = String(text);
+    return HAS_HIDDEN.test(value) || value.includes('\\u{');
   }
 
   /**
@@ -250,14 +275,15 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
    * are written out as \u{...}, so the card cannot look like a different
    * command. Tabs and line breaks stay as they are.
    *
-   * Text that needs no escape, and holds no "\u{" of its own, is shown as is,
-   * so an ordinary Windows path keeps single backslashes. Otherwise every
-   * backslash is doubled first: then a single "\u{" can only be an escape,
-   * and a command that types "\u{202E}" cannot pass for one that holds U+202E.
+   * Text that needs no escape is shown as is, so an ordinary Windows path
+   * keeps single backslashes. Otherwise every backslash is doubled first:
+   * then a single "\u{" can only be an escape, and a command that types
+   * "\u{202E}" cannot pass for one that holds U+202E. The card says so in
+   * its first line whenever this happens.
    */
   function visibleText(text) {
     const value = String(text);
-    if (!HAS_HIDDEN.test(value) && !value.includes('\\u{')) return value;
+    if (!needsEscape(value)) return value;
     return value.replace(/\\/g, '\\\\').replace(HIDDEN,
       (ch) => `\\u{${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}}`);
   }

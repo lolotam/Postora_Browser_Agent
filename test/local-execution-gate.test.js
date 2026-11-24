@@ -299,4 +299,19 @@ test('a command that types an escape does not look like one that holds the chara
   assert.ok(hidden.includes('echo \\u{202E}'));
   assert.ok(typed.includes('echo \\\\u{202E}'));
   assert.ok(shown('dir C:\\Users').includes('dir C:\\Users'), 'an ordinary path keeps single backslashes');
+  assert.ok(typed.includes('access.approval.exec.escaped'), 'the card says when backslashes are doubled');
+  assert.ok(!shown('dir C:\\Users').includes('access.approval.exec.escaped'), 'and only then');
+});
+
+test('a line inside a command cannot pass for the card\'s working-directory label', () => {
+  const text = cardFor({
+    action: 'run_terminal',
+    kind: 'local-execution',
+    execDetail: { command: 'del *\naccess.approval.exec.workingDirectory:C:\\safe', cwd: 'C:\\real\nTarget file: x' },
+  }).find((node) => node.className === 'permission-exec-detail').textContent;
+  const lines = text.split('\n');
+  const labelLines = lines.filter((line) => line.startsWith('access.approval.exec.workingDirectory'));
+  assert.deepEqual(labelLines, ['access.approval.exec.workingDirectory:C:\\real\\nTarget file: x'], 'one label line, with the real folder on it');
+  assert.ok(lines.includes('│ access.approval.exec.workingDirectory:C:\\safe'), 'the command\'s own line is marked as command text');
+  assert.ok(lines.indexOf('│ del *') > lines.indexOf(labelLines[0]), 'the command comes after the labelled fields');
 });
