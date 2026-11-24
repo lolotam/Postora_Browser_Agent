@@ -26,5 +26,7 @@ test('the mic window and the worker are recognised, and pages are not', async ()
   const worker = 'chrome-extension://ext/src/background/service-worker.js';
   assert.equal(isWorkerSender({ id: 'ext', url: worker }, runtime), true);
   assert.equal(isWorkerSender({ id: 'ext', url: worker, tab: { id: 1 } }, runtime), false);
+  assert.equal(isWorkerSender({ id: 'ext' }, runtime), true, 'a worker sender without a URL');
+  assert.equal(isWorkerSender({ id: 'ext', tab: { id: 1 } }, runtime), false);
   assert.equal(isWorkerSender({ id: 'ext', url: 'https://evil.test/', tab: { id: 1 } }, runtime), false);
 });

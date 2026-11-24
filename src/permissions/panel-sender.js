@@ -21,5 +21,7 @@ export function isMicWindowSender(sender, runtime = globalThis.chrome?.runtime) 
 // script. A content script always has a tab and a web page's URL.
 export function isWorkerSender(sender, runtime = globalThis.chrome?.runtime) {
   if (!runtime?.id || !sender || sender.id !== runtime.id || sender.tab) return false;
-  return sender.url === runtime.getURL('src/background/service-worker.js');
+  // Chromium may leave the worker's URL out; a sender with no tab and no URL
+  // is still never a content script, which always has both.
+  return sender.url === undefined || sender.url === runtime.getURL('src/background/service-worker.js');
 }
