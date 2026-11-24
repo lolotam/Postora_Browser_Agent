@@ -679,7 +679,6 @@ export function createAccessPreferenceStore({
     } catch {
       return refuse('storage-failed');
     }
-    await supersede();
     state.mode = FULL_ACCESS;
     state.profileRevision = revision;
     state.stored = {
@@ -700,7 +699,13 @@ export function createAccessPreferenceStore({
       notify();
       return refuse(applied?.reason ?? 'refused');
     }
+    if (pending || unpersisted || optOutUnpersisted) {
+      pending = null;
+      unpersisted = false;
+      optOutUnpersisted = false;
+    }
     notify();
+    await forgetMarker();
     return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
   }
 

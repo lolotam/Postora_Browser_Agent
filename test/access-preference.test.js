@@ -1128,27 +1128,30 @@ test('verification retry awaits marker cleanup so a subsequent grant still binds
   const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
   await store.init();
 
-  // Gate sessionStorage.remove with a deferred promise so the grant is submitted while cleanup is still blocked.
+  // Gate sessionStorage.remove with a deferred promise and an explicit start signal.
   let rejectRemove;
   const originalRemove = sessionStorage.remove;
-  sessionStorage.remove = (keys) => new Promise((_, reject) => {
-    rejectRemove = () => {
-      sessionStorage.log.push(['remove', [].concat(keys)]);
-      reject(new Error('remove failed'));
-    };
+  const removeStarted = new Promise((resolve) => {
+    sessionStorage.remove = (keys) => new Promise((_, reject) => {
+      rejectRemove = () => {
+        sessionStorage.log.push(['remove', [].concat(keys)]);
+        reject(new Error('remove failed'));
+      };
+      resolve();
+    });
   });
 
   storage.failGet = false;
   const retryPromise = scheduler.runNext();
-  await Promise.resolve();
-  await Promise.resolve();
+  await removeStarted;
 
-  // Submit the Full-access grant while verification's sessionStorage.remove is still in flight.
+  // Submit the Full-access grant while verification's sessionStorage.remove is still blocked,
+  // and let runnable microtasks drain through a setImmediate turn.
   const raisePromise = store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     makeHooks(),
   );
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal('accessPreference' in storage.data, false, 'grant cannot proceed while marker cleanup is in flight');
 
   // Now fail the deferred marker removal and restore normal remove behavior.
@@ -1168,13 +1171,14 @@ test('verification retry awaits marker cleanup so a subsequent grant still binds
   assert.equal(restarted.effectiveDefaultMode(), FULL);
 });
 
-test('effectiveDefaultMode stays Ask first while marker cleanup is in flight and applyFull has not yet succeeded', async () => {
+test('applyFull runs synchronously right after storage.set without waiting for marker cleanup', async () => {
   const { storage, sessionStorage } = makeStorage({ initial: {} });
   const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
   await store.init();
 
   let resolveRemove;
-  const removeCalled = new Promise((resolve) => {
+  let appliedBeforeRemoveResolved = false;
+  const removeStarted = new Promise((resolve) => {
     const originalRemove = sessionStorage.remove;
     sessionStorage.remove = (keys) => new Promise((res) => {
       resolveRemove = () => {
@@ -1187,15 +1191,21 @@ test('effectiveDefaultMode stays Ask first while marker cleanup is in flight and
 
   const raisePromise = store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
-    { ...makeHooks(), applyFull: () => ({ ok: false, reason: 'disposed' }) },
+    {
+      ...makeHooks(),
+      applyFull: () => {
+        appliedBeforeRemoveResolved = true;
+        return { ok: true, changed: true };
+      },
+    },
   );
-  await removeCalled;
-  assert.equal(store.effectiveDefaultMode(), ASK, 'new chats do not observe Full access before applyFull succeeds');
+  await removeStarted;
+  assert.equal(appliedBeforeRemoveResolved, true, 'applyFull already succeeded before marker cleanup ran');
 
   resolveRemove();
   const result = await raisePromise;
-  assert.equal(result.ok, false);
-  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal(result.ok, true);
+  assert.equal(store.effectiveDefaultMode(), FULL);
 });
 
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {
