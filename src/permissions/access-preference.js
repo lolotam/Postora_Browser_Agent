@@ -451,6 +451,18 @@ export function createAccessPreferenceStore({
             };
           }
         }
+        if (recoveredRevocation && recoveredRevocation.kind === 'remember-off' && state.remember !== false) {
+          markerUnknown = false;
+          state.remember = false;
+          state.mode = ASK_FIRST;
+          state.profileRevision = Math.max(state.profileRevision, minRevision) + 1;
+          const priorStale = !recoveredRevocation.fullCleared ? recoveredRevocation.staleRevision : null;
+          const priorFullPending = !recoveredRevocation.fullCleared;
+          recoveredRevocation = null;
+          await clearStored('remember-off', priorStale, priorFullPending, false);
+          notify();
+          return { ok: false, reason: 'stale-profile-revision' };
+        }
         if (currentMarker) {
           if (!currentMarker.id) {
             const upgradedId = makeMarkerId(currentMarker.at ?? now(), minRevision);
@@ -465,25 +477,6 @@ export function createAccessPreferenceStore({
             if (recoveredRevocation) recoveredRevocation.id = upgradedId;
           }
           lastMarkerId = currentMarker.id;
-        }
-        if (recoveredRevocation && recoveredRevocation.kind === 'remember-off' && state.remember !== false) {
-          markerUnknown = false;
-          state.remember = false;
-          state.mode = ASK_FIRST;
-          state.profileRevision = Math.max(state.profileRevision, minRevision) + 1;
-          pending = {
-            ...recoveredRevocation,
-            forRevision: state.profileRevision,
-            maxRevision: Math.max(recoveredRevocation.maxRevision ?? 1, state.profileRevision),
-            markerWritten: true,
-            needsVerification: false,
-          };
-          recoveredRevocation = null;
-          unpersisted = !pending.fullCleared;
-          optOutUnpersisted = pending.fullCleared;
-          scheduleRetry(0, pending.forRevision);
-          notify();
-          return { ok: false, reason: 'stale-profile-revision' };
         }
       }
       markerUnknown = false;
@@ -980,20 +973,24 @@ export function createAccessPreferenceStore({
   }
 
   /** "Remember" off: every live chat goes back to Ask first, and the opt-out is written. */
-  async function turnRememberOff(hooks) {
+  async function turnRememberOff(hooks, { skipDowngrade = false } = {}) {
     const priorUnverified = Boolean(pending && pending.needsVerification);
-    const priorStale = pending && !pending.fullCleared && !priorUnverified ? pending.staleRevision : null;
-    const priorFullPending = Boolean(pending && !pending.fullCleared);
-    hooks?.downgradeAll?.();
+    const priorStale = pending && !pending.fullCleared && !priorUnverified
+      ? pending.staleRevision
+      : (recoveredRevocation && !recoveredRevocation.fullCleared ? recoveredRevocation.staleRevision : null);
+    const priorFullPending = Boolean(
+      (pending && !pending.fullCleared) || (recoveredRevocation && !recoveredRevocation.fullCleared),
+    );
+    if (!skipDowngrade) hooks?.downgradeAll?.();
     state.remember = false;
     state.mode = ASK_FIRST;
-    state.profileRevision += 1;
-    supersede({ keepMarker: true });
+    if (!skipDowngrade) state.profileRevision += 1;
+    await supersede({ keepMarker: true });
     // The smallest write is the explicit opt-out: a restart can tell
     // "opted out" from "never chose".
     const result = await clearStored('remember-off', priorStale, priorFullPending, priorUnverified);
     notify();
-    return { ok: true, changed: true, ...result, preference: snapshot() };
+    return { ok: true, changed: !skipDowngrade, ...result, preference: snapshot() };
   }
 
   /** "Remember" on: a Full access that is on is remembered only with the acknowledgment. */
@@ -1052,7 +1049,9 @@ export function createAccessPreferenceStore({
       if (remember === state.remember && !needsOptOutPersistence) {
         return { ok: true, changed: false, persisted: true, preference: snapshot() };
       }
-      return remember ? turnRememberOn({ acknowledged }, hooks) : turnRememberOff(hooks);
+      return remember
+        ? turnRememberOn({ acknowledged }, hooks)
+        : turnRememberOff(hooks, { skipDowngrade: !state.remember });
     });
   }
 

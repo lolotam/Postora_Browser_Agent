@@ -1549,7 +1549,7 @@ test('marker-free recovery after an unreadable startup verifies a durable rememb
   assert.equal(storage.data.accessPreference.mode, ASK);
 });
 
-test('a matching remember-off marker recovered after both startup reads fail restores remember: false, rejects the in-flight elevation, and retries the durable opt-out', async () => {
+test('a matching remember-off marker recovered after both startup reads fail restores remember: false, rejects the in-flight elevation, and writes the durable opt-out inline', async () => {
   const scheduler = makeScheduler();
   const { storage, sessionStorage } = makeStorage({
     initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6 }) },
@@ -1578,11 +1578,7 @@ test('a matching remember-off marker recovered after both startup reads fail res
   assert.equal(refused.ok, false);
   assert.equal(refused.reason, 'stale-profile-revision');
   assert.equal(store.snapshot().remember, false, 'recovered remember-off marker updated consent scope to remember: false');
-  assert.equal(store.snapshot().unpersisted, true);
-
-  // The scheduled retry now writes the durable remember: false opt-out to local storage.
-  await scheduler.runNext();
-  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.remember, false, 'durable opt-out was written inline without waiting for a retry timer');
   assert.equal(storage.data.accessPreference.mode, ASK);
   assert.equal(store.snapshot().unpersisted, false);
   assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
@@ -1610,6 +1606,8 @@ test('marker-only read recovery classifies a matching remember-off marker agains
   assert.equal(store.snapshot().remember, true);
 
   sessionStorage.failGet = false;
+  storage.failSet = true;
+  storage.failRemove = true;
   const refused = await store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     makeHooks(),
@@ -1617,11 +1615,46 @@ test('marker-only read recovery classifies a matching remember-off marker agains
   assert.equal(refused.ok, false);
   assert.equal(refused.reason, 'stale-profile-revision');
   assert.equal(store.snapshot().remember, false, 'marker-only recovery restored remember: false');
+  assert.equal(store.snapshot().unpersisted, true, 'inline write failed so retry was queued');
 
+  storage.failSet = false;
+  storage.failRemove = false;
   await scheduler.runNext();
   assert.equal(storage.data.accessPreference.remember, false);
   assert.equal(storage.data.accessPreference.mode, ASK);
   assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('retrying a pending remember-off opt-out does not call downgradeAll on a newer chat-only Full-access grant', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage } = await started({ accessPreference: record() }, { scheduler });
+  storage.failSet = true;
+  storage.failRemove = true;
+  const firstHooks = makeHooks({ full: true });
+  await store.setRemember({ remember: false, expectedProfileRevision: store.profileRevision }, firstHooks);
+  assert.deepEqual(firstHooks.calls, ['downgradeAll']);
+
+  // Now the user grants chat-only Full access while remember is off.
+  const chatOnlyHooks = makeHooks({ full: false });
+  const chatOnly = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    chatOnlyHooks,
+  );
+  assert.equal(chatOnly.ok, true);
+  assert.equal(chatOnlyHooks.live.full, true);
+
+  // Retrying setRemember({ remember: false }) repairs persistence without calling downgradeAll on the live chat-only grant.
+  storage.failSet = false;
+  storage.failRemove = false;
+  const repair = await store.setRemember(
+    { remember: false, expectedProfileRevision: store.profileRevision },
+    chatOnlyHooks,
+  );
+  assert.equal(repair.ok, true);
+  assert.equal(repair.persisted, true);
+  assert.equal(chatOnlyHooks.live.full, true, 'chat-only Full access was not revoked by persistence repair');
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
 });
 
 test('a matching wildcard recovery includes the verified local record revision in the allocation floor', async () => {
