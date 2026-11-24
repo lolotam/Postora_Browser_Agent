@@ -71,6 +71,34 @@ function safeLabel(label) {
 }
 
 /**
+ * The exact local action a card approves.
+ *
+ * A command or an expression must be shown whole, however long it is: a cut
+ * preview would approve one thing and run another. A write only names its
+ * target and how much text would be written; the text itself stays private.
+ */
+function publicExecDetail(action, args) {
+  if (action === 'run_terminal' || action === 'project_run') {
+    return Object.freeze({
+      command: typeof args?.command === 'string' ? args.command : '',
+      ...(typeof args?.cwd === 'string' && args.cwd ? { cwd: args.cwd } : {}),
+    });
+  }
+  // @store-strip-start
+  if (action === 'run_javascript') {
+    return Object.freeze({ expression: typeof args?.expression === 'string' ? args.expression : '' });
+  }
+  // @store-strip-end
+  if (action === 'project_write') {
+    return Object.freeze({
+      path: typeof args?.path === 'string' ? args.path : '',
+      size: typeof args?.text === 'string' ? args.text.length : 0,
+    });
+  }
+  return null;
+}
+
+/**
  * True for a port that our own side panel opened.
  *
  * The sender must be this extension and this page: not another extension, not
@@ -329,19 +357,20 @@ export class SessionRunner {
   /**
    * What a panel may show about a question.
    *
-   * Arguments are left out except the bounded command preview for project_run
-   * and run_terminal, which must be visible before approving execution. The
-   * text that was going to be typed, the
-   * value that was going to be read and the permit itself never belong in a
-   * preview that may be on screen. What is left is the action, its kind, the
-   * site it happens on and the name the page itself gave the target — enough
-   * to know what is being asked for, and nothing that repeats what the user
-   * asked to keep private.
+   * Arguments are left out except the exact detail of a local execution: the
+   * whole command, expression or write target the card is approving. The
+   * bounded command preview is kept for panels that still read it, but the
+   * card shows the full value from `execDetail`. The text that was going to be
+   * typed, the value that was going to be read, the content of a write and the
+   * permit itself never belong in a preview that may be on screen. What is
+   * left is the action, its kind, the site it happens on and the name the page
+   * itself gave the target.
    */
   publicRequest(request) {
     const destination = request.action === 'navigate' || request.action === 'open_tab'
       ? request.args?.url
       : request.action === 'web_search' ? 'https://www.google.com' : null;
+    const execDetail = publicExecDetail(request.action, request.args);
     return Object.freeze({
       id: request.id,
       sessionId: request.sessionId,
@@ -350,6 +379,7 @@ export class SessionRunner {
       kind: request.kind,
       origin: safeOrigin(destination) ?? safeOrigin(request.target?.url),
       label: safeLabel(request.target?.element?.label) ?? (request.action.startsWith('project_') ? safeLabel(request.args?.path || this.project?.name) : null),
+      ...(execDetail ? { execDetail } : {}),
       ...(['project_run', 'run_terminal'].includes(request.action) ? {
         command: String(request.args?.command ?? '').slice(0, 16000),
         commandTruncated: String(request.args?.command ?? '').length > 16000,

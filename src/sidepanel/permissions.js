@@ -124,6 +124,7 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     const revision = raw.revision;
     if (!Number.isInteger(revision) || revision <= 0) return null;
     if (typeof raw.action !== 'string') return null;
+    const detail = raw.execDetail && typeof raw.execDetail === 'object' ? raw.execDetail : null;
     return {
       id,
       sessionId,
@@ -134,6 +135,13 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
       label: typeof raw.label === 'string' ? raw.label : '',
       command: COMMAND_ACTIONS.has(raw.action) && typeof raw.command === 'string' ? raw.command.slice(0, 16000) : '',
       commandTruncated: COMMAND_ACTIONS.has(raw.action) && (raw.commandTruncated === true || (typeof raw.command === 'string' && raw.command.length > 16000)),
+      execDetail: detail ? {
+        command: typeof detail.command === 'string' ? detail.command : '',
+        cwd: typeof detail.cwd === 'string' ? detail.cwd : '',
+        expression: typeof detail.expression === 'string' ? detail.expression : '',
+        path: typeof detail.path === 'string' ? detail.path : '',
+        size: Number.isInteger(detail.size) ? detail.size : null,
+      } : null,
     };
   }
 
@@ -182,6 +190,9 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     command.dir = 'ltr';
     const commandWarning = doc.createElement('p');
     commandWarning.className = 'permission-command-warning';
+    const execDetail = doc.createElement('pre');
+    execDetail.className = 'permission-exec-detail';
+    execDetail.dir = 'ltr';
 
     const actions = doc.createElement('div');
     actions.className = 'permission-actions';
@@ -204,12 +215,25 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     error.hidden = true;
 
     actions.append(allow, deny);
-    card.append(title, action, site, target, terminal, command, commandWarning, actions, status, error);
+    card.append(title, action, site, target, terminal, command, commandWarning, execDetail, actions, status, error);
 
-    record.node = { card, title, action, site, target, terminal, command, commandWarning, allow, deny, status, error };
+    record.node = { card, title, action, site, target, terminal, command, commandWarning, execDetail, allow, deny, status, error };
     allow.addEventListener('click', () => { respond(record, 'allow'); });
     deny.addEventListener('click', () => { respond(record, 'deny'); });
     return record;
+  }
+
+  /** The full local action the user is approving, one line per known field. */
+  function execDetailText(record) {
+    const detail = record.execDetail;
+    if (!detail) return '';
+    const lines = [];
+    if (detail.command) lines.push(translator('access.approval.exec.command'), detail.command);
+    if (detail.cwd) lines.push(translator('access.approval.exec.workingDirectory', { cwd: detail.cwd }));
+    if (detail.expression) lines.push(translator('access.approval.exec.expression'), detail.expression);
+    if (detail.path) lines.push(translator('access.approval.exec.target', { path: detail.path }));
+    if (detail.size !== null) lines.push(translator('access.approval.exec.size', { size: detail.size }));
+    return lines.join('\n');
   }
 
   /** The words of a card, in the language of the panel. */
@@ -225,9 +249,11 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     node.terminal.textContent = translator('access.approval.terminal');
     node.terminal.hidden = !TERMINAL_ACTIONS.has(record.action);
     node.command.textContent = record.command;
-    node.command.hidden = !record.command;
+    node.command.hidden = !record.command || Boolean(record.execDetail?.command);
     node.commandWarning.textContent = translator('access.approval.commandTruncated');
-    node.commandWarning.hidden = !record.commandTruncated;
+    node.commandWarning.hidden = !record.commandTruncated || Boolean(record.execDetail?.command);
+    node.execDetail.textContent = execDetailText(record);
+    node.execDetail.hidden = !node.execDetail.textContent;
     node.allow.textContent = translator('access.approval.allow');
     node.deny.textContent = translator('access.approval.deny');
     node.status.textContent = translator(record.sending ? 'access.approval.answering' : 'access.approval.waiting');
@@ -265,6 +291,7 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
       label: request.label,
       command: request.command,
       commandTruncated: request.commandTruncated,
+      execDetail: request.execDetail,
       port,
       sending: false,
       errorKey: null,

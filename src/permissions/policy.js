@@ -36,6 +36,10 @@ export const ASK_FIRST = 'ask-first';
 export const FULL_ACCESS = 'full-access';
 export const MODES = [ASK_FIRST, FULL_ACCESS];
 
+// Running a command, evaluating page JavaScript or writing a project file. It
+// is a kind of its own so Full access never covers it.
+export const LOCAL_EXECUTION = 'local-execution';
+
 /** What an action is, by the tool that performs it. */
 export const OBSERVE = 'observe';
 export const INTERACT = 'interact';
@@ -59,6 +63,13 @@ const OBSERVATIONS = new Set([
 // An explicit read of one field's value, secret or not.
 const SENSITIVE_READS = new Set(['read_field']);
 
+// Running code or writing files is never part of Full access. It needs its own
+// approval card in every mode, even when nothing else on the page does.
+const LOCAL_EXECUTION_ACTIONS = new Set(['project_write', 'project_run', 'run_terminal']);
+// @store-strip-start
+LOCAL_EXECUTION_ACTIONS.add('run_javascript');
+// @store-strip-end
+
 /** Anything but the exact Full-access name is Ask first. */
 export function normalizeMode(mode) {
   return mode === FULL_ACCESS ? FULL_ACCESS : ASK_FIRST;
@@ -66,6 +77,7 @@ export function normalizeMode(mode) {
 
 /** What kind of action a tool is. Unknown tools are interactions. */
 export function classifyAction(tool) {
+  if (LOCAL_EXECUTION_ACTIONS.has(tool)) return LOCAL_EXECUTION;
   if (OBSERVATIONS.has(tool)) return OBSERVE;
   if (SENSITIVE_READS.has(tool)) return SENSITIVE;
   return INTERACT;
@@ -73,6 +85,7 @@ export function classifyAction(tool) {
 
 /** Whether the mode lets this action run without asking the user first. */
 export function requiresApproval(mode, action) {
+  if (action === LOCAL_EXECUTION) return true;
   if (action === OBSERVE) return false;
   return normalizeMode(mode) !== FULL_ACCESS;
 }
@@ -82,6 +95,7 @@ function kindRank(kind) {
   if (kind === OBSERVE) return 0;
   if (kind === INTERACT) return 1;
   if (kind === SENSITIVE) return 2;
+  if (kind === LOCAL_EXECUTION) return 3;
   return -1;
 }
 
@@ -507,9 +521,10 @@ export class AccessAuthority {
   /**
    * The one call an executor makes.
    *
-   * An observation, and every supported action under Full access, is allowed
-   * right away. An interaction or a sensitive read under Ask first waits for
-   * the user, and is allowed only if the user said yes to that very action.
+   * An observation, and every action except local execution under Full access,
+   * is allowed right away. Local execution and every interaction or sensitive
+   * read under Ask first wait for the user, and are allowed only if the user
+   * said yes to that very action.
    *
    * The command's signal is honoured in every mode: a command that was
    * aborted gets no permit, and a permit that was already issued is
@@ -526,7 +541,7 @@ export class AccessAuthority {
     if (op.kind === OBSERVE) {
       return { permit: this.#issuePermit(op, 'observation', signal), reason: null, source: 'observation' };
     }
-    if (this.#mode === FULL_ACCESS) {
+    if (this.#mode === FULL_ACCESS && op.kind !== LOCAL_EXECUTION) {
       return { permit: this.#issuePermit(op, 'full-access', signal), reason: null, source: 'full-access' };
     }
     const { promise } = this.requestApproval({

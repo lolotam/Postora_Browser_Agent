@@ -60,14 +60,21 @@ test('terminal commands require authority and respect denial before connecting',
   }
 });
 
-test('Full access executes native commands without an approval prompt', async () => {
+test('Full access still asks before a native command, and runs it only once allowed', async () => {
+  // A2: local execution is never part of Full access; it has its own card.
   const runtime = mockRuntime();
   const previous = globalThis.chrome;
   globalThis.chrome = { runtime };
-  const access = new AccessAuthority({ sessionId: 'native-full', onRequest: () => assert.fail('Unexpected approval') });
+  const asked = [];
+  const access = new AccessAuthority({ sessionId: 'native-full', onRequest: (request) => asked.push(request) });
   access.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision: access.revision });
   try {
     const result = createToolExecutor({}, { access })('run_terminal', { command: 'Write-Output fixture' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(asked.length, 1, 'a card is shown in Full access');
+    assert.equal(runtime.messages.length, 0, 'nothing runs before the answer');
+    access.respondApproval({ id: asked[0].id, sessionId: 'native-full', revision: asked[0].revision, decision: 'allow' });
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(runtime.messages.length, 1);
     runtime.replies[0]({ exitCode: 0, output: 'fixture' });
