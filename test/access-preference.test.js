@@ -720,3 +720,130 @@ test('only a request through the store changes the record: a changed mode or a r
   assert.equal(store.snapshot().mode, ASK);
   assert.equal(store.snapshot().remember, true);
 });
+
+test('recovery adopting a confirmed record with a different remember scope advances profileRevision strictly past the provisional revision', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: ASK, revision: 5 }) },
+    session: { accessPreferenceDowngrade: { kind: 'remember-off', staleRevision: 4, at: NOW - 10 } },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  const provisionalRev = store.profileRevision;
+  assert.equal(store.snapshot().remember, false);
+
+  storage.failGet = false;
+  await scheduler.runNext();
+  assert.equal(store.snapshot().remember, true);
+  assert.ok(store.profileRevision > provisionalRev, 'profileRevision advances past the provisional revision');
+
+  const staleRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: provisionalRev },
+    makeHooks(),
+  );
+  assert.equal(staleRaise.ok, false);
+  assert.equal(staleRaise.reason, 'stale-profile-revision');
+  assert.equal(storage.data.accessPreference.mode, ASK, 'session-only acknowledgment was not persisted as remembered Full access');
+});
+
+test('turning remember off with an existing Ask-first record recovers and retries the opt-out on restart', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage, sessionStorage } = await started(
+    { accessPreference: record({ remember: true, mode: ASK, revision: 5 }) },
+    { scheduler },
+  );
+  storage.failSet = true;
+  const off = await store.setRemember({ remember: false, expectedProfileRevision: store.profileRevision }, makeHooks({ full: false }));
+  assert.equal(off.ok, true);
+  assert.equal(off.persisted, false);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.kind, 'remember-off');
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 5);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.optOutOnly, true);
+
+  storage.failSet = false;
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.snapshot().remember, false);
+  assert.equal(restarted.snapshot().unpersisted, false);
+  assert.equal(restarted.snapshot().optOutUnpersisted, true);
+
+  await restartedScheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+  assert.equal(restarted.snapshot().optOutUnpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('unreadable startup with a numeric remember-off marker still finishes the opt-out when retry sees empty storage', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: {},
+    session: { accessPreferenceDowngrade: { kind: 'remember-off', staleRevision: 4, at: NOW - 10 } },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.snapshot().remember, false);
+
+  storage.failGet = false;
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal(store.snapshot().optOutUnpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('a leftover wildcard marker does not revoke a newer confirmed Full-access grant on restart', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6, acknowledgedAt: NOW + 100 }) },
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: null, maxRevision: 3, at: NOW } },
+  });
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 200 });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), FULL);
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('an explicit new revocation after an unreadable startup journals against the current grant on disk', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6 }) },
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: 4, at: NOW - 10 } },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // Storage becomes readable for get, while remove fails during the explicit new revocation.
+  storage.failGet = false;
+  storage.failRemove = true;
+  const lowered = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(lowered.ok, true);
+  assert.equal(lowered.persisted, false);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 6);
+
+  // A worker restart now matches revision 6 and revokes it instead of restoring it.
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW + 50,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK);
+  assert.equal(restarted.snapshot().unpersisted, true);
+
+  storage.failRemove = false;
+  await restartedScheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false);
+});

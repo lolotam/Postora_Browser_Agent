@@ -199,7 +199,13 @@ function renderAccessError() {
   // be restored. A failure of a request is shown until the worker speaks.
   const preference = accessUi.preference;
   const key = accessErrorKey
-    || (preference?.unpersisted ? 'access.notice.notCleared' : preference?.restoreFailed ? 'access.notice.restoreFailed' : '');
+    || (preference?.unpersisted
+      ? 'access.notice.notCleared'
+      : preference?.optOutUnpersisted
+        ? 'access.notice.notRemembered'
+        : preference?.restoreFailed
+          ? 'access.notice.restoreFailed'
+          : '');
   node.textContent = key ? t(key) : '';
   node.hidden = !key;
 }

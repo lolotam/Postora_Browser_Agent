@@ -40,7 +40,7 @@ function readableRecord(raw) {
   // A choice nobody acknowledged is not a choice.
   if (typeof raw.acknowledgedAt !== 'number' || !Number.isFinite(raw.acknowledgedAt) || raw.acknowledgedAt <= 0) return null;
   const revision = Number.isInteger(raw.revision) && raw.revision > 0 ? raw.revision : 1;
-  return { remember: raw.remember, mode: raw.mode, revision };
+  return { remember: raw.remember, mode: raw.mode, revision, acknowledgedAt: raw.acknowledgedAt };
 }
 
 /** The marker of a downgrade that is not stored yet, or null. */
@@ -48,7 +48,39 @@ function readableMarker(raw) {
   if (!raw || typeof raw !== 'object') return null;
   if (raw.kind !== 'remove' && raw.kind !== 'remember-off') return null;
   const stale = Number.isInteger(raw.staleRevision) ? raw.staleRevision : null;
-  return { kind: raw.kind, staleRevision: stale, optOutOnly: raw.optOutOnly === true };
+  const maxRevision = Number.isInteger(raw.maxRevision) ? raw.maxRevision : null;
+  const at = typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : null;
+  return { kind: raw.kind, staleRevision: stale, optOutOnly: raw.optOutOnly === true, maxRevision, at };
+}
+
+/**
+ * Decides whether a recovered downgrade marker still applies to the readable
+ * record currently in `chrome.storage.local` (or `null` when storage is empty).
+ */
+function classifyMarker(marker, record) {
+  if (!record) {
+    if (marker.kind === 'remember-off') {
+      return { matches: true, fullAlreadyGone: true };
+    }
+    return { matches: false, fullAlreadyGone: true };
+  }
+  if (marker.kind === 'remember-off' && record.remember === false && record.mode === ASK_FIRST) {
+    return { matches: false, fullAlreadyGone: true };
+  }
+  if (marker.staleRevision !== null) {
+    return {
+      matches: record.revision === marker.staleRevision,
+      fullAlreadyGone: record.mode !== FULL_ACCESS,
+    };
+  }
+  const newerThanMarker =
+    (marker.maxRevision !== null && record.revision > marker.maxRevision)
+    || (marker.at !== null && typeof record.acknowledgedAt === 'number' && record.acknowledgedAt > marker.at);
+  if (newerThanMarker) {
+    return { matches: false, fullAlreadyGone: record.mode !== FULL_ACCESS };
+  }
+  const matches = record.mode === FULL_ACCESS || (marker.kind === 'remember-off' && record.remember);
+  return { matches, fullAlreadyGone: record.mode !== FULL_ACCESS };
 }
 
 export function createAccessPreferenceStore({
@@ -166,29 +198,24 @@ export function createAccessPreferenceStore({
     if (marker) {
       // The marker belongs to the record it was made for. A record that was
       // written since is a newer choice, and the marker is old news.
-      const matchesUnknown = unreadable;
-      const matchesOptOutOnly = Boolean(
-        marker.kind === 'remember-off'
-        && !unreadable
-        && !record,
-      );
-      const matchesRecord = Boolean(
-        record && !marker.optOutOnly && (
-          marker.staleRevision === null
-            ? (record.mode === FULL_ACCESS || (marker.kind === 'remember-off' && record.remember))
-            : record.revision === marker.staleRevision
-        ),
-      );
-      if (matchesUnknown || matchesRecord || matchesOptOutOnly) {
-        const fullAlreadyGone = matchesOptOutOnly || (matchesUnknown && marker.optOutOnly);
-        state.profileRevision = Math.max(state.profileRevision, record?.revision ?? 1, marker.staleRevision ?? 1) + 1;
+      const classification = unreadable ? { matches: true, fullAlreadyGone: marker.optOutOnly } : classifyMarker(marker, record);
+      if (classification.matches) {
+        const { fullAlreadyGone } = classification;
+        state.profileRevision = Math.max(
+          state.profileRevision,
+          record?.revision ?? 1,
+          marker.staleRevision ?? 1,
+          marker.maxRevision ?? 1,
+        ) + 1;
         pending = {
           kind: marker.kind,
           forRevision: state.profileRevision,
-          staleRevision: fullAlreadyGone ? null : marker.staleRevision,
+          staleRevision: fullAlreadyGone ? null : (record?.revision ?? marker.staleRevision),
+          maxRevision: marker.maxRevision ?? state.profileRevision,
+          at: marker.at,
           fullCleared: fullAlreadyGone,
           markerWritten: true,
-          needsVerification: matchesUnknown,
+          needsVerification: unreadable,
         };
         if (marker.kind === 'remember-off') state.remember = false;
         state.mode = ASK_FIRST;
@@ -303,21 +330,40 @@ export function createAccessPreferenceStore({
    * is not an error: the downgrade is in force, it is retried for this
    * revision only, and the panel is told that it was not stored.
    */
-  async function clearStored(kind, priorStaleRevision = null, priorFullPending = false) {
+  async function clearStored(kind, priorStaleRevision = null, priorFullPending = false, priorUnverified = false) {
+    if ((storageUnknown || priorUnverified) && !state.stored) {
+      try {
+        const got = await storage.get(ACCESS_PREFERENCE_KEY);
+        const current = readableRecord(got?.[ACCESS_PREFERENCE_KEY]);
+        state.stored = current;
+        storageUnknown = false;
+        if (current && current.revision >= state.profileRevision) {
+          state.profileRevision = current.revision + 1;
+        }
+      } catch {
+        storageUnknown = true;
+      }
+    }
     const revision = state.profileRevision;
-    const storedStale = state.stored?.mode === FULL_ACCESS && state.stored.remember ? state.stored.revision : null;
+    const storedStale = state.stored ? state.stored.revision : null;
     const staleRevision = storedStale ?? priorStaleRevision;
-    const mayHaveFull = staleRevision !== null || storageUnknown || priorFullPending;
+    const mayHaveFull =
+      (state.stored?.mode === FULL_ACCESS && state.stored.remember)
+      || (priorStaleRevision !== null && !state.stored)
+      || storageUnknown
+      || (priorFullPending && !state.stored);
     const needsMarker = mayHaveFull || kind === 'remember-off';
+    const markerAt = now();
     let markerWritten = false;
     // Journal before touching local storage so a worker stop mid-write cannot
     // resurrect a revoked Full-access grant on restart.
     if (needsMarker) {
       markerWritten = await writeMarker({
         kind,
-        staleRevision: mayHaveFull ? staleRevision : null,
+        staleRevision,
+        maxRevision: revision,
         ...(mayHaveFull ? {} : { optOutOnly: true }),
-        at: now(),
+        at: markerAt,
       });
     }
     const outcome = await attemptClear(kind, revision, mayHaveFull);
@@ -331,16 +377,21 @@ export function createAccessPreferenceStore({
       unpersisted = false;
       if (kind === 'remember-off') {
         optOutUnpersisted = true;
-        const optOutMarkerWritten = await writeMarker({
-          kind: 'remember-off',
-          staleRevision: null,
-          optOutOnly: true,
-          at: now(),
-        });
+        const optOutMarkerWritten = mayHaveFull
+          ? await writeMarker({
+            kind: 'remember-off',
+            staleRevision: null,
+            maxRevision: revision,
+            optOutOnly: true,
+            at: markerAt,
+          })
+          : markerWritten;
         pending = {
           kind,
           forRevision: revision,
-          staleRevision: null,
+          staleRevision: mayHaveFull ? null : staleRevision,
+          maxRevision: revision,
+          at: markerAt,
           fullCleared: true,
           markerWritten: optOutMarkerWritten,
           needsVerification: false,
@@ -356,6 +407,8 @@ export function createAccessPreferenceStore({
       kind,
       forRevision: revision,
       staleRevision,
+      maxRevision: revision,
+      at: markerAt,
       fullCleared: false,
       markerWritten,
       needsVerification: false,
@@ -386,28 +439,24 @@ export function createAccessPreferenceStore({
           pending.markerWritten = await writeMarker({
             kind: pending.kind,
             staleRevision: pending.staleRevision,
+            maxRevision: pending.maxRevision,
             ...(pending.fullCleared ? { optOutOnly: true } : {}),
-            at: now(),
+            at: pending.at ?? now(),
           });
         }
         scheduleRetry(index + 1, expectedForRevision);
         return;
       }
-      const stillMatches = pending.fullCleared
-        ? !current
-        : pending.staleRevision !== null
-          ? Boolean(current && current.revision === pending.staleRevision)
-          : Boolean(
-            current
-              ? (current.mode === FULL_ACCESS || (pending.kind === 'remember-off' && current.remember))
-              : pending.kind === 'remember-off',
-          );
+      const { matches: stillMatches, fullAlreadyGone } = classifyMarker(pending, current);
       if (!stillMatches) {
+        const scopeChanged = Boolean(current && (current.remember !== state.remember || current.mode !== state.mode));
         state.stored = current;
         if (current) {
           state.remember = current.remember;
           state.mode = current.mode;
-          state.profileRevision = Math.max(state.profileRevision, current.revision);
+          state.profileRevision = scopeChanged
+            ? Math.max(state.profileRevision, current.revision) + 1
+            : Math.max(state.profileRevision, current.revision);
         }
         restoreFailed = !protectedOk && Boolean(current?.remember) && current?.mode === FULL_ACCESS;
         pending = null;
@@ -420,15 +469,24 @@ export function createAccessPreferenceStore({
       state.stored = current;
       restoreFailed = false;
       pending.needsVerification = false;
+      pending.fullCleared = fullAlreadyGone;
+      unpersisted = !fullAlreadyGone;
+      optOutUnpersisted = fullAlreadyGone && pending.kind === 'remember-off';
+      if (fullAlreadyGone) {
+        pending.staleRevision = current ? current.revision : null;
+      } else if (current) {
+        pending.staleRevision = current.revision;
+      }
     }
     const { kind, forRevision } = pending;
     const mayHaveFull = !pending.fullCleared;
     if (!pending.markerWritten) {
       pending.markerWritten = await writeMarker({
         kind,
-        staleRevision: mayHaveFull ? pending.staleRevision : null,
+        staleRevision: pending.staleRevision,
+        maxRevision: pending.maxRevision ?? forRevision,
         ...(mayHaveFull ? {} : { optOutOnly: true }),
-        at: now(),
+        at: pending.at ?? now(),
       });
     }
     const outcome = await attemptClear(kind, forRevision, mayHaveFull);
@@ -447,8 +505,9 @@ export function createAccessPreferenceStore({
         const optOutMarkerWritten = await writeMarker({
           kind: 'remember-off',
           staleRevision: null,
+          maxRevision: pending.maxRevision ?? forRevision,
           optOutOnly: true,
-          at: now(),
+          at: pending.at ?? now(),
         });
         pending = {
           ...pending,
@@ -493,7 +552,7 @@ export function createAccessPreferenceStore({
       if (!applied?.ok) return refuse(applied?.reason ?? 'refused');
       return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
     }
-    const revision = state.profileRevision + 1;
+    const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
     const next = recordFor({ remember: true, mode: FULL_ACCESS, revision });
     try {
       // Written first: a Full access that was not stored is not remembered.
@@ -503,7 +562,7 @@ export function createAccessPreferenceStore({
     }
     state.mode = FULL_ACCESS;
     state.profileRevision = revision;
-    state.stored = { remember: true, mode: FULL_ACCESS, revision };
+    state.stored = { remember: true, mode: FULL_ACCESS, revision, acknowledgedAt: next.acknowledgedAt };
     storageUnknown = false;
     restoreFailed = false;
     supersede();
@@ -526,7 +585,8 @@ export function createAccessPreferenceStore({
     hooks?.downgradeAll?.();
     const kind = state.remember ? 'remove' : 'remember-off';
     const hasPendingOptOut = Boolean(pending && pending.kind === 'remember-off');
-    const priorStale = pending && !pending.fullCleared ? pending.staleRevision : null;
+    const priorUnverified = Boolean(pending && pending.needsVerification);
+    const priorStale = pending && !pending.fullCleared && !priorUnverified ? pending.staleRevision : null;
     const priorFullPending = Boolean(pending && !pending.fullCleared);
     const needsOptOutWrite = !state.remember && (state.stored?.remember !== false || state.stored?.mode !== ASK_FIRST);
     const mayBeStored =
@@ -543,7 +603,7 @@ export function createAccessPreferenceStore({
       return { ok: true, changed: false, persisted: true, preference: snapshot() };
     }
     supersede({ keepMarker: true });
-    const result = await clearStored(hasPendingOptOut ? 'remember-off' : kind, priorStale, priorFullPending);
+    const result = await clearStored(hasPendingOptOut ? 'remember-off' : kind, priorStale, priorFullPending, priorUnverified);
     notify();
     return { ok: true, changed: true, ...result, preference: snapshot() };
   }
@@ -563,7 +623,8 @@ export function createAccessPreferenceStore({
 
   /** "Remember" off: every live chat goes back to Ask first, and the opt-out is written. */
   async function turnRememberOff(hooks) {
-    const priorStale = pending && !pending.fullCleared ? pending.staleRevision : null;
+    const priorUnverified = Boolean(pending && pending.needsVerification);
+    const priorStale = pending && !pending.fullCleared && !priorUnverified ? pending.staleRevision : null;
     const priorFullPending = Boolean(pending && !pending.fullCleared);
     hooks?.downgradeAll?.();
     state.remember = false;
@@ -572,7 +633,7 @@ export function createAccessPreferenceStore({
     supersede({ keepMarker: true });
     // The smallest write is the explicit opt-out: a restart can tell
     // "opted out" from "never chose".
-    const result = await clearStored('remember-off', priorStale, priorFullPending);
+    const result = await clearStored('remember-off', priorStale, priorFullPending, priorUnverified);
     notify();
     return { ok: true, changed: true, ...result, preference: snapshot() };
   }
@@ -581,7 +642,7 @@ export function createAccessPreferenceStore({
   async function turnRememberOn({ acknowledged }, hooks) {
     const anyFull = Boolean(hooks?.anyFull?.());
     if (anyFull && acknowledged !== true) return refuse('needs-acknowledgement');
-    const revision = state.profileRevision + 1;
+    const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
     const next = recordFor({ remember: true, mode: anyFull && protectedOk ? FULL_ACCESS : ASK_FIRST, revision });
     try {
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
@@ -591,7 +652,7 @@ export function createAccessPreferenceStore({
     state.remember = true;
     state.mode = next.mode;
     state.profileRevision = revision;
-    state.stored = { remember: true, mode: next.mode, revision };
+    state.stored = { remember: true, mode: next.mode, revision, acknowledgedAt: next.acknowledgedAt };
     storageUnknown = false;
     restoreFailed = false;
     supersede();
