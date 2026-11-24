@@ -370,10 +370,10 @@ export class SessionRunner {
       result = { ok: false, changed: false, reason: 'storage-failed' };
     }
     if (this.disposed) return result;
-    // The mode in force comes first: the panel clears its notice when it is
-    // told the mode, so a notice that came before it would never be read.
+    // Always refresh the panel's access-state after changeAccessMode settles
+    // so it reflects the final committed profile accessPreference snapshot.
+    this.broadcastAccess();
     if (mode === FULL_ACCESS && this.access.mode !== before) this.emit({ type: 'access-mode-note', mode: this.access.mode });
-    else this.broadcastAccess();
     if (!result?.ok) this.broadcast({ type: 'access-preference-notice', reason: result?.reason ?? 'refused' });
     else if (result.warning) this.broadcast({ type: 'access-preference-notice', reason: result.warning });
     return { ...result, ...this.access.state() };

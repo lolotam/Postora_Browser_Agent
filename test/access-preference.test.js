@@ -1201,6 +1201,7 @@ test('applyFull runs synchronously right after storage.set without waiting for m
   );
   await removeStarted;
   assert.equal(appliedBeforeRemoveResolved, true, 'applyFull already succeeded before marker cleanup ran');
+  assert.equal(store.effectiveDefaultMode(), ASK, 'effective profile default stays Ask first while guard removal is still pending');
 
   resolveRemove();
   const result = await raisePromise;
@@ -1311,12 +1312,12 @@ test('a pre-write guard preserves the pending revocation target when the subsequ
 
 test('a successful live elevation reports persisted: false and removes the local grant when neither guard removal nor fallback rewrite succeeds', async () => {
   const { store, storage, sessionStorage } = await started({});
-  let downgradeArg = null;
+  let downgraded = 0;
   const raised = await store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     {
       ...makeHooks(),
-      downgradeAll: (opts) => { downgradeArg = opts ?? {}; },
+      downgradeAll: () => { downgraded += 1; },
       applyFull: () => {
         sessionStorage.failRemove = true;
         sessionStorage.failSet = true;
@@ -1327,7 +1328,7 @@ test('a successful live elevation reports persisted: false and removes the local
   assert.equal(raised.ok, true);
   assert.equal(raised.persisted, false);
   assert.equal(raised.warning, 'not-remembered');
-  assert.deepEqual(downgradeArg, { exceptOriginating: true }, 'downgrades any other chat that inherited Full access while preserving the originating chat');
+  assert.equal(downgraded, 0, 'unrelated chats are not downgraded because candidate Full access was never exposed before guard cleanup');
   assert.equal('accessPreference' in storage.data, false, 'unpersisted record was removed from local storage');
   assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
   assert.equal(store.snapshot().mode, ASK);
