@@ -1512,10 +1512,98 @@ test('when both storage reads fail at startup, a later elevation verifies and re
   assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4, 'recovered revocation target was retained');
   assert.equal(Boolean(sessionStorage.data.accessPreferenceDowngrade?.candidateOnly), false);
 
+  // A second failed elevation write in the same worker still retains the recovered revocation.
+  const secondWriteFailed = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(secondWriteFailed.ok, false);
+  assert.equal(secondWriteFailed.reason, 'storage-failed');
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4, 'recovered revocation survived a second failed elevation');
+
   // Restart still recognizes revision 4 as revoked.
   const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
   await restarted.init();
   assert.equal(restarted.effectiveDefaultMode(), ASK);
+});
+
+test('marker-free recovery after an unreadable startup verifies a durable remember: false opt-out and rejects remembered elevation', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: false, mode: ASK, revision: 5 }) },
+    session: {},
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+  assert.equal(store.snapshot().remember, true, 'provisional state defaults to remember: true');
+
+  storage.failGet = false;
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'stale-profile-revision');
+  assert.equal(store.snapshot().remember, false);
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+});
+
+test('a matching remember-off marker recovered after both startup reads fail restores remember: false and rejects the in-flight elevation', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6 }) },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-6-rem-off',
+        kind: 'remember-off',
+        staleRevision: 6,
+        maxRevision: 6,
+        at: NOW - 20,
+      },
+    },
+  });
+  storage.failGet = true;
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+  assert.equal(store.snapshot().remember, true);
+
+  storage.failGet = false;
+  sessionStorage.failGet = false;
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'stale-profile-revision');
+  assert.equal(store.snapshot().remember, false, 'recovered remember-off marker updated consent scope to remember: false');
+});
+
+test('a matching wildcard recovery includes the verified local record revision in the allocation floor', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 9 }) },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-2-wildcard',
+        kind: 'remove',
+        staleRevision: null,
+        maxRevision: 2,
+        at: NOW - 20,
+      },
+    },
+  });
+  storage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  storage.failGet = false;
+  const raised = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(raised.ok, true);
+  assert.ok(storage.data.accessPreference.revision > 9, 'new grant revision exceeds the verified stored record revision 9');
 });
 
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {

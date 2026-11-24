@@ -134,6 +134,7 @@ export function createAccessPreferenceStore({
   let startPromise = null;
   // A downgrade that is not in storage yet: { kind, forRevision, staleRevision }.
   let pending = null;
+  let recoveredRevocation = null;
   let lastMarkerId = null;
   let markerRevisionFloor = 1;
   let unpersisted = false;
@@ -344,6 +345,9 @@ export function createAccessPreferenceStore({
       } catch {
         return { ok: false };
       }
+      if (current) {
+        markerRevisionFloor = Math.max(markerRevisionFloor, current.revision);
+      }
       const { matches: stillMatches, fullAlreadyGone } = classifyMarker(pending, current);
       const scopeChanged = Boolean(
         !stillMatches && current && (current.remember !== state.remember || current.mode !== state.mode),
@@ -353,7 +357,6 @@ export function createAccessPreferenceStore({
         if (current) {
           state.remember = current.remember;
           state.mode = current.mode;
-          markerRevisionFloor = Math.max(markerRevisionFloor, current.revision);
         }
         restoreFailed = !protectedOk && Boolean(current?.remember) && current?.mode === FULL_ACCESS;
         pending = null;
@@ -383,7 +386,6 @@ export function createAccessPreferenceStore({
       }
     }
     let minRevision = Math.max(state.profileRevision, markerRevisionFloor);
-    let recoveredMarker = null;
     if (markerUnknown) {
       if (!sessionStorage?.get) return { ok: false };
       let currentMarker = null;
@@ -410,6 +412,10 @@ export function createAccessPreferenceStore({
           } catch {
             return { ok: false };
           }
+          if (current) {
+            markerRevisionFloor = Math.max(markerRevisionFloor, current.revision);
+            minRevision = Math.max(minRevision, markerRevisionFloor);
+          }
           state.stored = current;
           const { matches, fullAlreadyGone } = classifyMarker(currentMarker, current);
           if (!matches) {
@@ -419,10 +425,9 @@ export function createAccessPreferenceStore({
             if (current) {
               state.remember = current.remember;
               state.mode = current.mode;
-              markerRevisionFloor = Math.max(markerRevisionFloor, current.revision);
-              minRevision = Math.max(minRevision, markerRevisionFloor);
             }
             restoreFailed = !protectedOk && Boolean(current?.remember) && current?.mode === FULL_ACCESS;
+            recoveredRevocation = null;
             await forgetMarker();
             if (scopeChanged) {
               state.profileRevision = Math.max(state.profileRevision, current.revision) + 1;
@@ -431,7 +436,7 @@ export function createAccessPreferenceStore({
             }
             currentMarker = null;
           } else {
-            recoveredMarker = {
+            recoveredRevocation = {
               id: currentMarker.id,
               kind: currentMarker.kind,
               forRevision: minRevision,
@@ -455,12 +460,50 @@ export function createAccessPreferenceStore({
             });
             if (!upgraded) return { ok: false };
             currentMarker.id = upgradedId;
-            if (recoveredMarker) recoveredMarker.id = upgradedId;
+            if (recoveredRevocation) recoveredRevocation.id = upgradedId;
           }
           lastMarkerId = currentMarker.id;
         }
+        if (recoveredRevocation && recoveredRevocation.kind === 'remember-off' && state.remember !== false) {
+          markerUnknown = false;
+          state.remember = false;
+          state.mode = ASK_FIRST;
+          unpersisted = !recoveredRevocation.fullCleared;
+          optOutUnpersisted = recoveredRevocation.fullCleared;
+          state.profileRevision = Math.max(state.profileRevision, minRevision) + 1;
+          notify();
+          return { ok: false, reason: 'stale-profile-revision' };
+        }
       }
       markerUnknown = false;
+    }
+    if (!pending && storageUnknown) {
+      let current = null;
+      try {
+        const got = await storage.get(ACCESS_PREFERENCE_KEY);
+        current = readableRecord(got?.[ACCESS_PREFERENCE_KEY]);
+        storageUnknown = false;
+      } catch {
+        return { ok: false };
+      }
+      if (current) {
+        markerRevisionFloor = Math.max(markerRevisionFloor, current.revision);
+        minRevision = Math.max(minRevision, markerRevisionFloor);
+      }
+      const scopeChanged = Boolean(
+        current && (current.remember !== state.remember || current.mode !== state.mode),
+      );
+      state.stored = current;
+      if (current) {
+        state.remember = current.remember;
+        state.mode = current.mode;
+      }
+      restoreFailed = !protectedOk && Boolean(current?.remember) && current?.mode === FULL_ACCESS;
+      if (scopeChanged) {
+        state.profileRevision = Math.max(state.profileRevision, current.revision) + 1;
+        notify();
+        return { ok: false, reason: 'stale-profile-revision' };
+      }
     }
     if (pending && (!pending.id || !pending.markerWritten)) {
       const upgradedId = pending.id ?? makeMarkerId(pending.at ?? now(), pending.forRevision);
@@ -479,11 +522,12 @@ export function createAccessPreferenceStore({
       lastMarkerId = upgradedId;
     }
     const confirmedMarkerId = pending ? (pending.markerWritten ? pending.id : lastMarkerId) : lastMarkerId;
-    return { ok: true, supersedesMarkerId: confirmedMarkerId, minRevision, recoveredMarker };
+    return { ok: true, supersedesMarkerId: confirmedMarkerId, minRevision, recoveredMarker: recoveredRevocation };
   }
 
   /** The newer choice settles the old downgrade: its retries stop. */
   async function supersede({ keepMarker = false } = {}) {
+    recoveredRevocation = null;
     if (!keepMarker) await forgetMarker();
     if (!pending && !unpersisted && !optOutUnpersisted) return;
     pending = null;
@@ -848,6 +892,7 @@ export function createAccessPreferenceStore({
     };
     storageUnknown = false;
     restoreFailed = false;
+    recoveredRevocation = null;
     if (pending || unpersisted || optOutUnpersisted) {
       pending = null;
       unpersisted = false;
