@@ -803,7 +803,7 @@ test('unreadable startup with a numeric remember-off marker still finishes the o
 
 test('a leftover wildcard marker does not revoke a newer confirmed Full-access grant on restart', async () => {
   const { storage, sessionStorage } = makeStorage({
-    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6, acknowledgedAt: NOW + 100 }) },
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6, supersedesDowngrade: 3 }) },
     session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: null, maxRevision: 3, at: NOW } },
   });
   const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 200 });
@@ -811,6 +811,39 @@ test('a leftover wildcard marker does not revoke a newer confirmed Full-access g
   assert.equal(store.effectiveDefaultMode(), FULL);
   assert.equal(store.snapshot().unpersisted, false);
   assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('a wildcard marker still revokes a grant whose acknowledgedAt is ahead of the clock unless it explicitly supersedes that downgrade', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6, acknowledgedAt: NOW + 10_000 }) },
+    session: {},
+  });
+  storage.failGet = true;
+  storage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  const lowered = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(lowered.ok, true);
+  assert.equal(lowered.persisted, false);
+
+  // Storage recovers on restart while the grant with future acknowledgedAt is still on disk.
+  storage.failGet = false;
+  storage.failRemove = false;
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW + 50,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK, 'future acknowledgedAt alone does not exempt the revoked grant');
+  assert.equal(restarted.snapshot().unpersisted, true);
+
+  await restartedScheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false);
 });
 
 test('an explicit new revocation after an unreadable startup journals against the current grant on disk', async () => {

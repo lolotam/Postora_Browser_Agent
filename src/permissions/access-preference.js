@@ -40,7 +40,8 @@ function readableRecord(raw) {
   // A choice nobody acknowledged is not a choice.
   if (typeof raw.acknowledgedAt !== 'number' || !Number.isFinite(raw.acknowledgedAt) || raw.acknowledgedAt <= 0) return null;
   const revision = Number.isInteger(raw.revision) && raw.revision > 0 ? raw.revision : 1;
-  return { remember: raw.remember, mode: raw.mode, revision, acknowledgedAt: raw.acknowledgedAt };
+  const supersedesDowngrade = Number.isInteger(raw.supersedesDowngrade) ? raw.supersedesDowngrade : null;
+  return { remember: raw.remember, mode: raw.mode, revision, acknowledgedAt: raw.acknowledgedAt, supersedesDowngrade };
 }
 
 /** The marker of a downgrade that is not stored yet, or null. */
@@ -74,9 +75,9 @@ function classifyMarker(marker, record) {
     };
   }
   const newerThanMarker =
-    marker.at !== null
-    && typeof record.acknowledgedAt === 'number'
-    && record.acknowledgedAt > marker.at;
+    marker.maxRevision !== null
+    && record.supersedesDowngrade !== null
+    && record.supersedesDowngrade >= marker.maxRevision;
   if (newerThanMarker) {
     return { matches: false, fullAlreadyGone: record.mode !== FULL_ACCESS };
   }
@@ -107,6 +108,7 @@ export function createAccessPreferenceStore({
   let startPromise = null;
   // A downgrade that is not in storage yet: { kind, forRevision, staleRevision }.
   let pending = null;
+  let lastDowngradeRevision = null;
   let unpersisted = false;
   let optOutUnpersisted = false;
   const listeners = new Set();
@@ -178,6 +180,9 @@ export function createAccessPreferenceStore({
       state.mode = record.mode;
       state.profileRevision = record.revision;
       state.stored = record;
+      if (record.supersedesDowngrade !== null) {
+        lastDowngradeRevision = record.supersedesDowngrade;
+      }
     }
     let marker = null;
     let markerUnreadable = false;
@@ -200,6 +205,10 @@ export function createAccessPreferenceStore({
       // Preserve the revision high-water mark even when local storage is empty
       // so a leftover marker whose sessionStorage.remove failed can never match
       // a newly acknowledged grant that reuses an old revision number.
+      const markerDowngradeRev = marker.maxRevision ?? marker.staleRevision;
+      if (markerDowngradeRev !== null) {
+        lastDowngradeRevision = Math.max(lastDowngradeRevision ?? 0, markerDowngradeRev);
+      }
       state.profileRevision = Math.max(
         state.profileRevision,
         record?.revision ?? 1,
@@ -249,13 +258,14 @@ export function createAccessPreferenceStore({
 
   // ---------- writing ----------
 
-  function recordFor({ remember, mode, revision, acknowledgedAt = now() }) {
+  function recordFor({ remember, mode, revision, supersedesDowngrade = null }) {
     return {
       remember,
       mode,
       localExecution: false,
       revision,
-      acknowledgedAt,
+      acknowledgedAt: now(),
+      ...(supersedesDowngrade !== null ? { supersedesDowngrade } : {}),
       version: ACCESS_PREFERENCE_VERSION,
     };
   }
@@ -350,6 +360,7 @@ export function createAccessPreferenceStore({
       }
     }
     const revision = state.profileRevision;
+    lastDowngradeRevision = Math.max(lastDowngradeRevision ?? 0, revision);
     const storedStale = state.stored ? state.stored.revision : null;
     const staleRevision = storedStale ?? priorStaleRevision;
     const mayHaveFull =
@@ -565,8 +576,9 @@ export function createAccessPreferenceStore({
       return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
     }
     const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
-    const acknowledgedAt = Math.max(now(), (pending?.at ?? -Infinity) + 1);
-    const next = recordFor({ remember: true, mode: FULL_ACCESS, revision, acknowledgedAt });
+    const supersedesDowngrade =
+      pending?.maxRevision ?? pending?.forRevision ?? lastDowngradeRevision;
+    const next = recordFor({ remember: true, mode: FULL_ACCESS, revision, supersedesDowngrade });
     try {
       // Written first: a Full access that was not stored is not remembered.
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
@@ -575,7 +587,13 @@ export function createAccessPreferenceStore({
     }
     state.mode = FULL_ACCESS;
     state.profileRevision = revision;
-    state.stored = { remember: true, mode: FULL_ACCESS, revision, acknowledgedAt: next.acknowledgedAt };
+    state.stored = {
+      remember: true,
+      mode: FULL_ACCESS,
+      revision,
+      acknowledgedAt: next.acknowledgedAt,
+      supersedesDowngrade,
+    };
     storageUnknown = false;
     restoreFailed = false;
     supersede();
@@ -656,8 +674,14 @@ export function createAccessPreferenceStore({
     const anyFull = Boolean(hooks?.anyFull?.());
     if (anyFull && acknowledged !== true) return refuse('needs-acknowledgement');
     const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
-    const acknowledgedAt = Math.max(now(), (pending?.at ?? -Infinity) + 1);
-    const next = recordFor({ remember: true, mode: anyFull && protectedOk ? FULL_ACCESS : ASK_FIRST, revision, acknowledgedAt });
+    const supersedesDowngrade =
+      pending?.maxRevision ?? pending?.forRevision ?? lastDowngradeRevision;
+    const next = recordFor({
+      remember: true,
+      mode: anyFull && protectedOk ? FULL_ACCESS : ASK_FIRST,
+      revision,
+      supersedesDowngrade,
+    });
     try {
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
     } catch {
@@ -666,7 +690,13 @@ export function createAccessPreferenceStore({
     state.remember = true;
     state.mode = next.mode;
     state.profileRevision = revision;
-    state.stored = { remember: true, mode: next.mode, revision, acknowledgedAt: next.acknowledgedAt };
+    state.stored = {
+      remember: true,
+      mode: next.mode,
+      revision,
+      acknowledgedAt: next.acknowledgedAt,
+      supersedesDowngrade,
+    };
     storageUnknown = false;
     restoreFailed = false;
     supersede();
