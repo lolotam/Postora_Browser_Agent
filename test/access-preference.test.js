@@ -1549,7 +1549,8 @@ test('marker-free recovery after an unreadable startup verifies a durable rememb
   assert.equal(storage.data.accessPreference.mode, ASK);
 });
 
-test('a matching remember-off marker recovered after both startup reads fail restores remember: false and rejects the in-flight elevation', async () => {
+test('a matching remember-off marker recovered after both startup reads fail restores remember: false, rejects the in-flight elevation, and retries the durable opt-out', async () => {
+  const scheduler = makeScheduler();
   const { storage, sessionStorage } = makeStorage({
     initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6 }) },
     session: {
@@ -1564,7 +1565,7 @@ test('a matching remember-off marker recovered after both startup reads fail res
   });
   storage.failGet = true;
   sessionStorage.failGet = true;
-  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
   await store.init();
   assert.equal(store.snapshot().remember, true);
 
@@ -1577,6 +1578,50 @@ test('a matching remember-off marker recovered after both startup reads fail res
   assert.equal(refused.ok, false);
   assert.equal(refused.reason, 'stale-profile-revision');
   assert.equal(store.snapshot().remember, false, 'recovered remember-off marker updated consent scope to remember: false');
+  assert.equal(store.snapshot().unpersisted, true);
+
+  // The scheduled retry now writes the durable remember: false opt-out to local storage.
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+});
+
+test('marker-only read recovery classifies a matching remember-off marker against the already-loaded local record', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6 }) },
+    session: {
+      accessPreferenceDowngrade: {
+        id: 'dg-6-rem-off-session-only',
+        kind: 'remember-off',
+        staleRevision: 6,
+        maxRevision: 6,
+        at: NOW - 20,
+      },
+    },
+  });
+  // Only sessionStorage.get fails at startup; local storage read succeeds.
+  sessionStorage.failGet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal(store.snapshot().remember, true);
+
+  sessionStorage.failGet = false;
+  const refused = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'stale-profile-revision');
+  assert.equal(store.snapshot().remember, false, 'marker-only recovery restored remember: false');
+
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.remember, false);
+  assert.equal(storage.data.accessPreference.mode, ASK);
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
 });
 
 test('a matching wildcard recovery includes the verified local record revision in the allocation floor', async () => {

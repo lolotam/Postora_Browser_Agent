@@ -403,14 +403,16 @@ export function createAccessPreferenceStore({
           currentMarker.maxRevision ?? 1,
         );
         minRevision = Math.max(minRevision, markerRevisionFloor);
-        if (!pending && storageUnknown) {
-          let current = null;
-          try {
-            const got = await storage.get(ACCESS_PREFERENCE_KEY);
-            current = readableRecord(got?.[ACCESS_PREFERENCE_KEY]);
-            storageUnknown = false;
-          } catch {
-            return { ok: false };
+        if (!pending) {
+          let current = state.stored;
+          if (storageUnknown) {
+            try {
+              const got = await storage.get(ACCESS_PREFERENCE_KEY);
+              current = readableRecord(got?.[ACCESS_PREFERENCE_KEY]);
+              storageUnknown = false;
+            } catch {
+              return { ok: false };
+            }
           }
           if (current) {
             markerRevisionFloor = Math.max(markerRevisionFloor, current.revision);
@@ -468,9 +470,18 @@ export function createAccessPreferenceStore({
           markerUnknown = false;
           state.remember = false;
           state.mode = ASK_FIRST;
-          unpersisted = !recoveredRevocation.fullCleared;
-          optOutUnpersisted = recoveredRevocation.fullCleared;
           state.profileRevision = Math.max(state.profileRevision, minRevision) + 1;
+          pending = {
+            ...recoveredRevocation,
+            forRevision: state.profileRevision,
+            maxRevision: Math.max(recoveredRevocation.maxRevision ?? 1, state.profileRevision),
+            markerWritten: true,
+            needsVerification: false,
+          };
+          recoveredRevocation = null;
+          unpersisted = !pending.fullCleared;
+          optOutUnpersisted = pending.fullCleared;
+          scheduleRetry(0, pending.forRevision);
           notify();
           return { ok: false, reason: 'stale-profile-revision' };
         }
@@ -1035,7 +1046,12 @@ export function createAccessPreferenceStore({
       if (typeof remember !== 'boolean') return refuse('invalid-remember');
       if (remember && typeof expectedProfileRevision !== 'number') return refuse('stale-profile-revision');
       if (staleRequest(expectedProfileRevision)) return refuse('stale-profile-revision');
-      if (remember === state.remember) return { ok: true, changed: false, persisted: true, preference: snapshot() };
+      const needsOptOutPersistence =
+        !remember
+        && (Boolean(pending) || Boolean(recoveredRevocation) || storageUnknown || state.stored?.remember !== false || state.stored?.mode !== ASK_FIRST);
+      if (remember === state.remember && !needsOptOutPersistence) {
+        return { ok: true, changed: false, persisted: true, preference: snapshot() };
+      }
       return remember ? turnRememberOn({ acknowledged }, hooks) : turnRememberOff(hooks);
     });
   }
