@@ -7,9 +7,10 @@ Date: 2026-11-24. Baseline: `main` at `0110807`, version 0.4.17.
 This specification turns the end-to-end review of 2026-11-24 into work. Three
 read-only reviewers covered the agent core, security and permissions, and the
 side panel with voice. Every finding below comes from reading code. None was
-reproduced in a running browser, so **each task starts by reproducing its
-finding with a failing test**; a finding that cannot be reproduced is closed
-with a note instead of a change. File and line references are those of the
+reproduced in a running browser, so **each task that fixes a claimed defect
+starts by reproducing it with a failing test**; a defect that cannot be
+reproduced is closed with a note instead of a change. Intended changes are
+tested against their new contract (see "Amendments after review"). File and line references are those of the
 baseline commit and were spot-checked, not exhaustively verified.
 
 Owner decisions recorded here (Waleed Mohamed, 2026-11-24):
@@ -252,3 +253,106 @@ the local-execution card in Full access, the lost-tab stop, a page dialog
 during a click, and the sender check. Policy is tested as behaviour, never by
 matching source text. `npm test`, `npm run e2e`, `npm run package` and
 `npm run package:private` stay green on the exact PR head.
+
+## Amendments after review (2026-11-24)
+
+The review of this document on PR #52 found gaps. Where this section and the
+text above disagree, this section wins.
+
+**Scope of the reproduction rule.** "Reproduce first, close if it cannot be
+reproduced" applies to claimed defects only. Phase 0, the local-execution
+gate, the new switches and Phase 5 are intended changes: they need a test of
+the new contract (or, for tooling and refactors, the checks named in their
+row) and are never closed for lack of a baseline defect.
+
+**Order.** Remembered Full access must not ship before its safeguards. The
+sender check (2.1) and the local-execution gate (Phase 1, item 1) merge first;
+the remembered mode merges last of the three. The sender check authenticates a
+port before it is attached, before replay data is sent, and before any queued
+message is dispatched.
+
+**Phase 0 — remembered access mode.**
+
+- Record: `{ remember, mode, localExecution, revision, acknowledgedAt, version }`.
+  `remember: false` is stored explicitly, so a restart can tell "opted out"
+  from "never chose". An invalid or unreadable record is Ask first with local
+  execution asking.
+- Enforcement, not assertion: at worker start call
+  `chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })`,
+  so content scripts cannot read or write extension storage. Audit every other
+  writer of `chrome.storage.local` in trusted contexts; the panel never writes
+  this key and changes it only through the worker's verified request.
+- All changes to the record go through one serialized queue in the worker and
+  carry the profile revision the panel last saw, in addition to the session
+  revision. A stale request is refused and answered with the state in force.
+- The panel shows a mode as changed only after the write succeeded. A failed
+  write leaves the previous mode in force and says so; a downgrade that could
+  not be stored still applies to the live sessions and is reported as "not
+  remembered".
+- Profile-wide effect: choosing Ask first, or turning "remember" off, applies
+  at once to **every** live session: their permits are revoked and pending
+  approvals cancelled, as a mode change does today. Choosing Full access
+  applies to the chat it was chosen in and to chats opened afterwards; other
+  chats that are already open keep their mode until the owner changes it there.
+
+**Phase 1, item 1 — local execution.** The gate is unconditional in the first
+PR: the four tools always ask, in every mode. The "without asking" switch is a
+separate, later PR that ships only after the owner confirms it (open decision
+2). If it ships, its consent text names all four capabilities (PowerShell,
+project commands, project file writes, page JavaScript); turning it off revokes
+outstanding permits in every runner, is rechecked immediately before dispatch,
+and stops a native command that is still running.
+
+**Phase 1, item 2 — lost tab.** Tab loss is a terminal outcome for the task,
+not for the step: a dedicated error reaches the runner from both the main loop
+and the fast layer, the task ends with a message that says the working tab was
+closed, and no further provider turn or tool call happens. The test asserts
+all three.
+
+**Phase 1, item 3 — truncated calls.** The retry is owned by the agent loop,
+not the provider. The provider returns an explicit `truncated` outcome;
+`runAgent` tells the model its call was cut off and asks again, at most twice,
+then ends the task as failed. A truncated turn is never a `final` success.
+Files: `src/agent/agent.js` as well as the provider.
+
+**Phase 1, item 4 — timeouts and dialogs.**
+
+- The timeout cancels, it does not only stop waiting: each call gets its own
+  abort signal (task signal plus timeout) that reaches injection, CDP and
+  native requests, and the executor keeps its state per invocation, not
+  shared. A handler that lost the race can no longer act or hold a permit.
+- The execution timeout starts after the approval is granted. Waiting for the
+  owner's answer has its own lifetime, and an expired card is withdrawn.
+- A dialog that opens during an action ends that action with a
+  `dialog-pending` result that carries the dialog text, so the model gets a
+  turn while the dialog is still open. The `dialog` tool answers that exact
+  dialog on that target. Tests cover answering a `confirm` and a `prompt`
+  before the timeout, not only the eventual dismissal of an `alert`.
+
+**Phase 2.**
+
+- 2.2: the card shows origin and path; credentials in the URL and query values
+  are masked in what the panels receive. The approval stays bound to the exact
+  unmasked destination.
+- 2.3: the filter is checked against every component of the requested and the
+  canonical path, for listing a directory as well as for read and write. It is
+  a guarantee of the project file tools only. PowerShell keeps the Windows
+  user's privileges and is not confined to the project; that is why it keeps
+  per-command approval.
+- 2.5: every page- or tool-derived field at the handoff is framed, including
+  the fast layer's ranked hints and action summaries. Framing is defence in
+  depth, not an authorization control.
+- 2.7: one sensitivity-aware projection is applied before arguments are
+  copied anywhere, including the fast layer's recent actions and its reusable
+  text candidates (`fast-layer.js:187-188`), so a typed secret is not sent to
+  the fast provider. Tested with a synthetic secret.
+- 2.8: links are created only for `http` and `https` destinations, for
+  Markdown links and autolinks alike. Anything else renders as inert text.
+- 2.9: recommended default is **off** for including keys and sign-ins in the
+  Drive backup, with explicit consent to turn it on. Turning it off replaces
+  the current Drive file with one without credentials; older revisions Drive
+  keeps are outside the extension's control and the text says so. The default
+  is the owner's decision (open decision 4).
+
+**Tiers.** The voice approval focus fix (Phase 1, item 6) is Medium, like the
+rest of Phase 1; it guards an approval.

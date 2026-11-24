@@ -5,11 +5,14 @@ Baseline: `main` at `0110807`. This planning session implements nothing.
 The implementer is not chosen yet (owner decision, 2026-11-24).
 
 **Order.** Phase 0 and the seven Phase 1 items first, in the order below, then
-Phases 2 to 5. One task is one PR unless a row says otherwise. Each task
+Phases 2 to 5. The specification's "Amendments after review" section is part
+of every task's requirements. One task is one PR unless a row says otherwise. Each task
 follows the same steps:
 
-- [ ] Reproduce the finding with a failing test. If it cannot be reproduced,
-      record that in the PR that closes the task and change no behaviour.
+- [ ] For a claimed defect: reproduce it with a failing test. If it cannot be
+      reproduced, record that in the PR that closes the task and change no
+      behaviour. For an intended change (A1, A2, the switches, Batch E): write
+      the test of the new contract first; these are never closed unreproduced.
 - [ ] Make the change described in the specification.
 - [ ] Run `npm test`, `npm run e2e`, `npm run package`, `npm run package:private`.
 - [ ] Open the PR with the tier named below; a tier card goes to the owner
@@ -23,20 +26,22 @@ Work from `F:\Dev\Projects\Postora_Browser_Agent`, one worktree per task under
 
 | Order | Task | Files | Tests | Tier |
 | --- | --- | --- | --- | --- |
-| A1 | Remembered access mode | `src/permissions/policy.js`, `src/background/session-runner.js`, `src/background/service-worker.js`, new `src/permissions/access-preference.js`, `src/sidepanel/access.js`, `index.html`, `messages.js`, `docs/plans/chat-permission-modes.md`, `docs/PRIVATE-ACCESS.md` | new `test/access-preference.test.js`; extend `test/access-worker.test.js`; e2e: mode survives a worker restart; backup import leaves Ask first | Heavy |
-| A2 | Local-execution gate and its switch | `src/permissions/policy.js`, `src/agent/tool-kinds.js`, `src/background/session-runner.js` (card detail), `src/sidepanel/permissions.js`, `messages.js` | policy tests for the four tools in both modes and both switch states; e2e: `project_run` asks in Full access | Heavy |
+| A0 | Sender check on worker requests and ports (spec 2.1, was B1) | `src/background/service-worker.js`, `src/background/session-runner.js`, `src/permissions/panel-sender.js` | port authenticated before attach, replay and queued dispatch; untrusted sender gets nothing from `backup-export`, `save-settings`, `run` | Heavy |
+| A1 | Remembered access mode (merges after A0 and A2) | `src/permissions/policy.js`, `src/background/session-runner.js`, `src/background/service-worker.js`, new `src/permissions/access-preference.js`, `src/sidepanel/access.js`, `index.html`, `messages.js`, `docs/plans/chat-permission-modes.md`, `docs/PRIVATE-ACCESS.md` | new `test/access-preference.test.js`; extend `test/access-worker.test.js`; e2e: mode survives a worker restart; backup import leaves Ask first | Heavy |
+| A2 | Local-execution gate, unconditional (the "without asking" switch is a later PR, after owner decision 2) | `src/permissions/policy.js`, `src/agent/tool-kinds.js`, `src/background/session-runner.js` (card detail), `src/sidepanel/permissions.js`, `messages.js` | policy tests for the four tools in both modes and both switch states; e2e: `project_run` asks in Full access | Heavy |
 | A3 | Lost working tab stops the task; `close_tab` ownership | `src/browser/controller.js`, `src/agent/tools.js` | controller tests with a removed tab; e2e: close the working tab mid-task | Medium |
-| A4 | Truncated tool calls fail the turn | `src/providers/openai-compatible.js` | provider tests for `finish_reason: 'length'` and unparsable arguments | Medium |
+| A4 | Truncated tool calls fail the turn | `src/providers/openai-compatible.js`, `src/agent/agent.js` (owns the retry) | provider tests for `finish_reason: 'length'` and unparsable arguments | Medium |
 | A5 | Tool timeout, abort race, page dialogs | `src/agent/tools.js`, `src/browser/controller.js`, `src/agent/prompt.js` (dialog tool) | tool tests with a never-resolving handler; e2e fixture page that opens `alert()` on click | Medium |
 | A6 | Snapshot generation ids | `src/browser/page-scripts.js`, `src/browser/controller.js`, `src/agent/tools.js`, `src/fast/fast-layer.js`, `src/agent/agent.js` | stale-index tests; e2e with the fast layer re-indexing | Medium |
-| A7 | Voice approval focus | `src/sidepanel/panel.js` | e2e: Enter in the command box with a card open | Light |
+| A7 | Voice approval focus | `src/sidepanel/panel.js` | e2e: Enter in the command box with a card open | Medium |
 | A8 | Hands-free opt-in and spoken stop | `src/voice/voice-controller.js`, `src/sidepanel/panel.js`, `messages.js` | `test/voice-controller.test.js`: stop word mid-task, phrase dropped while busy, default off for a new profile | Medium |
 
-A1 goes before A2 because A2's switch uses the same storage and rules. A1 and
-A2 each wait for the owner's approval card before merge. A3 to A8 do not
-depend on each other and may run in parallel.
+Merge order for the three Heavy tasks is A0, A2, A1: remembered Full access
+must not reach `main` before the sender check and the local-execution gate.
+Each waits for the owner's approval card before merge. A3 to A8 do not depend
+on each other and may run in parallel.
 
-Exit for Batch A: all eight merged, CI green on `main`, a private package built
+Exit for Batch A: all nine merged, CI green on `main`, a private package built
 and checked by hand on the owner's Comet and Chrome profiles: Full access
 remembered after a browser restart; `project_run` asks; closing the working tab
 stops the task; "stop" by voice stops.
@@ -45,7 +50,6 @@ stops the task; "stop" by voice stops.
 
 | Order | Task | Spec rows | Tier |
 | --- | --- | --- | --- |
-| B1 | Sender check on worker requests and ports | 2.1 | Heavy |
 | B2 | Approval cards show what is approved | 2.2 | Heavy |
 | B3 | Project file filters on read and write, pinned roots | 2.3 | Heavy |
 | B4 | Import drops `project` and body `meta` | 2.4 | Heavy |
@@ -55,8 +59,8 @@ stops the task; "stop" by voice stops.
 | B8 | Markdown renderer builds DOM nodes | 2.8 | Medium |
 | B9 | Drive backup "include keys" switch and docs | 2.9 | Medium |
 
-B1 first: it is the smallest change that removes the most reach. B2 builds on
-the card detail added in A2.
+The sender check moved to Batch A as A0. B2 builds on the card detail added in
+A2.
 
 ## Batch C — agent quality (Phase 3)
 
@@ -107,4 +111,5 @@ E4 starts only after Batch D, so the split does not collide with UI changes.
    Full access, off by default, remembered once turned on.
 3. Store-build review risk (native modules shipped unused, `claude-cli`
    User-Agent rule): fix, or accept while the build stays private.
-4. Drive backup keys: a switch only, or passphrase encryption.
+4. Drive backup keys: default for "include keys and sign-ins" (recommended:
+   off, with explicit consent), and whether to add passphrase encryption.
