@@ -493,25 +493,52 @@ test('a refusal of the worker leaves the mode as it was and tells the panel why'
   }
 });
 
-test('the downgrade of the profile takes Full access away from a chat that has it, and only that', async () => {
+test('the downgrade of the profile takes Full access away and cancels pending approvals on every chat', async () => {
   const full = await profileRunner({ initialAccessMode: 'full-access' });
   const asking = await profileRunner();
   try {
     const panel = attachPanel(full);
-    attachPanel(asking); // a question nobody can answer is withdrawn at once
-    const question = asking.access.requestApproval({ action: 'click', args: {}, tabId: 1 });
+    attachPanel(asking);
+    const operation = { action: 'click', args: { index: 1 } };
+    const { permit } = await full.access.authorize(operation);
+    assert.equal(full.access.grantValid(permit, operation), true);
+    const fullQuestion = full.access.requestApproval({ action: 'local_exec', args: {}, tabId: 1 });
+    const askQuestion = asking.access.requestApproval({ action: 'click', args: {}, tabId: 1 });
+
+    const askResult = asking.forceDowngradeToAskFirst();
     const result = full.forceDowngradeToAskFirst();
     assert.equal(result.changed, true);
     assert.equal(full.access.mode, 'ask-first');
+    assert.equal(full.access.grantValid(permit, operation), false);
     assert.ok(full.access.revision > 1, 'the old permits are bound to a revision that is gone');
+    assert.equal(full.access.pendingCount, 0);
     assert.equal(panel.states().at(-1).mode, 'ask-first');
-    // A chat that already asks first keeps the questions the user has not answered.
-    assert.equal(asking.forceDowngradeToAskFirst().changed, false);
-    assert.equal(asking.access.pendingCount, 1);
-    asking.access.cancel('test');
-    await question.promise;
+    assert.equal(askResult.changed, false);
+    assert.equal(asking.access.pendingCount, 0, 'pending approvals on Ask-first chats are cancelled too');
+    const fullOutcome = await fullQuestion.promise;
+    const askOutcome = await askQuestion.promise;
+    assert.equal(fullOutcome.approved, false);
+    assert.equal(askOutcome.approved, false);
+    assert.equal(askOutcome.reason, 'mode-changed');
   } finally {
     full.dispose();
     asking.dispose();
+  }
+});
+
+test('downgrading via changeProfileMode emits access-mode-note once', async () => {
+  const runner = await profileRunner({
+    initialAccessMode: 'full-access',
+    onAccessModeChange: async ({ runner: target }) => target.forceDowngradeToAskFirst(),
+  });
+  try {
+    const panel = attachPanel(runner);
+    panel.send({ type: 'access-mode', mode: 'ask-first', sessionId: runner.id, expectedRevision: runner.access.revision });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runner.access.mode, 'ask-first');
+    assert.equal(runner.transcript.filter((event) => event.type === 'access-mode-note').length, 1);
+    assert.equal(panel.messages.filter((message) => message.type === 'access-mode-note').length, 1);
+  } finally {
+    runner.dispose();
   }
 });

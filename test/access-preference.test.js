@@ -415,14 +415,48 @@ test('a failed opt-out is retried and reported like any downgrade', async () => 
   const scheduler = makeScheduler();
   const { store, storage } = await started({ accessPreference: record() }, { scheduler });
   storage.failSet = true;
+  storage.failRemove = true;
   const result = await store.setRemember({ remember: false, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
   assert.equal(result.ok, true);
   assert.equal(result.warning, 'not-cleared');
   assert.equal(store.snapshot().remember, false);
   storage.failSet = false;
+  storage.failRemove = false;
   await scheduler.runNext();
   assert.equal(storage.data.accessPreference.remember, false);
   assert.equal(store.snapshot().unpersisted, false);
+});
+
+test('turning "remember" off falls back to removing Full access when the larger write fails', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage, sessionStorage } = await started({ accessPreference: record() }, { scheduler });
+  storage.failSet = true;
+  const result = await store.setRemember({ remember: false, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(result.ok, true);
+  assert.equal(result.persisted, false);
+  assert.equal(result.warning, 'not-remembered');
+  assert.equal('accessPreference' in storage.data, false, 'Full access was removed from storage');
+  assert.equal('accessPreferenceDowngrade' in sessionStorage.data, false);
+  assert.equal(store.snapshot().remember, false);
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal(scheduler.queue.length, 0);
+});
+
+test('turning "remember" on without a profile revision is refused', async () => {
+  const { store, storage } = await started({ accessPreference: record({ remember: false, mode: ASK }) });
+  const result = await store.setRemember({ remember: true, acknowledged: true }, makeHooks({ full: true }));
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'stale-profile-revision');
+  assert.equal(storage.data.accessPreference.remember, false);
+});
+
+test('a restarted worker with a pending downgrade moves its revision past the stale record', async () => {
+  const scheduler = makeScheduler();
+  const marker = { accessPreferenceDowngrade: { kind: 'remember-off', staleRevision: 4, at: NOW - 5 } };
+  const { store, storage } = await started({ accessPreference: record() }, { scheduler, session: marker });
+  assert.ok(store.profileRevision > 4, 'pending downgrade revision advances past the stale stored revision');
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.revision, store.profileRevision);
 });
 
 test('turning "remember" on while a chat is in Full access needs the acknowledgment', async () => {

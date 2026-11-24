@@ -3019,6 +3019,8 @@ async function changeRemember(remember, acknowledged) {
     }
   } catch {
     rememberErrorKey = 'access.error.send';
+    const rememberBox = $('rememberAccessMode');
+    if (rememberBox) rememberBox.checked = accessUi.preference?.remember ?? true;
   } finally {
     rememberBusy = false;
     renderRemember();
@@ -3029,17 +3031,23 @@ async function changeRemember(remember, acknowledged) {
 $('rememberAccessMode').addEventListener('change', (event) => {
   const box = event.target;
   const wanted = box.checked;
-  if (rememberBusy) { renderRemember(); return; }
+  const confirmedRemember = accessUi.preference?.remember ?? true;
+  if (rememberBusy) {
+    box.checked = confirmedRemember;
+    renderRemember();
+    return;
+  }
   // Turning it on while Full access is on makes Full access reach new chats:
   // the warning is read and acknowledged before anything is sent.
   if (wanted && accessUi.confirmed.mode === FULL_ACCESS) {
-    box.checked = accessUi.preference?.remember ?? false; // nothing is chosen until the warning is acknowledged
+    box.checked = confirmedRemember; // nothing is chosen until the warning is acknowledged
     if (!accessUi.askRememberAcknowledgement(() => changeRemember(true, true))) {
       rememberErrorKey = 'access.error.connect';
       renderRemember();
     }
     return;
   }
+  box.checked = confirmedRemember;
   changeRemember(wanted, false);
 });
 

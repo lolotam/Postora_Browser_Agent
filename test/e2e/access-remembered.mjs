@@ -131,6 +131,23 @@ async function restartWorker(panel) {
   await reopen(panel);
 }
 
+async function resetAccessPreference(panel) {
+  await panel?.evaluate?.(async () => {
+    const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+    if (pref && (!pref.remember || pref.mode === 'full-access')) {
+      let rev = pref.profileRevision;
+      if (!pref.remember) {
+        const on = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: true, expectedProfileRevision: rev });
+        rev = on?.result?.preference?.profileRevision ?? rev;
+      }
+      const off = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: false, expectedProfileRevision: rev });
+      rev = off?.result?.preference?.profileRevision ?? rev;
+      await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: false, expectedProfileRevision: rev });
+    }
+    await chrome.storage.local.remove('accessPreference');
+  }).catch(() => {});
+}
+
 export async function runAccessRememberedScenario(context, extensionId) {
   const failures = [];
   const { server, base } = await startServer();
@@ -221,7 +238,7 @@ export async function runAccessRememberedScenario(context, extensionId) {
     console.log(`\n== scenario: access-remembered ==\n${failures.length ? failures.join('\n') : 'the choice was remembered, and only the panel could change it'}`);
     return failures;
   } finally {
-    await panel.evaluate(() => chrome.storage.local.remove('accessPreference')).catch(() => {});
+    await resetAccessPreference(panel);
     await panel.close();
     server.close();
   }

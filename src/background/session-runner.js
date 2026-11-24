@@ -372,7 +372,7 @@ export class SessionRunner {
     if (this.disposed) return result;
     // The mode in force comes first: the panel clears its notice when it is
     // told the mode, so a notice that came before it would never be read.
-    if (this.access.mode !== before) this.emit({ type: 'access-mode-note', mode: this.access.mode });
+    if (mode === FULL_ACCESS && this.access.mode !== before) this.emit({ type: 'access-mode-note', mode: this.access.mode });
     else this.broadcastAccess();
     if (!result?.ok) this.broadcast({ type: 'access-preference-notice', reason: result?.reason ?? 'refused' });
     else if (result.warning) this.broadcast({ type: 'access-preference-notice', reason: result.warning });
@@ -380,17 +380,18 @@ export class SessionRunner {
   }
 
   /**
-   * The owner chose Ask first somewhere, or turned "remember" off: a chat in
-   * Full access goes back to Ask first at once. Its work stops, its permits are
-   * withdrawn and its questions are cancelled, exactly as for a mode change in
-   * the chat itself. A chat that already asks first has nothing to take away,
-   * and the questions it is waiting on are the user's to answer.
+   * The owner chose Ask first somewhere, or turned "remember" off: every live
+   * session goes back to Ask first at once, its permits are revoked and any
+   * pending approvals are cancelled.
    */
   forceDowngradeToAskFirst() {
-    if (this.access.mode !== FULL_ACCESS) return { ok: true, changed: false, ...this.access.state() };
-    const result = this.access.setMode(ASK_FIRST, { trusted: true });
-    if (result.changed) this.emit({ type: 'access-mode-note', mode: ASK_FIRST });
-    return result;
+    if (this.access.mode === FULL_ACCESS) {
+      const result = this.access.setMode(ASK_FIRST, { trusted: true });
+      if (result.changed) this.emit({ type: 'access-mode-note', mode: ASK_FIRST });
+      return result;
+    }
+    this.access.cancel('mode-changed');
+    return { ok: true, changed: false, ...this.access.state() };
   }
 
   /** The profile's remembered choice, as a field of an event; nothing when there is no profile. */

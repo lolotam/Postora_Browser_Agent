@@ -169,8 +169,15 @@ function liveAccessHooks() {
 function changeAccessMode({ runner, mode, acknowledged, expectedRevision, expectedProfileRevision }) {
   return accessPref.setMode({ mode, acknowledged, expectedProfileRevision }, {
     ...liveAccessHooks(),
-    precheckFull: () => (typeof expectedRevision === 'number' && expectedRevision === runner.access.revision ? null : { reason: 'stale-revision' }),
-    applyFull: () => runner.access.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision }),
+    precheckFull: () => {
+      if (runner.disposed) return { reason: 'disposed' };
+      return typeof expectedRevision === 'number' && expectedRevision === runner.access.revision
+        ? null
+        : { reason: 'stale-revision' };
+    },
+    applyFull: () => (runner.disposed
+      ? { ok: false, reason: 'disposed' }
+      : runner.access.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision })),
   });
 }
 

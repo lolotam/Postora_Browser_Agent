@@ -151,6 +151,7 @@ export function createAccessPreferenceStore({
       // The marker belongs to the record it was made for. A record that was
       // written since is a newer choice, and the marker is old news.
       if (record && marker.staleRevision !== null && record.revision === marker.staleRevision) {
+        state.profileRevision = Math.max(state.profileRevision, record.revision) + 1;
         pending = { kind: marker.kind, forRevision: state.profileRevision, staleRevision: marker.staleRevision };
         if (marker.kind === 'remember-off') state.remember = false;
         state.mode = ASK_FIRST;
@@ -238,6 +239,15 @@ export function createAccessPreferenceStore({
       settleStored(kind, revision);
       return { persisted: true };
     } catch {
+      if (kind === 'remember-off' && staleRevision !== null) {
+        try {
+          await storage.remove(ACCESS_PREFERENCE_KEY);
+          state.stored = null;
+          return { persisted: false, warning: 'not-remembered' };
+        } catch {
+          // Even the smaller write failed; retry the opt-out durably.
+        }
+      }
       if (staleRevision === null) return { persisted: false, warning: 'not-remembered' };
       pending = { kind, forRevision: revision, staleRevision };
       unpersisted = true;
@@ -384,6 +394,7 @@ export function createAccessPreferenceStore({
       await init();
       const { remember, acknowledged, expectedProfileRevision } = request ?? {};
       if (typeof remember !== 'boolean') return refuse('invalid-remember');
+      if (remember && typeof expectedProfileRevision !== 'number') return refuse('stale-profile-revision');
       if (staleRequest(expectedProfileRevision)) return refuse('stale-profile-revision');
       if (remember === state.remember) return { ok: true, changed: false, persisted: true, preference: snapshot() };
       return remember ? turnRememberOn({ acknowledged }, hooks) : turnRememberOff(hooks);

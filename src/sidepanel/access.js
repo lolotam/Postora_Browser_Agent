@@ -138,7 +138,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   // The warning belongs to the chat and the revision it was opened for.
   // `purpose` is what the acknowledgment is for: Full access in this chat, or
   // remembering Full access that is already on (the "remember" switch).
-  const warningState = { isOpen: false, sessionId: null, revision: 0, acknowledged: false, purpose: 'elevate', onConfirm: null };
+  const warningState = { isOpen: false, sessionId: null, revision: 0, profileRevision: null, acknowledged: false, purpose: 'elevate', onConfirm: null };
 
   /** The worker's snapshot, or nothing at all when the state is not one. */
   function snapshotOf(value) {
@@ -197,6 +197,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
   /** The warning is gone: nothing was sent, the confirmed mode stays. */
   function dismissWarning({ focus = true } = {}) {
     warningState.isOpen = false;
+    warningState.profileRevision = null;
     warningState.acknowledged = false;
     warningState.purpose = 'elevate';
     warningState.onConfirm = null;
@@ -229,6 +230,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     warningState.onConfirm = null;
     warningState.sessionId = boundSession();
     warningState.revision = confirmedRevision;
+    warningState.profileRevision = preference?.profileRevision ?? null;
     warningState.acknowledged = false;
     if (acknowledge) acknowledge.checked = false;
     if (confirm) confirm.disabled = true;
@@ -248,6 +250,7 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     warningState.onConfirm = onConfirm;
     warningState.sessionId = boundSession();
     warningState.revision = confirmedRevision;
+    warningState.profileRevision = preference?.profileRevision ?? null;
     warningState.acknowledged = false;
     if (acknowledge) acknowledge.checked = false;
     if (confirm) confirm.disabled = true;
@@ -320,7 +323,11 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
       // and under this policy: a chat or a policy that moved on is not it.
       const onConfirm = warningState.onConfirm;
       const chat = boundSession();
-      if (!onConfirm || !chat || chat !== warningState.sessionId || warningState.revision !== confirmedRevision) { dismissWarning(); return; }
+      if (
+        !onConfirm || !chat || chat !== warningState.sessionId
+        || warningState.revision !== confirmedRevision
+        || warningState.profileRevision !== (preference?.profileRevision ?? null)
+      ) { dismissWarning(); return; }
       warning?.close?.();
       dismissWarning({ focus: false });
       onConfirm();
@@ -334,11 +341,12 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
       acknowledged: true,
       sessionId: warningState.sessionId,
       expectedRevision: warningState.revision,
-      expectedProfileRevision: preference?.profileRevision ?? null,
+      expectedProfileRevision: warningState.profileRevision,
     });
     if (!message) { dismissWarning(); return; }
     // The warning has done its work; the worker still has to confirm it.
     warningState.isOpen = false;
+    warningState.profileRevision = null;
     warningState.acknowledged = false;
     if (acknowledge) acknowledge.checked = false;
     if (confirm) confirm.disabled = true;
@@ -397,8 +405,9 @@ export function createAccessUi({ elements, t, request, getSessionId } = {}) {
     preference = known;
     // The switch shows what the worker confirmed, and nothing else.
     if (remember) remember.checked = known.remember;
-    // The warning was read against the old setting of "remember".
-    if (rememberChanged && warningState.isOpen && warningState.purpose === 'elevate') renderScope(remembering());
+    // The warning was read against the old setting of "remember": dismiss
+    // it instead of updating consent wording under an open dialog.
+    if (rememberChanged && warningState.isOpen) dismissWarning({ focus: false });
     return preference;
   }
 
