@@ -74,8 +74,9 @@ function classifyMarker(marker, record) {
     };
   }
   const newerThanMarker =
-    (marker.maxRevision !== null && record.revision > marker.maxRevision)
-    || (marker.at !== null && typeof record.acknowledgedAt === 'number' && record.acknowledgedAt > marker.at);
+    marker.at !== null
+    && typeof record.acknowledgedAt === 'number'
+    && record.acknowledgedAt > marker.at;
   if (newerThanMarker) {
     return { matches: false, fullAlreadyGone: record.mode !== FULL_ACCESS };
   }
@@ -196,17 +197,21 @@ export function createAccessPreferenceStore({
       state.mode = ASK_FIRST;
     }
     if (marker) {
+      // Preserve the revision high-water mark even when local storage is empty
+      // so a leftover marker whose sessionStorage.remove failed can never match
+      // a newly acknowledged grant that reuses an old revision number.
+      state.profileRevision = Math.max(
+        state.profileRevision,
+        record?.revision ?? 1,
+        marker.staleRevision ?? 1,
+        marker.maxRevision ?? 1,
+      );
       // The marker belongs to the record it was made for. A record that was
       // written since is a newer choice, and the marker is old news.
       const classification = unreadable ? { matches: true, fullAlreadyGone: marker.optOutOnly } : classifyMarker(marker, record);
       if (classification.matches) {
         const { fullAlreadyGone } = classification;
-        state.profileRevision = Math.max(
-          state.profileRevision,
-          record?.revision ?? 1,
-          marker.staleRevision ?? 1,
-          marker.maxRevision ?? 1,
-        ) + 1;
+        state.profileRevision += 1;
         pending = {
           kind: marker.kind,
           forRevision: state.profileRevision,
@@ -244,13 +249,13 @@ export function createAccessPreferenceStore({
 
   // ---------- writing ----------
 
-  function recordFor({ remember, mode, revision }) {
+  function recordFor({ remember, mode, revision, acknowledgedAt = now() }) {
     return {
       remember,
       mode,
       localExecution: false,
       revision,
-      acknowledgedAt: now(),
+      acknowledgedAt,
       version: ACCESS_PREFERENCE_VERSION,
     };
   }
@@ -466,17 +471,24 @@ export function createAccessPreferenceStore({
         notify();
         return;
       }
+      const nextUnpersisted = !fullAlreadyGone;
+      const nextOptOutUnpersisted = fullAlreadyGone && pending.kind === 'remember-off';
+      const warningChanged =
+        restoreFailed !== false
+        || unpersisted !== nextUnpersisted
+        || optOutUnpersisted !== nextOptOutUnpersisted;
       state.stored = current;
       restoreFailed = false;
       pending.needsVerification = false;
       pending.fullCleared = fullAlreadyGone;
-      unpersisted = !fullAlreadyGone;
-      optOutUnpersisted = fullAlreadyGone && pending.kind === 'remember-off';
+      unpersisted = nextUnpersisted;
+      optOutUnpersisted = nextOptOutUnpersisted;
       if (fullAlreadyGone) {
         pending.staleRevision = current ? current.revision : null;
       } else if (current) {
         pending.staleRevision = current.revision;
       }
+      if (warningChanged) notify();
     }
     const { kind, forRevision } = pending;
     const mayHaveFull = !pending.fullCleared;
@@ -553,7 +565,8 @@ export function createAccessPreferenceStore({
       return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
     }
     const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
-    const next = recordFor({ remember: true, mode: FULL_ACCESS, revision });
+    const acknowledgedAt = Math.max(now(), (pending?.at ?? -Infinity) + 1);
+    const next = recordFor({ remember: true, mode: FULL_ACCESS, revision, acknowledgedAt });
     try {
       // Written first: a Full access that was not stored is not remembered.
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
@@ -643,7 +656,8 @@ export function createAccessPreferenceStore({
     const anyFull = Boolean(hooks?.anyFull?.());
     if (anyFull && acknowledged !== true) return refuse('needs-acknowledgement');
     const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
-    const next = recordFor({ remember: true, mode: anyFull && protectedOk ? FULL_ACCESS : ASK_FIRST, revision });
+    const acknowledgedAt = Math.max(now(), (pending?.at ?? -Infinity) + 1);
+    const next = recordFor({ remember: true, mode: anyFull && protectedOk ? FULL_ACCESS : ASK_FIRST, revision, acknowledgedAt });
     try {
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
     } catch {

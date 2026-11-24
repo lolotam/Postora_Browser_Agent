@@ -847,3 +847,80 @@ test('an explicit new revocation after an unreadable startup journals against th
   await restartedScheduler.runNext();
   assert.equal('accessPreference' in storage.data, false);
 });
+
+test('unknown-revision revocation with repeated read failures and an older high-revision grant does not restore Full access on restart', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 12, acknowledgedAt: NOW - 500 }) },
+    session: {},
+  });
+  storage.failGet = true;
+  storage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  const lowered = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(lowered.ok, true);
+  assert.equal(lowered.persisted, false);
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, null);
+
+  // Storage recovers on restart while the older high-revision grant is still on disk.
+  storage.failGet = false;
+  storage.failRemove = false;
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW + 50,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK, 'older high-revision grant is revoked, not mistaken for a newer choice');
+  assert.equal(restarted.snapshot().unpersisted, true);
+
+  await restartedScheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false);
+  assert.equal(restarted.snapshot().unpersisted, false);
+});
+
+test('a leftover exact marker with empty local storage advances the revision high-water mark so a new grant never reuses its revision', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: {},
+    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: 2, maxRevision: 2, at: NOW - 100 } },
+  });
+  sessionStorage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+  assert.ok(store.profileRevision >= 2, 'high-water mark from leftover marker is preserved');
+
+  const raised = await store.setMode({ mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision }, makeHooks());
+  assert.equal(raised.ok, true);
+  assert.ok(storage.data.accessPreference.revision > 2, 'newly acknowledged grant uses a higher revision than the leftover marker');
+
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL, 'leftover exact marker does not revoke the newer grant');
+});
+
+test('verification transitioning from unpersisted Full-access warning to optOutUnpersisted notifies listeners even when the opt-out write fails', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: {},
+    session: { accessPreferenceDowngrade: { kind: 'remember-off', staleRevision: 4, at: NOW - 10 } },
+  });
+  storage.failGet = true;
+  storage.failSet = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+  assert.equal(store.snapshot().unpersisted, true);
+  assert.equal(store.snapshot().optOutUnpersisted, false);
+
+  const views = [];
+  store.subscribe((view) => views.push(view));
+
+  storage.failGet = false;
+  await scheduler.runNext();
+  assert.equal(store.snapshot().unpersisted, false);
+  assert.equal(store.snapshot().optOutUnpersisted, true);
+  assert.ok(views.some((v) => v.unpersisted === false && v.optOutUnpersisted === true), 'panel listener was notified of the updated warning flags');
+});
