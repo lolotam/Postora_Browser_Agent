@@ -303,6 +303,21 @@ test('a command that types an escape does not look like one that holds the chara
   assert.ok(!shown('dir C:\\Users').includes('access.approval.exec.escaped'), 'and only then');
 });
 
+test('the escape decision covers the whole card, and a line break in a path cannot pass for typed text', () => {
+  const shown = (execDetail) => cardFor({ action: 'run_terminal', kind: 'local-execution', execDetail })
+    .find((node) => node.className === 'permission-exec-detail').textContent;
+  // Only the command holds a hidden character; the folder's backslash is doubled too.
+  const mixed = shown({ command: 'echo \u200B', cwd: 'C:\\work' });
+  assert.ok(mixed.includes('access.approval.exec.escaped'));
+  assert.ok(mixed.includes('C:\\\\work'), 'every field follows the note at the top');
+  // A real line break and a typed backslash-n in a folder must not look the same.
+  const broken = shown({ command: 'dir', cwd: 'C:\\a\nb' });
+  const typed = shown({ command: 'dir', cwd: 'C:\\a\\nb' });
+  assert.notEqual(broken, typed);
+  assert.ok(broken.includes('C:\\\\a\\nb'));
+  assert.ok(typed.includes('C:\\a\\nb') && !typed.includes('access.approval.exec.escaped'));
+});
+
 test('a line inside a command cannot pass for the card\'s working-directory label', () => {
   const text = cardFor({
     action: 'run_terminal',
@@ -311,7 +326,8 @@ test('a line inside a command cannot pass for the card\'s working-directory labe
   }).find((node) => node.className === 'permission-exec-detail').textContent;
   const lines = text.split('\n');
   const labelLines = lines.filter((line) => line.startsWith('access.approval.exec.workingDirectory'));
-  assert.deepEqual(labelLines, ['access.approval.exec.workingDirectory:C:\\real\\nTarget file: x'], 'one label line, with the real folder on it');
-  assert.ok(lines.includes('│ access.approval.exec.workingDirectory:C:\\safe'), 'the command\'s own line is marked as command text');
+  // The folder's line break turns escaping on, so backslashes show doubled.
+  assert.deepEqual(labelLines, ['access.approval.exec.workingDirectory:C:\\\\real\\nTarget file: x'], 'one label line, with the real folder on it');
+  assert.ok(lines.includes('│ access.approval.exec.workingDirectory:C:\\\\safe'), 'the command\'s own line is marked as command text');
   assert.ok(lines.indexOf('│ del *') > lines.indexOf(labelLines[0]), 'the command comes after the labelled fields');
 });
