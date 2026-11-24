@@ -803,8 +803,8 @@ test('unreadable startup with a numeric remember-off marker still finishes the o
 
 test('a leftover wildcard marker does not revoke a newer confirmed Full-access grant on restart', async () => {
   const { storage, sessionStorage } = makeStorage({
-    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6, supersedesDowngrade: 3 }) },
-    session: { accessPreferenceDowngrade: { kind: 'remove', staleRevision: null, maxRevision: 3, at: NOW } },
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 6, supersedesMarkerId: 'dg-3-1700000000000-abc' }) },
+    session: { accessPreferenceDowngrade: { id: 'dg-3-1700000000000-abc', kind: 'remove', staleRevision: null, maxRevision: 3, at: NOW } },
   });
   const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 200 });
   await store.init();
@@ -844,6 +844,116 @@ test('a wildcard marker still revokes a grant whose acknowledgedAt is ahead of t
 
   await restartedScheduler.runNext();
   assert.equal('accessPreference' in storage.data, false);
+});
+
+test('an old grant carrying earlier supersession metadata cannot bypass a new wildcard revocation after unreadable startup', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: {
+      accessPreference: record({
+        remember: true,
+        mode: FULL,
+        revision: 12,
+        acknowledgedAt: NOW - 500,
+        supersedesMarkerId: 'dg-10-old-marker',
+      }),
+    },
+    session: {},
+  });
+  storage.failGet = true;
+  storage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  const lowered = await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(lowered.ok, true);
+  assert.equal(lowered.persisted, false);
+  assert.equal(typeof sessionStorage.data.accessPreferenceDowngrade?.id, 'string');
+  assert.notEqual(sessionStorage.data.accessPreferenceDowngrade.id, 'dg-10-old-marker');
+
+  storage.failGet = false;
+  storage.failRemove = false;
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW + 50,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK, 'new wildcard marker revokes old grant despite old supersedesMarkerId');
+  assert.equal(restarted.snapshot().unpersisted, true);
+
+  await restartedScheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false);
+});
+
+test('a legacy wildcard marker without an id is upgraded before a new grant supersedes it, or refuses the grant if upgrade fails', async () => {
+  const scheduler = makeScheduler();
+  const { storage, sessionStorage } = makeStorage({
+    initial: {},
+    session: { accessPreferenceDowngrade: { kind: 'remember-off', staleRevision: null, optOutOnly: true, at: NOW - 5 } },
+  });
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW, schedule: scheduler.schedule });
+  await store.init();
+
+  // If upgrading the legacy marker in session storage fails, the new choice is not reported as durably saved.
+  sessionStorage.failSet = true;
+  const refused = await store.setRemember(
+    { remember: true, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks({ full: true }),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'storage-failed');
+
+  // Once session storage can upgrade the marker, even if sessionStorage.remove fails, the upgraded id is linked.
+  sessionStorage.failSet = false;
+  sessionStorage.failRemove = true;
+  const accepted = await store.setRemember(
+    { remember: true, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks({ full: true }),
+  );
+  assert.equal(accepted.ok, true);
+  const markerId = sessionStorage.data.accessPreferenceDowngrade?.id;
+  assert.equal(typeof markerId, 'string');
+  assert.equal(storage.data.accessPreference.supersedesMarkerId, markerId);
+
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL, 'upgraded legacy marker does not revoke the new grant on restart');
+});
+
+test('a new grant after a failed startup session-marker read re-reads and binds to the marker before persisting', async () => {
+  const { storage, sessionStorage } = makeStorage({
+    initial: { accessPreference: record({ remember: true, mode: FULL, revision: 4 }) },
+    session: { accessPreferenceDowngrade: { id: 'dg-4-wildcard', kind: 'remove', staleRevision: null, maxRevision: 4, at: NOW - 20 } },
+  });
+  sessionStorage.failGet = true;
+  sessionStorage.failRemove = true;
+  const store = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW });
+  await store.init();
+  assert.equal(store.effectiveDefaultMode(), ASK);
+
+  // While the session marker can neither be read nor removed, a new grant is refused rather than leaving an unbound wildcard marker active.
+  const whileUnreadable = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(whileUnreadable.ok, false);
+  assert.equal(whileUnreadable.reason, 'storage-failed');
+
+  // When sessionStorage.get recovers (even if sessionStorage.remove still fails), the new grant binds to the marker id.
+  sessionStorage.failGet = false;
+  const raised = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(raised.ok, true);
+  assert.equal(storage.data.accessPreference.supersedesMarkerId, 'dg-4-wildcard');
+
+  const restarted = createAccessPreferenceStore({ storage, sessionStorage, now: () => NOW + 50 });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), FULL, 'bound grant is not revoked by the leftover marker on restart');
 });
 
 test('an explicit new revocation after an unreadable startup journals against the current grant on disk', async () => {

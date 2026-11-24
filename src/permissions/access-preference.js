@@ -31,6 +31,11 @@ export const ACCESS_DOWNGRADE_MARKER_KEY = 'accessPreferenceDowngrade';
 const RETRY_DELAYS_MS = [2000, 10000, 60000];
 const MODES = [ASK_FIRST, FULL_ACCESS];
 
+function makeMarkerId(at, revision) {
+  const token = globalThis.crypto?.randomUUID?.() ?? `${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  return `dg-${revision}-${at}-${token}`;
+}
+
 /** The record as it is stored, or null when it is not a record this version wrote. */
 function readableRecord(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -40,8 +45,8 @@ function readableRecord(raw) {
   // A choice nobody acknowledged is not a choice.
   if (typeof raw.acknowledgedAt !== 'number' || !Number.isFinite(raw.acknowledgedAt) || raw.acknowledgedAt <= 0) return null;
   const revision = Number.isInteger(raw.revision) && raw.revision > 0 ? raw.revision : 1;
-  const supersedesDowngrade = Number.isInteger(raw.supersedesDowngrade) ? raw.supersedesDowngrade : null;
-  return { remember: raw.remember, mode: raw.mode, revision, acknowledgedAt: raw.acknowledgedAt, supersedesDowngrade };
+  const supersedesMarkerId = typeof raw.supersedesMarkerId === 'string' && raw.supersedesMarkerId ? raw.supersedesMarkerId : null;
+  return { remember: raw.remember, mode: raw.mode, revision, acknowledgedAt: raw.acknowledgedAt, supersedesMarkerId };
 }
 
 /** The marker of a downgrade that is not stored yet, or null. */
@@ -51,7 +56,8 @@ function readableMarker(raw) {
   const stale = Number.isInteger(raw.staleRevision) ? raw.staleRevision : null;
   const maxRevision = Number.isInteger(raw.maxRevision) ? raw.maxRevision : null;
   const at = typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : null;
-  return { kind: raw.kind, staleRevision: stale, optOutOnly: raw.optOutOnly === true, maxRevision, at };
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+  return { kind: raw.kind, staleRevision: stale, optOutOnly: raw.optOutOnly === true, maxRevision, at, id };
 }
 
 /**
@@ -75,9 +81,9 @@ function classifyMarker(marker, record) {
     };
   }
   const newerThanMarker =
-    marker.maxRevision !== null
-    && record.supersedesDowngrade !== null
-    && record.supersedesDowngrade >= marker.maxRevision;
+    marker.id !== null
+    && record.supersedesMarkerId !== null
+    && record.supersedesMarkerId === marker.id;
   if (newerThanMarker) {
     return { matches: false, fullAlreadyGone: record.mode !== FULL_ACCESS };
   }
@@ -105,10 +111,11 @@ export function createAccessPreferenceStore({
   let protectedOk = false;
   let restoreFailed = false;
   let storageUnknown = false;
+  let markerUnknown = false;
   let startPromise = null;
   // A downgrade that is not in storage yet: { kind, forRevision, staleRevision }.
   let pending = null;
-  let lastDowngradeRevision = null;
+  let lastMarkerId = null;
   let unpersisted = false;
   let optOutUnpersisted = false;
   const listeners = new Set();
@@ -180,8 +187,8 @@ export function createAccessPreferenceStore({
       state.mode = record.mode;
       state.profileRevision = record.revision;
       state.stored = record;
-      if (record.supersedesDowngrade !== null) {
-        lastDowngradeRevision = record.supersedesDowngrade;
+      if (record.supersedesMarkerId !== null) {
+        lastMarkerId = record.supersedesMarkerId;
       }
     }
     let marker = null;
@@ -196,6 +203,7 @@ export function createAccessPreferenceStore({
     } catch {
       markerUnreadable = true;
     }
+    markerUnknown = markerUnreadable;
     const markerUncertainForFull = markerUnreadable && Boolean(record?.remember) && record?.mode === FULL_ACCESS;
     if (markerUncertainForFull) {
       // Cannot verify whether a downgrade marker is pending: fail closed.
@@ -205,9 +213,8 @@ export function createAccessPreferenceStore({
       // Preserve the revision high-water mark even when local storage is empty
       // so a leftover marker whose sessionStorage.remove failed can never match
       // a newly acknowledged grant that reuses an old revision number.
-      const markerDowngradeRev = marker.maxRevision ?? marker.staleRevision;
-      if (markerDowngradeRev !== null) {
-        lastDowngradeRevision = Math.max(lastDowngradeRevision ?? 0, markerDowngradeRev);
+      if (marker.id !== null) {
+        lastMarkerId = marker.id;
       }
       state.profileRevision = Math.max(
         state.profileRevision,
@@ -222,6 +229,7 @@ export function createAccessPreferenceStore({
         const { fullAlreadyGone } = classification;
         state.profileRevision += 1;
         pending = {
+          id: marker.id,
           kind: marker.kind,
           forRevision: state.profileRevision,
           staleRevision: fullAlreadyGone ? null : (record?.revision ?? marker.staleRevision),
@@ -258,22 +266,27 @@ export function createAccessPreferenceStore({
 
   // ---------- writing ----------
 
-  function recordFor({ remember, mode, revision, supersedesDowngrade = null }) {
+  function recordFor({ remember, mode, revision, supersedesMarkerId = null }) {
     return {
       remember,
       mode,
       localExecution: false,
       revision,
       acknowledgedAt: now(),
-      ...(supersedesDowngrade !== null ? { supersedesDowngrade } : {}),
+      ...(supersedesMarkerId !== null ? { supersedesMarkerId } : {}),
       version: ACCESS_PREFERENCE_VERSION,
     };
   }
 
   function forgetMarker() {
     try {
-      Promise.resolve(sessionStorage.remove(ACCESS_DOWNGRADE_MARKER_KEY)).catch(() => {});
-    } catch { /* the marker is only a help */ }
+      return Promise.resolve(sessionStorage.remove(ACCESS_DOWNGRADE_MARKER_KEY)).then(
+        () => true,
+        () => false,
+      );
+    } catch {
+      return Promise.resolve(false);
+    }
   }
 
   async function writeMarker(value) {
@@ -286,13 +299,76 @@ export function createAccessPreferenceStore({
     }
   }
 
+  /**
+   * Ensures any active or previously unreadable downgrade marker in
+   * `chrome.storage.session` is read, upgraded with a unique `id`, or cleared
+   * before persisting a new choice that supersedes it.
+   */
+  async function bindToSupersedingMarker() {
+    if (markerUnknown) {
+      let currentMarker = null;
+      let readOk = false;
+      if (sessionStorage?.get) {
+        try {
+          const got = await sessionStorage.get(ACCESS_DOWNGRADE_MARKER_KEY);
+          currentMarker = readableMarker(got?.[ACCESS_DOWNGRADE_MARKER_KEY]);
+          readOk = true;
+          markerUnknown = false;
+        } catch {
+          readOk = false;
+        }
+      }
+      if (!readOk) {
+        const removed = await forgetMarker();
+        if (!removed) return { ok: false };
+        markerUnknown = false;
+        return { ok: true, supersedesMarkerId: lastMarkerId };
+      }
+      if (currentMarker) {
+        state.profileRevision = Math.max(
+          state.profileRevision,
+          currentMarker.staleRevision ?? 1,
+          currentMarker.maxRevision ?? 1,
+        );
+        if (!currentMarker.id) {
+          const upgradedId = makeMarkerId(currentMarker.at ?? now(), state.profileRevision);
+          const upgraded = await writeMarker({
+            ...currentMarker,
+            id: upgradedId,
+            maxRevision: currentMarker.maxRevision ?? state.profileRevision,
+            at: currentMarker.at ?? now(),
+          });
+          if (!upgraded) return { ok: false };
+          currentMarker.id = upgradedId;
+        }
+        lastMarkerId = currentMarker.id;
+      }
+    }
+    if (pending && !pending.id) {
+      const upgradedId = makeMarkerId(pending.at ?? now(), pending.forRevision);
+      const mayHaveFull = !pending.fullCleared;
+      const upgraded = await writeMarker({
+        id: upgradedId,
+        kind: pending.kind,
+        staleRevision: pending.staleRevision,
+        maxRevision: pending.maxRevision ?? pending.forRevision,
+        ...(mayHaveFull ? {} : { optOutOnly: true }),
+        at: pending.at ?? now(),
+      });
+      if (!upgraded) return { ok: false };
+      pending.id = upgradedId;
+      lastMarkerId = upgradedId;
+    }
+    return { ok: true, supersedesMarkerId: pending?.id ?? lastMarkerId };
+  }
+
   /** The newer choice settles the old downgrade: its retries stop. */
   function supersede({ keepMarker = false } = {}) {
+    if (!keepMarker) forgetMarker();
     if (!pending && !unpersisted && !optOutUnpersisted) return;
     pending = null;
     unpersisted = false;
     optOutUnpersisted = false;
-    if (!keepMarker) forgetMarker();
   }
 
   function refuse(reason, extra = {}) {
@@ -360,7 +436,6 @@ export function createAccessPreferenceStore({
       }
     }
     const revision = state.profileRevision;
-    lastDowngradeRevision = Math.max(lastDowngradeRevision ?? 0, revision);
     const storedStale = state.stored ? state.stored.revision : null;
     const staleRevision = storedStale ?? priorStaleRevision;
     const mayHaveFull =
@@ -370,11 +445,14 @@ export function createAccessPreferenceStore({
       || (priorFullPending && !state.stored);
     const needsMarker = mayHaveFull || kind === 'remember-off';
     const markerAt = now();
+    const markerId = makeMarkerId(markerAt, revision);
+    lastMarkerId = markerId;
     let markerWritten = false;
     // Journal before touching local storage so a worker stop mid-write cannot
     // resurrect a revoked Full-access grant on restart.
     if (needsMarker) {
       markerWritten = await writeMarker({
+        id: markerId,
         kind,
         staleRevision,
         maxRevision: revision,
@@ -395,6 +473,7 @@ export function createAccessPreferenceStore({
         optOutUnpersisted = true;
         const optOutMarkerWritten = mayHaveFull
           ? await writeMarker({
+            id: markerId,
             kind: 'remember-off',
             staleRevision: null,
             maxRevision: revision,
@@ -403,6 +482,7 @@ export function createAccessPreferenceStore({
           })
           : markerWritten;
         pending = {
+          id: markerId,
           kind,
           forRevision: revision,
           staleRevision: mayHaveFull ? null : staleRevision,
@@ -420,6 +500,7 @@ export function createAccessPreferenceStore({
       return { persisted: false, warning: 'not-remembered' };
     }
     pending = {
+      id: markerId,
       kind,
       forRevision: revision,
       staleRevision,
@@ -452,7 +533,9 @@ export function createAccessPreferenceStore({
         storageUnknown = false;
       } catch {
         if (!pending.markerWritten) {
+          if (!pending.id) pending.id = makeMarkerId(pending.at ?? now(), pending.forRevision);
           pending.markerWritten = await writeMarker({
+            id: pending.id,
             kind: pending.kind,
             staleRevision: pending.staleRevision,
             maxRevision: pending.maxRevision,
@@ -504,7 +587,9 @@ export function createAccessPreferenceStore({
     const { kind, forRevision } = pending;
     const mayHaveFull = !pending.fullCleared;
     if (!pending.markerWritten) {
+      if (!pending.id) pending.id = makeMarkerId(pending.at ?? now(), forRevision);
       pending.markerWritten = await writeMarker({
+        id: pending.id,
         kind,
         staleRevision: pending.staleRevision,
         maxRevision: pending.maxRevision ?? forRevision,
@@ -525,7 +610,9 @@ export function createAccessPreferenceStore({
       unpersisted = false;
       if (kind === 'remember-off') {
         optOutUnpersisted = true;
+        if (!pending.id) pending.id = makeMarkerId(pending.at ?? now(), forRevision);
         const optOutMarkerWritten = await writeMarker({
+          id: pending.id,
           kind: 'remember-off',
           staleRevision: null,
           maxRevision: pending.maxRevision ?? forRevision,
@@ -569,16 +656,18 @@ export function createAccessPreferenceStore({
       && state.stored?.remember === true
       && state.stored?.mode === FULL_ACCESS
       && !pending
-      && !storageUnknown;
+      && !storageUnknown
+      && !markerUnknown;
     if (hadRememberedFull) {
       const applied = hooks?.applyFull?.();
       if (!applied?.ok) return refuse(applied?.reason ?? 'refused');
       return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
     }
+    const bound = await bindToSupersedingMarker();
+    if (!bound.ok) return refuse('storage-failed');
     const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
-    const supersedesDowngrade =
-      pending?.maxRevision ?? pending?.forRevision ?? lastDowngradeRevision;
-    const next = recordFor({ remember: true, mode: FULL_ACCESS, revision, supersedesDowngrade });
+    const { supersedesMarkerId } = bound;
+    const next = recordFor({ remember: true, mode: FULL_ACCESS, revision, supersedesMarkerId });
     try {
       // Written first: a Full access that was not stored is not remembered.
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
@@ -592,7 +681,7 @@ export function createAccessPreferenceStore({
       mode: FULL_ACCESS,
       revision,
       acknowledgedAt: next.acknowledgedAt,
-      supersedesDowngrade,
+      supersedesMarkerId,
     };
     storageUnknown = false;
     restoreFailed = false;
@@ -673,14 +762,15 @@ export function createAccessPreferenceStore({
   async function turnRememberOn({ acknowledged }, hooks) {
     const anyFull = Boolean(hooks?.anyFull?.());
     if (anyFull && acknowledged !== true) return refuse('needs-acknowledgement');
+    const bound = await bindToSupersedingMarker();
+    if (!bound.ok) return refuse('storage-failed');
     const revision = Math.max(state.profileRevision, pending?.maxRevision ?? 0) + 1;
-    const supersedesDowngrade =
-      pending?.maxRevision ?? pending?.forRevision ?? lastDowngradeRevision;
+    const { supersedesMarkerId } = bound;
     const next = recordFor({
       remember: true,
       mode: anyFull && protectedOk ? FULL_ACCESS : ASK_FIRST,
       revision,
-      supersedesDowngrade,
+      supersedesMarkerId,
     });
     try {
       await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
@@ -695,7 +785,7 @@ export function createAccessPreferenceStore({
       mode: next.mode,
       revision,
       acknowledgedAt: next.acknowledgedAt,
-      supersedesDowngrade,
+      supersedesMarkerId,
     };
     storageUnknown = false;
     restoreFailed = false;
