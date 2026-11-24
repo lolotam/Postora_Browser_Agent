@@ -338,6 +338,46 @@ export function createAccessPreferenceStore({
     });
   }
 
+  /** "Remember" off: every live chat goes back to Ask first, and the opt-out is written. */
+  async function turnRememberOff(hooks) {
+    hooks?.downgradeAll?.();
+    state.remember = false;
+    state.mode = ASK_FIRST;
+    state.profileRevision += 1;
+    supersede();
+    // The smallest write is the explicit opt-out: a restart can tell
+    // "opted out" from "never chose".
+    const result = await clearStored('remember-off');
+    notify();
+    return { ok: true, changed: true, ...result, preference: snapshot() };
+  }
+
+  /** "Remember" on: a Full access that is on is remembered only with the acknowledgment. */
+  async function turnRememberOn({ acknowledged }, hooks) {
+    const anyFull = Boolean(hooks?.anyFull?.());
+    if (anyFull && acknowledged !== true) return refuse('needs-acknowledgement');
+    const revision = state.profileRevision + 1;
+    const next = recordFor({ remember: true, mode: anyFull && protectedOk ? FULL_ACCESS : ASK_FIRST, revision });
+    try {
+      await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
+    } catch {
+      return refuse('storage-failed');
+    }
+    state.remember = true;
+    state.mode = next.mode;
+    state.profileRevision = revision;
+    state.stored = { remember: true, mode: next.mode, revision };
+    supersede();
+    notify();
+    return {
+      ok: true,
+      changed: true,
+      persisted: true,
+      ...(anyFull && !protectedOk ? { warning: 'protection-unavailable' } : {}),
+      preference: snapshot(),
+    };
+  }
+
   /** The "remember my choice" switch. */
   function setRemember(request, hooks) {
     return enqueue(async () => {
@@ -346,41 +386,7 @@ export function createAccessPreferenceStore({
       if (typeof remember !== 'boolean') return refuse('invalid-remember');
       if (staleRequest(expectedProfileRevision)) return refuse('stale-profile-revision');
       if (remember === state.remember) return { ok: true, changed: false, persisted: true, preference: snapshot() };
-      if (!remember) {
-        hooks?.downgradeAll?.();
-        state.remember = false;
-        state.mode = ASK_FIRST;
-        state.profileRevision += 1;
-        supersede();
-        // The smallest write is the explicit opt-out: a restart can tell
-        // "opted out" from "never chose".
-        const result = await clearStored('remember-off');
-        notify();
-        return { ok: true, changed: true, ...result, preference: snapshot() };
-      }
-      const anyFull = Boolean(hooks?.anyFull?.());
-      if (anyFull && acknowledged !== true) return refuse('needs-acknowledgement');
-      const remembered = anyFull && protectedOk;
-      const revision = state.profileRevision + 1;
-      const next = recordFor({ remember: true, mode: remembered ? FULL_ACCESS : ASK_FIRST, revision });
-      try {
-        await storage.set({ [ACCESS_PREFERENCE_KEY]: next });
-      } catch {
-        return refuse('storage-failed');
-      }
-      state.remember = true;
-      state.mode = next.mode;
-      state.profileRevision = revision;
-      state.stored = { remember: true, mode: next.mode, revision };
-      supersede();
-      notify();
-      return {
-        ok: true,
-        changed: true,
-        persisted: true,
-        ...(anyFull && !protectedOk ? { warning: 'protection-unavailable' } : {}),
-        preference: snapshot(),
-      };
+      return remember ? turnRememberOn({ acknowledged }, hooks) : turnRememberOff(hooks);
     });
   }
 

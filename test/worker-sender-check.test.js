@@ -208,3 +208,63 @@ test('the real side panel can send requests and use a port', async () => {
   assert.ok(port.posted.some((message) => message.type === 'replay'));
   assert.equal(started.length, 1);
 });
+
+// ---------- the remembered access mode ----------
+
+for (const [label, sender] of untrustedSenders()) {
+  for (const message of [
+    { type: 'get-access-preference' },
+    { type: 'set-access-remember', remember: false },
+  ]) {
+    test(`${message.type} from ${label} gets no answer and writes nothing`, async () => {
+      const answer = await request(message, sender);
+      assert.equal(answer.ok, false);
+      assert.equal(answer.error, 'untrusted sender');
+      assert.deepEqual(storageSets, []);
+    });
+  }
+}
+
+test('the side panel is told what the profile remembers, and a Full access choice is stored before it is applied', async () => {
+  const first = await request({ type: 'get-access-preference' }, panelSender());
+  assert.equal(first.ok, true);
+  assert.equal(first.result.remember, true);
+  assert.equal(first.result.protected, true);
+  assert.equal(first.result.mode, 'ask-first');
+
+  const port = fakePort();
+  onConnect(port);
+  await flush();
+  const replay = port.posted.find((message) => message.type === 'replay');
+  assert.equal(replay.accessPreference.profileRevision, first.result.profileRevision);
+  assert.equal(replay.access.mode, 'ask-first');
+
+  for (const hold of [...port.messageListeners]) {
+    hold({ type: 'access-mode', mode: 'full-access', acknowledged: true, sessionId: SESSION_ID, expectedRevision: replay.access.revision, expectedProfileRevision: replay.accessPreference.profileRevision });
+  }
+  await flush();
+  const stored = storageSets.find((change) => change.accessPreference)?.accessPreference;
+  assert.equal(stored?.mode, 'full-access');
+  assert.equal(stored?.remember, true);
+  const state = port.posted.filter((message) => message.type === 'access-state').at(-1);
+  assert.equal(state.mode, 'full-access');
+  assert.equal(state.accessPreference.mode, 'full-access');
+
+  // A request made against a profile that has moved on is refused.
+  for (const hold of [...port.messageListeners]) {
+    hold({ type: 'access-mode', mode: 'ask-first', sessionId: SESSION_ID, expectedRevision: state.revision, expectedProfileRevision: 1 });
+  }
+  await flush();
+  assert.equal(port.posted.filter((message) => message.type === 'access-state').at(-1).mode, 'full-access');
+  assert.ok(port.posted.some((message) => message.type === 'access-preference-notice' && message.reason === 'stale-profile-revision'));
+
+  // Turning "remember" off takes Full access away from every live chat at once.
+  const current = (await request({ type: 'get-access-preference' }, panelSender())).result;
+  const off = await request({ type: 'set-access-remember', remember: false, expectedProfileRevision: current.profileRevision }, panelSender());
+  assert.equal(off.ok, true);
+  assert.equal(off.result.ok, true);
+  assert.equal(records.accessPreference.remember, false);
+  assert.equal(records.accessPreference.mode, 'ask-first');
+  assert.equal(port.posted.filter((message) => message.type === 'access-state').at(-1).mode, 'ask-first');
+  assert.ok(port.posted.some((message) => message.type === 'access-preference-state' && message.accessPreference.remember === false));
+});

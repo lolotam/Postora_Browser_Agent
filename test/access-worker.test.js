@@ -411,3 +411,107 @@ test('a disposed session answers nothing', async () => {
   assert.equal(runner.access.mode, 'ask-first');
   assert.equal(runner.ports.size, 0);
 });
+
+// ---------- a worker that remembers the owner's choice ----------
+
+/** A runner as the worker builds it when the profile remembers a mode. */
+async function profileRunner({ initialAccessMode, onAccessModeChange, getProfileAccess } = {}) {
+  const meta = await sessions.createStoredSession('Profile');
+  const body = await sessions.loadSession(meta.id);
+  return new SessionRunner({
+    meta, body, color: 'cyan', isTakenByOther: () => null, onSessionsChanged: () => {},
+    initialAccessMode, onAccessModeChange, getProfileAccess,
+  });
+}
+
+test('a runner without a profile says nothing about one', async () => {
+  const runner = await newRunner('Standalone');
+  try {
+    const panel = attachPanel(runner);
+    assert.equal('accessPreference' in panel.replay(), false);
+    panel.send(elevation(runner));
+    assert.equal(runner.access.mode, 'full-access', 'the standalone runner still changes mode by itself');
+    assert.equal(panel.states().some((state) => 'accessPreference' in state), false);
+  } finally {
+    runner.dispose();
+  }
+});
+
+test('a chat opens in the mode the worker hands it, at revision 1', async () => {
+  const runner = await profileRunner({ initialAccessMode: 'full-access' });
+  try {
+    assert.equal(runner.access.mode, 'full-access');
+    assert.equal(runner.access.revision, 1);
+    const other = await profileRunner({ initialAccessMode: 'anything-else' });
+    assert.equal(other.access.mode, 'ask-first');
+    other.dispose();
+  } finally {
+    runner.dispose();
+  }
+});
+
+test('with a profile, the mode is asked of the worker first and the answer carries the profile', async () => {
+  const preference = { remember: true, mode: 'ask-first', profileRevision: 3, restoreFailed: false, unpersisted: false };
+  const asked = [];
+  let runner;
+  runner = await profileRunner({
+    getProfileAccess: () => preference,
+    onAccessModeChange: async (request) => {
+      asked.push(request);
+      return request.runner.access.setMode('full-access', { trusted: true, acknowledged: true, expectedRevision: request.expectedRevision });
+    },
+  });
+  try {
+    const panel = attachPanel(runner);
+    assert.deepEqual(panel.replay().accessPreference, preference);
+    panel.send(elevation(runner, { expectedProfileRevision: 3 }));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runner.access.mode, 'full-access');
+    assert.equal(asked[0].expectedProfileRevision, 3);
+    assert.equal(asked[0].acknowledged, true);
+    assert.deepEqual(panel.states().at(-1).accessPreference, preference);
+  } finally {
+    runner.dispose();
+  }
+});
+
+test('a refusal of the worker leaves the mode as it was and tells the panel why', async () => {
+  const runner = await profileRunner({
+    getProfileAccess: () => ({ remember: true, mode: 'ask-first', profileRevision: 3, restoreFailed: false, unpersisted: false }),
+    onAccessModeChange: async () => ({ ok: false, changed: false, reason: 'storage-failed' }),
+  });
+  try {
+    const panel = attachPanel(runner);
+    panel.send(elevation(runner));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runner.access.mode, 'ask-first');
+    const last = panel.messages.at(-1);
+    assert.deepEqual({ type: last.type, reason: last.reason }, { type: 'access-preference-notice', reason: 'storage-failed' });
+    assert.equal(panel.states().at(-1).mode, 'ask-first', 'the notice comes after the state, which clears the old one');
+  } finally {
+    runner.dispose();
+  }
+});
+
+test('the downgrade of the profile takes Full access away from a chat that has it, and only that', async () => {
+  const full = await profileRunner({ initialAccessMode: 'full-access' });
+  const asking = await profileRunner();
+  try {
+    const panel = attachPanel(full);
+    attachPanel(asking); // a question nobody can answer is withdrawn at once
+    const question = asking.access.requestApproval({ action: 'click', args: {}, tabId: 1 });
+    const result = full.forceDowngradeToAskFirst();
+    assert.equal(result.changed, true);
+    assert.equal(full.access.mode, 'ask-first');
+    assert.ok(full.access.revision > 1, 'the old permits are bound to a revision that is gone');
+    assert.equal(panel.states().at(-1).mode, 'ask-first');
+    // A chat that already asks first keeps the questions the user has not answered.
+    assert.equal(asking.forceDowngradeToAskFirst().changed, false);
+    assert.equal(asking.access.pendingCount, 1);
+    asking.access.cancel('test');
+    await question.promise;
+  } finally {
+    full.dispose();
+    asking.dispose();
+  }
+});

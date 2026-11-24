@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { runAccessUiScenario } from './access-ui.mjs';
 import { runAccessRuntimeScenario } from './access-runtime.mjs';
+import { runAccessRememberedScenario } from './access-remembered.mjs';
 import { runVoiceAccessScenario } from './voice-access.mjs';
 import { runFocusedWorkspaceScenario } from './focused-workspace.mjs';
 import { runNamedProvidersScenario } from './named-providers.mjs';
@@ -1921,6 +1922,7 @@ async function main() {
       ...(await verify(runVoiceReplayScenario)),
       ...(await verify(runAccessUiScenario)),
       ...(await verify(runAccessRuntimeScenario)),
+      ...(await verify(runAccessRememberedScenario)),
       ...(await verify(runVoiceAccessScenario)),
       ...(await runScenario(context, extensionId, {
         name: 'fast-access-disabled',
