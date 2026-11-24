@@ -1201,6 +1201,7 @@ test('applyFull runs synchronously right after storage.set without waiting for m
   );
   await removeStarted;
   assert.equal(appliedBeforeRemoveResolved, true, 'applyFull already succeeded before marker cleanup ran');
+  assert.equal(store.effectiveDefaultMode(), ASK, 'effective profile default stays Ask first while guard removal is still pending');
 
   resolveRemove();
   const result = await raisePromise;

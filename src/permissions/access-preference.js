@@ -936,7 +936,6 @@ export function createAccessPreferenceStore({
       }
       return refuse('storage-failed');
     }
-    state.mode = FULL_ACCESS;
     state.profileRevision = revision;
     state.stored = {
       remember: true,
@@ -980,6 +979,7 @@ export function createAccessPreferenceStore({
       notify();
       return { ok: true, changed: Boolean(applied.changed), persisted: false, warning, preference: snapshot() };
     }
+    state.mode = FULL_ACCESS;
     notify();
     return { ok: true, changed: Boolean(applied.changed), persisted: true, preference: snapshot() };
   }
