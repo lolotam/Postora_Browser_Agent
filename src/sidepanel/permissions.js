@@ -54,6 +54,12 @@ const MAX_FIELD = 300;
 /** The actions that can type into a terminal that runs inside a web page. */
 const TERMINAL_ACTIONS = new Set(['insert_text', 'press_key', 'type_text']);
 const COMMAND_ACTIONS = new Set(['project_run', 'run_terminal']);
+// Characters that do not show, or that reorder the text around them.
+const HIDDEN_CHARS = '\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u00AD\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\uFEFF';
+const HIDDEN = new RegExp(`[${HIDDEN_CHARS}]`, 'g');
+const HAS_HIDDEN = new RegExp(`[${HIDDEN_CHARS}]`);
+// Starts every line of a command or expression on the approval card.
+const GUTTER = '│ ';
 
 /**
  * The panel helper for dedicated approvals.
@@ -124,6 +130,7 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     const revision = raw.revision;
     if (!Number.isInteger(revision) || revision <= 0) return null;
     if (typeof raw.action !== 'string') return null;
+    const detail = raw.execDetail && typeof raw.execDetail === 'object' ? raw.execDetail : null;
     return {
       id,
       sessionId,
@@ -134,6 +141,13 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
       label: typeof raw.label === 'string' ? raw.label : '',
       command: COMMAND_ACTIONS.has(raw.action) && typeof raw.command === 'string' ? raw.command.slice(0, 16000) : '',
       commandTruncated: COMMAND_ACTIONS.has(raw.action) && (raw.commandTruncated === true || (typeof raw.command === 'string' && raw.command.length > 16000)),
+      execDetail: detail ? {
+        command: typeof detail.command === 'string' ? detail.command : '',
+        cwd: typeof detail.cwd === 'string' ? detail.cwd : '',
+        expression: typeof detail.expression === 'string' ? detail.expression : '',
+        path: typeof detail.path === 'string' ? detail.path : '',
+        size: Number.isInteger(detail.size) ? detail.size : null,
+      } : null,
     };
   }
 
@@ -182,6 +196,9 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     command.dir = 'ltr';
     const commandWarning = doc.createElement('p');
     commandWarning.className = 'permission-command-warning';
+    const execDetail = doc.createElement('pre');
+    execDetail.className = 'permission-exec-detail';
+    execDetail.dir = 'ltr';
 
     const actions = doc.createElement('div');
     actions.className = 'permission-actions';
@@ -204,12 +221,79 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     error.hidden = true;
 
     actions.append(allow, deny);
-    card.append(title, action, site, target, terminal, command, commandWarning, actions, status, error);
+    card.append(title, action, site, target, terminal, command, commandWarning, execDetail, actions, status, error);
 
-    record.node = { card, title, action, site, target, terminal, command, commandWarning, allow, deny, status, error };
+    record.node = { card, title, action, site, target, terminal, command, commandWarning, execDetail, allow, deny, status, error };
     allow.addEventListener('click', () => { respond(record, 'allow'); });
     deny.addEventListener('click', () => { respond(record, 'deny'); });
     return record;
+  }
+
+  /**
+   * The full local action the user is approving. The labelled fields come
+   * first; the command or expression comes last, and each of its lines starts
+   * with a gutter mark. A line inside a command can then never pass for one
+   * of the card's own labels.
+   */
+  function execDetailText(record) {
+    const detail = record.execDetail;
+    if (!detail) return '';
+    // One decision for the whole card, so the note at the top is true of
+    // every field on it. A line break inside a one-line field counts too,
+    // since it is written as \n there.
+    const escape = [detail.command, detail.expression].some(needsEscape)
+      || [detail.cwd, detail.path].some((value) => needsEscape(value) || /[\r\n]/.test(value ?? ''));
+    const lines = [];
+    if (escape) lines.push(translator('access.approval.exec.escaped'));
+    if (detail.command) {
+      lines.push(detail.cwd
+        ? translator('access.approval.exec.workingDirectory', { cwd: oneLine(detail.cwd, escape) })
+        : translator('access.approval.exec.defaultDirectory'));
+    }
+    if (detail.path) lines.push(translator('access.approval.exec.target', { path: oneLine(detail.path, escape) }));
+    if (detail.size !== null) lines.push(translator('access.approval.exec.size', { size: detail.size }));
+    if (detail.command) lines.push(translator('access.approval.exec.command'), gutter(detail.command, escape));
+    if (detail.expression) lines.push(translator('access.approval.exec.expression'), gutter(detail.expression, escape));
+    return lines.join('\n');
+  }
+
+  /** A multi-line body, each line marked so it reads as part of the body. */
+  function gutter(text, escape) {
+    return visibleText(text, escape).split('\n').map((line) => `${GUTTER}${line}`).join('\n');
+  }
+
+  /**
+   * A value that belongs on its label's line: line breaks are written out.
+   * Any line break sets the card to escape, so a typed "\n" shows as "\\n".
+   */
+  function oneLine(text, escape) {
+    return visibleText(text, escape).replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+  }
+
+  /** True when the text holds a hidden character, or a "\u{" of its own. */
+  function needsEscape(text) {
+    if (!text) return false;
+    const value = String(text);
+    return HAS_HIDDEN.test(value) || value.includes('\\u{');
+  }
+
+  /**
+   * Text exactly as it would run. Characters that do not show, or that reorder
+   * what is shown (control characters, zero-width and bidirectional marks),
+   * are written out as \u{...}, so the card cannot look like a different
+   * command. Tabs and line breaks stay as they are.
+   *
+   * When the card needs no escape, text is shown as is, so an ordinary
+   * Windows path keeps single backslashes. Otherwise every backslash is
+   * doubled first: then a single "\u{" can only be an escape, and a command
+   * that types "\u{202E}" cannot pass for one that holds U+202E. The card
+   * says so in its first line whenever this happens.
+   */
+  function visibleText(text, escape) {
+    const value = String(text);
+    if (!escape) return value;
+    return value.replace(/\\/g, '\\\\').replace(HIDDEN,
+      (ch) => `\\u{${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}}`);
   }
 
   /** The words of a card, in the language of the panel. */
@@ -225,9 +309,11 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     node.terminal.textContent = translator('access.approval.terminal');
     node.terminal.hidden = !TERMINAL_ACTIONS.has(record.action);
     node.command.textContent = record.command;
-    node.command.hidden = !record.command;
+    node.command.hidden = !record.command || Boolean(record.execDetail?.command);
     node.commandWarning.textContent = translator('access.approval.commandTruncated');
-    node.commandWarning.hidden = !record.commandTruncated;
+    node.commandWarning.hidden = !record.commandTruncated || Boolean(record.execDetail?.command);
+    node.execDetail.textContent = execDetailText(record);
+    node.execDetail.hidden = !node.execDetail.textContent;
     node.allow.textContent = translator('access.approval.allow');
     node.deny.textContent = translator('access.approval.deny');
     node.status.textContent = translator(record.sending ? 'access.approval.answering' : 'access.approval.waiting');
@@ -265,6 +351,7 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
       label: request.label,
       command: request.command,
       commandTruncated: request.commandTruncated,
+      execDetail: request.execDetail,
       port,
       sending: false,
       errorKey: null,

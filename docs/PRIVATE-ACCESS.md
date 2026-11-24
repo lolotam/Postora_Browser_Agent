@@ -80,10 +80,11 @@ allows only that extension ID. It does not request administrator access, expose 
 HTTP listener, or register the host for other Windows accounts. Native messaging
 registration follows [Chrome's native messaging documentation](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging).
 
-Reload the extension and choose **Full access** in the relevant chat. `run_terminal`
-runs PowerShell as the signed-in Windows user, including local file operations,
-program execution, and `Get-Clipboard` / `Set-Clipboard`. Ask first requires an
-approval for each native command. Command output reaches the AI provider and saved
+Reload the extension. `run_terminal` runs PowerShell as the signed-in Windows
+user, including local file operations, program execution, and `Get-Clipboard` /
+`Set-Clipboard`. Every native command needs its own approval, in Ask first and in
+Full access alike: the card shows the whole command and its working directory.
+The same holds for `project_run`, `project_write` and `run_javascript`. Command output reaches the AI provider and saved
 history. There is no automatic administrator elevation or password-vault access.
 Maximum command length is 16000 characters, timeout 60 seconds, captured output
 64 KiB. Commands are independent; supply `cwd` explicitly when required.
