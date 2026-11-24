@@ -181,7 +181,10 @@ export class CompatibleSession {
     // The turn is reported as `truncated` and is not committed to the
     // conversation, so the request that asks again is a valid one and nothing
     // of this turn is run.
-    if (result.finishReason === TRUNCATED_FINISH || result.brokenCalls.length) {
+    // A text-only request (`toolChoice: 'none'`: the step-limit report, a
+    // compaction summary, the connection test) has no call to cut in half and
+    // no caller that asks again, so a long text answer is kept as it was.
+    if (toolChoice !== 'none' && (result.finishReason === TRUNCATED_FINISH || result.brokenCalls.length)) {
       if (answer) onEvent({ type: 'text-reset' }); // the cut-off text is withdrawn before the retry
       return { truncated: true, text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
     }

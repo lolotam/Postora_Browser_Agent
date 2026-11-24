@@ -59,6 +59,22 @@ test('a truncated turn withdraws the text it had shown', async () => {
   }
 });
 
+test('a text-only request keeps a long answer that ran out of output room', async () => {
+  // The step-limit report, a compaction summary and the connection test ask
+  // with toolChoice 'none': there is no call to cut in half and nobody asks again.
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => sse({ choices: [{ delta: { content: 'A long report' }, finish_reason: 'length' }] });
+  try {
+    const s = session();
+    s.addUserMessage('summarize');
+    const turn = await s.next({ toolChoice: 'none' });
+    assert.equal(turn.truncated, undefined);
+    assert.equal(turn.text, 'A long report');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('a turn that is not cut off keeps its calls and its history', async () => {
   const original = globalThis.fetch;
   const bodies = [];
