@@ -19,6 +19,7 @@ import { normalizeUsage } from '../lib/usage.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
+import { WorkingTabClosedError, isWorkingTabClosed } from '../browser/working-tab.js';
 // @store-strip-start
 import { nativeRequest } from '../native/client.js';
 // @store-strip-end
@@ -158,6 +159,7 @@ export class SessionRunner {
       color,
       isTakenByOther: (tab) => voiceClaims.tabHolder(isTakenByOther, tab, { sessionId: this.id }),
       reservation: voiceClaims.tabReservation({ sessionId: this.id, controllerId: this.id, owner: meta.title || 'this session' }),
+      onLost: () => this.endForLostTab(),
     });
     this.browser.groupId = body.groupId ?? null;
   }
@@ -751,6 +753,7 @@ export class SessionRunner {
     const attached = Array.isArray(images) ? images : [];
     const abort = new AbortController();
     this.abort = abort;
+    this.tabLost = false;
     this.continuation = { task: text, images: attached, tabId: tabId ?? null, at: Date.now() };
     // Extension API calls reset the service worker idle timer while the model thinks.
     const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
@@ -810,16 +813,26 @@ export class SessionRunner {
         getAccessState: () => this.access.state(),
       });
       finished = true;
-    } catch (err) {
-      const stopped = abort.signal.aborted || err.name === 'AbortError';
+    } catch (thrown) {
+      // A task ended because its tab was closed is a failure, not a stop by the
+      // user, even though it was ended through the abort signal.
+      const err = this.tabLost && !isWorkingTabClosed(thrown) ? new WorkingTabClosedError(this.browser.homeTabId) : thrown;
+      const stopped = !this.tabLost && (abort.signal.aborted || err.name === 'AbortError');
       if (!stopped) this.continuation = null;
-      this.emit(stopped ? { type: 'stopped' } : { type: 'error', message: err.message });
+      // The code is the stable name of the failure: the panel translates it, and
+      // the message is what a reader without the code sees.
+      const code = typeof err?.code === 'string' ? err.code : '';
+      this.emit(stopped ? { type: 'stopped' } : { type: 'error', message: err.message, code });
       if (!stopped) this.transition('failed'); // stopped by the user: they know
     } finally {
       clearInterval(keepAlive);
       // The run is over: nothing it approved survives it. The mode the user
       // chose stays, so the next task of this chat runs under it.
       this.access.finish('finished');
+      // The task is over: its tab closing later does not end other work. This
+      // happens before the runner takes a new task, so the cleanup below cannot
+      // disarm the next task's tracking.
+      this.browser.finishTask?.();
       this.abort = null;
       this.pendingQuestion = null;
       this.clearAskNotices();
@@ -884,6 +897,19 @@ export class SessionRunner {
     this.storedLog = this.session?.log ?? this.storedLog;
     this.session = null; // rebuild from saved history, without unfinished tool calls
     return this.start(checkpoint.task, { images: checkpoint.images ?? [], tabId: tabId ?? checkpoint.tabId ?? undefined, resumed: true });
+  }
+
+  /**
+   * The tab the task works on is gone. The task ends now, not at its next
+   * tool: a model turn, an approval or a question it waits on is cancelled,
+   * and nothing approved may run.
+   */
+  endForLostTab() {
+    if (!this.abort || this.tabLost) return;
+    this.tabLost = true;
+    this.access.cancel('tab-closed');
+    this.abort.abort();
+    this.browser.overlay.end();
   }
 
   stop() {
