@@ -276,7 +276,7 @@ export function createAccessPreferenceStore({
     }
     restoreFailed = unreadable || markerUncertainForFull || (!protectedOk && Boolean(record?.remember) && record?.mode === FULL_ACCESS);
     started = true;
-    if (pending) scheduleRetry(0, pending.forRevision);
+    if (pending) scheduleRetry(0, pending.forRevision, pending.id);
   }
 
   /** Starts the store once. It never rejects: a failure is a store that asks. */
@@ -661,7 +661,7 @@ export function createAccessPreferenceStore({
           markerWritten: optOutMarkerWritten,
           needsVerification: false,
         };
-        scheduleRetry(0, revision);
+        scheduleRetry(0, revision, markerId);
       } else {
         optOutUnpersisted = false;
         await forgetMarker();
@@ -681,19 +681,24 @@ export function createAccessPreferenceStore({
     };
     unpersisted = true;
     optOutUnpersisted = false;
-    scheduleRetry(0, revision);
+    scheduleRetry(0, revision, markerId);
     return { persisted: false, warning: 'not-cleared' };
   }
 
-  function scheduleRetry(index, forRevision) {
+  function scheduleRetry(index, forRevision, forId) {
     const delay = retryDelaysMs[index];
     if (delay === undefined) return;
-    schedule(() => enqueue(() => retry(index, forRevision)), delay);
+    schedule(() => enqueue(() => retry(index, forRevision, forId)), delay);
   }
 
-  async function retry(index, expectedForRevision) {
+  async function retry(index, expectedForRevision, expectedId) {
     // A newer choice owns the record now: a late retry must not touch it.
-    if (!pending || pending.forRevision !== expectedForRevision || pending.forRevision !== state.profileRevision) return;
+    if (
+      !pending
+      || pending.forRevision !== expectedForRevision
+      || pending.forRevision !== state.profileRevision
+      || (expectedId !== undefined && pending.id !== expectedId)
+    ) return;
     if (pending.needsVerification) {
       let current = null;
       try {
@@ -713,7 +718,7 @@ export function createAccessPreferenceStore({
           });
           if (pending.markerWritten) lastMarkerId = pending.id;
         }
-        scheduleRetry(index + 1, expectedForRevision);
+        scheduleRetry(index + 1, expectedForRevision, pending.id);
         return;
       }
       const { matches: stillMatches, fullAlreadyGone } = classifyMarker(pending, current);
@@ -798,7 +803,7 @@ export function createAccessPreferenceStore({
           markerWritten: optOutMarkerWritten,
         };
         notify();
-        scheduleRetry(index + 1, expectedForRevision);
+        scheduleRetry(index + 1, expectedForRevision, pending.id);
       } else {
         optOutUnpersisted = false;
         pending = null;
@@ -807,7 +812,7 @@ export function createAccessPreferenceStore({
       }
       return;
     }
-    scheduleRetry(index + 1, expectedForRevision);
+    scheduleRetry(index + 1, expectedForRevision, pending.id);
   }
 
   // ---------- changes ----------

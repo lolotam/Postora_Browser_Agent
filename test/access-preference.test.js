@@ -1644,8 +1644,19 @@ test('retrying a pending remember-off opt-out does not call downgradeAll on a ne
   assert.equal(chatOnlyHooks.live.full, true);
 
   // Retrying setRemember({ remember: false }) repairs persistence without calling downgradeAll on the live chat-only grant.
+  // First try a failing repair to verify it invalidates the older retry timer even though profileRevision stays the same.
+  await store.setRemember(
+    { remember: false, expectedProfileRevision: store.profileRevision },
+    chatOnlyHooks,
+  );
+  assert.equal(scheduler.queue.length, 2, 'initial opt-out timer and repair timer are both in the scheduler queue');
+
   storage.failSet = false;
   storage.failRemove = false;
+  // Running the stale timer from the initial opt-out must be a no-op because the repair replaced pending.id.
+  await scheduler.runNext();
+  assert.equal(storage.data.accessPreference.mode, FULL, 'stale timer from before the repair did not fire on the replacement');
+
   const repair = await store.setRemember(
     { remember: false, expectedProfileRevision: store.profileRevision },
     chatOnlyHooks,
