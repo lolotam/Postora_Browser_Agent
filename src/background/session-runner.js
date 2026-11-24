@@ -829,6 +829,10 @@ export class SessionRunner {
       // The run is over: nothing it approved survives it. The mode the user
       // chose stays, so the next task of this chat runs under it.
       this.access.finish('finished');
+      // The task is over: its tab closing later does not end other work. This
+      // happens before the runner takes a new task, so the cleanup below cannot
+      // disarm the next task's tracking.
+      this.browser.finishTask?.();
       this.abort = null;
       this.pendingQuestion = null;
       this.clearAskNotices();
@@ -836,8 +840,6 @@ export class SessionRunner {
       // Pages opened for reading are done once the task is. The starting tab stays.
       await this.browser.closeDisposableTabs().catch(() => {});
       await this.browser.detachAll();
-      // The task is over: its tab closing later does not end other work.
-      this.browser.finishTask?.();
       this.turnAbort = null;
       this.emit({ type: 'status', running: false });
       this.onSessionsChanged();
