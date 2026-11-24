@@ -258,3 +258,15 @@ test('the retry after a cut-off is part of the same step', async () => {
   assert.deepEqual(events.filter((e) => e.type === 'thinking').map((e) => e.step), [1, 1]);
   assert.equal(events.find((e) => e.type === 'final').success, true);
 });
+
+test('a text-only request filtered after a call still fails', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'navigate', arguments: '{}' } }] }, finish_reason: 'content_filter' }] });
+  try {
+    const s = session();
+    s.addUserMessage('summarize');
+    await assert.rejects(s.next({ toolChoice: 'none' }));
+  } finally {
+    globalThis.fetch = original;
+  }
+});

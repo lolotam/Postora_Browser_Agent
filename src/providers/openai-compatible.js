@@ -197,7 +197,10 @@ export class CompatibleSession {
       // A reply that was only a call has no text to give: it is an empty
       // answer, which the caller handles (the step-limit report falls back to
       // its own words), and nothing of it is kept in the history.
-      if (!answer.trim()) return { text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
+      // Only a reply that finished normally: a filtered or otherwise failed
+      // one still fails below.
+      const finished = COMPLETE.has(result.finishReason) || (done && !result.finishReason);
+      if (!answer.trim() && finished) return { text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
     }
     if (!answer.trim() && !result.toolCalls.length) {
       throw new Error(`Model request failed: the model returned no text or tool calls (${result.finishReason ?? 'empty completion'}). Choose a chat model with tool support.`);
