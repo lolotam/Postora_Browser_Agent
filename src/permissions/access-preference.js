@@ -301,28 +301,18 @@ export function createAccessPreferenceStore({
 
   /**
    * Ensures any active or previously unreadable downgrade marker in
-   * `chrome.storage.session` is read, upgraded with a unique `id`, or cleared
-   * before persisting a new choice that supersedes it.
+   * `chrome.storage.session` is read and upgraded with a unique `id` before
+   * persisting a new choice that supersedes it.
    */
   async function bindToSupersedingMarker() {
     if (markerUnknown) {
+      if (!sessionStorage?.get) return { ok: false };
       let currentMarker = null;
-      let readOk = false;
-      if (sessionStorage?.get) {
-        try {
-          const got = await sessionStorage.get(ACCESS_DOWNGRADE_MARKER_KEY);
-          currentMarker = readableMarker(got?.[ACCESS_DOWNGRADE_MARKER_KEY]);
-          readOk = true;
-          markerUnknown = false;
-        } catch {
-          readOk = false;
-        }
-      }
-      if (!readOk) {
-        const removed = await forgetMarker();
-        if (!removed) return { ok: false };
-        markerUnknown = false;
-        return { ok: true, supersedesMarkerId: lastMarkerId };
+      try {
+        const got = await sessionStorage.get(ACCESS_DOWNGRADE_MARKER_KEY);
+        currentMarker = readableMarker(got?.[ACCESS_DOWNGRADE_MARKER_KEY]);
+      } catch {
+        return { ok: false };
       }
       if (currentMarker) {
         state.profileRevision = Math.max(
@@ -343,9 +333,10 @@ export function createAccessPreferenceStore({
         }
         lastMarkerId = currentMarker.id;
       }
+      markerUnknown = false;
     }
-    if (pending && !pending.id) {
-      const upgradedId = makeMarkerId(pending.at ?? now(), pending.forRevision);
+    if (pending && (!pending.id || !pending.markerWritten)) {
+      const upgradedId = pending.id ?? makeMarkerId(pending.at ?? now(), pending.forRevision);
       const mayHaveFull = !pending.fullCleared;
       const upgraded = await writeMarker({
         id: upgradedId,
@@ -357,6 +348,7 @@ export function createAccessPreferenceStore({
       });
       if (!upgraded) return { ok: false };
       pending.id = upgradedId;
+      pending.markerWritten = true;
       lastMarkerId = upgradedId;
     }
     return { ok: true, supersedesMarkerId: pending?.id ?? lastMarkerId };
@@ -446,7 +438,6 @@ export function createAccessPreferenceStore({
     const needsMarker = mayHaveFull || kind === 'remember-off';
     const markerAt = now();
     const markerId = makeMarkerId(markerAt, revision);
-    lastMarkerId = markerId;
     let markerWritten = false;
     // Journal before touching local storage so a worker stop mid-write cannot
     // resurrect a revoked Full-access grant on restart.
@@ -459,6 +450,7 @@ export function createAccessPreferenceStore({
         ...(mayHaveFull ? {} : { optOutOnly: true }),
         at: markerAt,
       });
+      if (markerWritten) lastMarkerId = markerId;
     }
     const outcome = await attemptClear(kind, revision, mayHaveFull);
     if (outcome.persisted) {
