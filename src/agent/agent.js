@@ -14,6 +14,11 @@ const SKIPPED_AFTER_BOUNDARY = 'Not executed: an earlier action in this turn nee
 const SKIPPED_FOR_MESSAGE = 'Not executed: the user sent you a message. Read it, then decide again.';
 const STEER_PREFIX = 'Message from the user while you work (it may change or add to the task):';
 const SUMMARY_PROMPT = 'You have reached the step limit. Stop using tools and write the final report now: what was done, all information collected with sources, and what remains.';
+// A reply that was cut off is not an answer: the model is told and asked again,
+// briefly. The retries of one step are capped, so a model whose replies keep
+// being cut off ends the task instead of looping.
+const TRUNCATED_MESSAGE = 'Your last reply was cut off before it was finished, so none of it was run. Answer again, briefly: one tool call at a time, and keep the reply short.';
+const TRUNCATED_RETRIES = 2;
 
 /**
  * `steering` (optional) delivers what the user sends while the task runs:
@@ -34,6 +39,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
   let llmHasSeenPage = false;
   let accessRevision = getAccessState?.()?.revision;
   let inputTokens = 0; // what the last model turn read: the size of the conversation
+  let truncationRetries = 0; // the retries of a cut-off reply, in a row
 
   for (let step = 1; step <= maxSteps; step += 1) {
     throwIfAborted(signal);
@@ -92,6 +98,19 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
       step -= 1;
       continue;
     }
+    // A reply that was cut off is not a turn: nothing in it was run. The model
+    // is told and asked again, and the retry is part of the same step.
+    if (turn.truncated) {
+      if (truncationRetries >= TRUNCATED_RETRIES) {
+        emit({ type: 'final', report: 'The model\'s replies kept being cut off, so the task was not finished.', success: false });
+        return;
+      }
+      truncationRetries += 1;
+      session.addUserMessage(TRUNCATED_MESSAGE);
+      step -= 1; // the cut-off reply did not use the step
+      continue;
+    }
+    truncationRetries = 0;
     if (turn.text) emit({ type: 'assistant-text', text: turn.text });
     inputTokens = normalizeUsage(turn.usage)?.input ?? inputTokens;
 
