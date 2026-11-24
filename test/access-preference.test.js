@@ -1328,6 +1328,25 @@ test('a successful live elevation reports persisted: false and removes the local
   assert.equal('accessPreference' in storage.data, false, 'unpersisted record was removed from local storage');
   assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
   assert.equal(store.snapshot().mode, ASK);
+
+  // When storage.remove also fails during that fallback removal, warning propagates 'not-cleared'.
+  const { store: store2, storage: storage2, sessionStorage: sessionStorage2 } = await started({});
+  const raisedUnremovable = await store2.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store2.profileRevision },
+    {
+      ...makeHooks(),
+      applyFull: () => {
+        sessionStorage2.failRemove = true;
+        sessionStorage2.failSet = true;
+        storage2.failRemove = true;
+        return { ok: true, changed: true };
+      },
+    },
+  );
+  assert.equal(raisedUnremovable.ok, true);
+  assert.equal(raisedUnremovable.persisted, false);
+  assert.equal(raisedUnremovable.warning, 'not-cleared');
+  assert.equal(store2.snapshot().unpersisted, true);
 });
 
 test('an elevation during an unverified candidate recovery refuses when local storage is unreadable and preserves candidateRevision', async () => {
