@@ -228,12 +228,27 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     const detail = record.execDetail;
     if (!detail) return '';
     const lines = [];
-    if (detail.command) lines.push(translator('access.approval.exec.command'), detail.command);
-    if (detail.cwd) lines.push(translator('access.approval.exec.workingDirectory', { cwd: detail.cwd }));
-    if (detail.expression) lines.push(translator('access.approval.exec.expression'), detail.expression);
-    if (detail.path) lines.push(translator('access.approval.exec.target', { path: detail.path }));
+    if (detail.command) {
+      lines.push(translator('access.approval.exec.command'), visibleText(detail.command));
+      lines.push(detail.cwd
+        ? translator('access.approval.exec.workingDirectory', { cwd: visibleText(detail.cwd) })
+        : translator('access.approval.exec.defaultDirectory'));
+    }
+    if (detail.expression) lines.push(translator('access.approval.exec.expression'), visibleText(detail.expression));
+    if (detail.path) lines.push(translator('access.approval.exec.target', { path: visibleText(detail.path) }));
     if (detail.size !== null) lines.push(translator('access.approval.exec.size', { size: detail.size }));
     return lines.join('\n');
+  }
+
+  /**
+   * Text exactly as it would run. Characters that do not show, or that reorder
+   * what is shown (control characters, zero-width and bidirectional marks),
+   * are written out as \u{...}, so the card cannot look like a different
+   * command. Tabs and line breaks stay as they are.
+   */
+  function visibleText(text) {
+    return String(text).replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g,
+      (ch) => `\\u{${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}}`);
   }
 
   /** The words of a card, in the language of the panel. */

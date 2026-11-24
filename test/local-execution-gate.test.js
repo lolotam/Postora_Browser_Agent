@@ -277,3 +277,13 @@ test('both languages name every local-execution detail', () => {
     }
   }
 });
+
+test('the card writes out characters that hide or reorder text, and names a default folder', () => {
+  // U+202E reverses what follows on screen; U+200B does not show at all.
+  const command = 'Write-Output safe\u202E\u200Bevil';
+  const nodes = cardFor({ action: 'run_terminal', kind: 'local-execution', execDetail: { command } });
+  const detail = nodes.find((node) => node.className === 'permission-exec-detail');
+  assert.ok(!detail.textContent.includes('\u202E') && !detail.textContent.includes('\u200B'));
+  assert.ok(detail.textContent.includes('safe\\u{202E}\\u{200B}evil'), 'each hidden character is written as its code');
+  assert.ok(detail.textContent.includes('access.approval.exec.defaultDirectory'), 'a missing folder is named as the default');
+});
