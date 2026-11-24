@@ -1270,6 +1270,63 @@ test('a refused Full-access grant does not survive a worker restart even when ro
   assert.equal('accessPreference' in storage.data, false, 'recovery removed the refused grant');
 });
 
+test('a pre-write guard preserves the pending revocation target when the subsequent elevation write fails', async () => {
+  const scheduler = makeScheduler();
+  const { store, storage, sessionStorage } = await started(
+    { accessPreference: record({ remember: true, mode: FULL, revision: 4 }) },
+    { scheduler },
+  );
+
+  // Downgrade fails to remove the local grant and leaves a pending revocation for revision 4.
+  storage.failRemove = true;
+  await store.setMode({ mode: ASK, expectedProfileRevision: store.profileRevision }, makeHooks({ full: true }));
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4);
+
+  // Elevation writes its pre-write guard, then fails on local storage.set.
+  storage.failSet = true;
+  const failedRaise = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    makeHooks(),
+  );
+  assert.equal(failedRaise.ok, false);
+  assert.equal(failedRaise.reason, 'storage-failed');
+  assert.equal(sessionStorage.data.accessPreferenceDowngrade?.staleRevision, 4, 'pending revocation target was preserved');
+
+  // Restart still recognizes revision 4 as revoked and removes it on retry.
+  storage.failSet = false;
+  storage.failRemove = false;
+  const restartedScheduler = makeScheduler();
+  const restarted = createAccessPreferenceStore({
+    storage,
+    sessionStorage,
+    now: () => NOW + 50,
+    schedule: restartedScheduler.schedule,
+  });
+  await restarted.init();
+  assert.equal(restarted.effectiveDefaultMode(), ASK, 'old revoked grant is not restored after failed elevation');
+
+  await restartedScheduler.runNext();
+  assert.equal('accessPreference' in storage.data, false);
+});
+
+test('a successful live elevation reports persisted: false when neither guard removal nor fallback rewrite succeeds', async () => {
+  const { store, sessionStorage } = await started({});
+  const raised = await store.setMode(
+    { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
+    {
+      ...makeHooks(),
+      applyFull: () => {
+        sessionStorage.failRemove = true;
+        sessionStorage.failSet = true;
+        return { ok: true, changed: true };
+      },
+    },
+  );
+  assert.equal(raised.ok, true);
+  assert.equal(raised.persisted, false);
+  assert.equal(raised.warning, 'not-remembered');
+});
+
 test('a recovered marker revision floor is retained across a failed local preference write', async () => {
   const { storage, sessionStorage } = makeStorage({
     initial: {},
