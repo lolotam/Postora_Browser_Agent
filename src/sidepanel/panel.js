@@ -16,6 +16,7 @@ import { createSettingsSaver, settingsEdits, settingsFieldEdit } from './setting
 import { authMessage, authView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
+import { stampProviderSlots } from './provider-slot-template.js';
 import { request } from './request.js';
 import { bindTestButton } from './test-button.js';
 import { FEEDBACK_FORM_ID, afterDismissal, afterRating, sendFeedback, shouldAskForRating } from '../lib/feedback.js';
@@ -37,6 +38,7 @@ import { createChromeBrowser } from '../voice/voice-browser.js';
 import { WORKING_TAB_CLOSED } from '../browser/working-tab.js';
 
 const $ = (id) => document.getElementById(id);
+stampProviderSlots(document);
 $('extensionVersion').textContent = `v${chrome.runtime.getManifest().version}`;
 const resizeComposer = bindComposerSize($('input'));
 
