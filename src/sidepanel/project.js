@@ -66,6 +66,7 @@ export function createProjectUi({ getSessionId, send, request, input, isRunning,
       el('projectDialog').close();
     },
     reset() { set(null); el('projectDialog').close(); el('projectFilesDialog').close(); },
+    current: () => project,
     render,
   };
 }
