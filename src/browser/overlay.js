@@ -23,7 +23,7 @@ export class AgentOverlay {
   begin({ enabled, uiLanguage }) {
     this.active = true;
     this.enabled = Boolean(enabled);
-    this.language = resolveLanguage(uiLanguage, chrome.i18n?.getUILanguage?.());
+    this.language = resolveLanguage(uiLanguage, globalThis.chrome?.i18n?.getUILanguage?.());
     this.position = null;
   }
 

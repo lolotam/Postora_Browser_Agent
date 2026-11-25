@@ -39,7 +39,7 @@ test('requestStopTask disables Stop, shows Stopping…, and resets when setRunni
   assert.equal(els.stopBtn.disabled, true);
   assert.equal(els.workspaceStopBtn.disabled, true);
   assert.equal(els.hint.textContent, 'status.stopping');
-  assert.deepEqual(sent, [{ type: 'stop' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{ type: 'stop' }]);
 
   // A second request while already stopping is ignored
   ctx.requestStopTask();
