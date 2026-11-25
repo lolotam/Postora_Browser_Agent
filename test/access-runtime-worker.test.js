@@ -148,13 +148,32 @@ test('a navigation preview identifies its destination without disclosing URL sec
       tabId: 7, target: checkoutTarget(),
     });
     const shown = panel.requests().at(-1).request;
-    assert.equal(shown.origin, 'https://destination.test');
-    assert.doesNotMatch(JSON.stringify(shown), /TEST_URL_SECRET|private/);
+    assert.equal(shown.origin, 'https://destination.test/private?token=•••');
+    assert.doesNotMatch(JSON.stringify(shown), /TEST_URL_SECRET|#private/);
     panel.send(approval(runner, shown, 'deny'));
     assert.equal((await pending).permit, null);
   } finally {
     runner.dispose();
   }
+});
+
+test('a tab-specific panel can answer Ask first and activate Full access', async () => {
+  const runner = await newRunner('Tab panel permissions');
+  const panel = attachPanel(runner, { sender: { id: EXTENSION_ID, url: `${PANEL_URL}?tabId=7` } });
+  try {
+    assert.equal(runner.trustedPorts.has(panel.port), true);
+    const operation = { action: 'navigate', args: { url: 'https://example.test/' }, tabId: 7, target: checkoutTarget() };
+    const pending = runner.access.authorize(operation);
+    const shown = panel.requests().at(-1).request;
+    assert.equal(panel.settled().length, 0, 'the live request must not be withdrawn as no-panel');
+    panel.send(approval(runner, shown));
+    assert.ok((await pending).permit);
+    panel.send(elevation(runner));
+    assert.equal(runner.access.mode, 'full-access');
+    const before = panel.requests().length;
+    assert.ok((await runner.access.authorize(operation)).permit);
+    assert.equal(panel.requests().length, before, 'Full access does not ask again');
+  } finally { runner.dispose(); }
 });
 
 /** A browser that behaves like the controller, for one page and one button. */
@@ -197,6 +216,7 @@ function fakeBrowser() {
       return { scope: 'element', kind, tabId: tabId ?? 7, url: 'https://shop.test/checkout', documentId: 'doc-1', element: null, capturedAt: 1_700_000_000_000 };
     },
     validateTarget: async () => ({ ok: true }),
+    elementFrame: () => null,
     element: async (index) => {
       calls.push({ name: 'element', index });
       return { x: button.x, y: button.y, tag: button.tag, label: button.label };
@@ -263,7 +283,7 @@ test('a question under Ask first is shown to the panels', async () => {
     assert.equal(request.revision, runner.access.revision);
     assert.equal(request.action, 'click');
     assert.equal(request.kind, 'interact');
-    assert.equal(request.origin, 'https://shop.test');
+    assert.equal(request.origin, 'https://shop.test/checkout');
     assert.equal(request.label, 'Send message');
     assert.equal(runner.access.pendingCount, 1);
 
@@ -294,11 +314,11 @@ test('the preview of a question carries no text, no value and no query', async (
     const request = panel.requests()[0].request;
     const shown = JSON.stringify(request);
     assert.equal(shown.includes('4111'), false, 'the preview carried the text that was going to be typed');
-    assert.equal(shown.includes('abc123'), false, 'the preview carried the query of the page');
-    assert.equal(shown.includes('/pay'), false, 'the preview carried the path of the page');
-    assert.equal(request.origin, 'https://shop.test');
-    // The name of the field is what identifies the target; its value is not
-    // in the preview, and neither is the text that was going to be typed.
+    assert.equal(shown.includes('abc123'), false, 'the preview carried the query value of the page');
+    assert.equal(request.origin, 'https://shop.test/pay?token=•••&session=•••');
+    assert.deepEqual(request.execDetail, { text: '••••••••', secret: true });
+    // The name of the field is what identifies the target; its secret value is
+    // masked in the preview.
     assert.equal(request.label, 'Card number');
     assert.equal(Object.hasOwn(request, 'args'), false);
     assert.equal(Object.hasOwn(request, 'target'), false);
@@ -675,7 +695,7 @@ test('the task asks the authority before it changes the page, and only the allow
 
     const request = panel.requests()[0].request;
     assert.equal(request.action, 'click');
-    assert.equal(request.origin, 'https://shop.test');
+    assert.equal(request.origin, 'https://shop.test/checkout');
     assert.equal(request.label, 'Send message');
 
     panel.send(approval(runner, request, 'allow'));

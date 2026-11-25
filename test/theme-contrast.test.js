@@ -24,5 +24,22 @@ for (const [name, colors] of [['light', themes[0]], ['dark', { ...themes[0], ...
       const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
       assert.ok(ratio >= 4.5, `${foreground} on ${background}: ${ratio.toFixed(2)}:1`);
     }
+    const focusFg = luminance(colors['--accent-text']);
+    const focusBg = luminance(colors['--bg']);
+    const focusRatio = (Math.max(focusFg, focusBg) + 0.05) / (Math.min(focusFg, focusBg) + 0.05);
+    assert.ok(focusRatio >= 3, `focus ring (--accent-text on --bg): ${focusRatio.toFixed(2)}:1`);
   });
 }
+
+test('side panel stylesheets enforce >=11px minimum font size, >=3:1 focus ring, and direction-inheriting totals', () => {
+  const workspaceCss = fs.readFileSync(new URL('../src/sidepanel/workspace.css', import.meta.url), 'utf8');
+  for (const [label, sheet] of [['panel.css', css], ['workspace.css', workspaceCss]]) {
+    const pxSizes = [...sheet.matchAll(/font(?:-size)?:\s*(?:\d+\s+)?(\d+(?:\.\d+)?)px/g)].map(([, n]) => Number(n));
+    assert.ok(pxSizes.length > 0, `${label} should declare font sizes`);
+    for (const size of pxSizes) {
+      assert.ok(size >= 11, `${label} font size ${size}px must be at least 11px`);
+    }
+  }
+  assert.match(css, /:focus-visible\s*\{\s*outline:\s*2px solid var\(--accent-text\)/);
+  assert.match(workspaceCss, /\.totals\s*\{\s*direction:\s*inherit;/);
+});

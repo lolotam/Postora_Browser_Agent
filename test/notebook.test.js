@@ -155,6 +155,7 @@ test('choose_suggestion stopped while waiting for the list clicks nothing', asyn
   const browser = {
     ...fakeBrowser(),
     clickAt: async (x, y) => clicks.push([x, y]),
+    elementFrame: () => null,
     element: async (_index, action) => (action === 'locate' ? { x: 1, y: 1, tag: 'input', label: 'City', secret: false } : {}),
     insertText: async () => {},
     suggestions: async (_i, _w, mode) => {

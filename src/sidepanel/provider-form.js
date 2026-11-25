@@ -142,7 +142,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     hide('baseUrlField', Boolean(oauth || planRoute || account));
     hide('apiKeyField', Boolean(oauth || account));
     for (const name of ['minimax', 'zai']) hide(`${name}OAuthAccount`, account !== name);
-    if (f('apiKeyLabel')) f('apiKeyLabel').textContent = plan ? t('connection.planKey') : 'API Key';
+    if (f('apiKeyLabel')) f('apiKeyLabel').textContent = plan ? t('connection.planKey') : t('compat.apiKey');
     if (f('openrouterStatus')) f('openrouterStatus').textContent = f('apiKey').value.trim() ? t('connection.connected') : t('auth.disconnected');
     hide('planHelp', !plan || Boolean(account));
     hide('planAccount', f('preset').value !== 'minimax-coding-plan' || Boolean(account));
@@ -211,11 +211,12 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       const list = await request('list-models', { settings: draft });
       if (load !== latestLoad) return;
       models = list;
-      if (!f('modelInput').value && models[0]) f('modelInput').value = models[0].id;
+      const autoPicked = !f('modelInput').value && Boolean(models[0]);
+      if (autoPicked) f('modelInput').value = models[0].id;
       renderEfforts(f('effort').value || (models.find((m) => m.id === f('modelInput').value)?.defaultEffort ?? ''));
       f('modelInfo').textContent = '';
       listLoading = false;
-      onModels?.();
+      onModels?.({ autoPicked, signedIn: needsSignIn(draft), id: f('modelInput').value, effort: f('effort').value });
     } catch (err) {
       if (load !== latestLoad) return;
       listLoading = false;
@@ -371,6 +372,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     rerender() {
       renderRoutes(f('provider').value);
       renderEfforts(f('effort').value);
+      syncSections();
     },
   };
 }

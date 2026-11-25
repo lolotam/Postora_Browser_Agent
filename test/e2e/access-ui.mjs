@@ -42,6 +42,24 @@ function startServer() {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, base: `http://127.0.0.1:${server.address().port}` })));
 }
 
+/** Leaves the shared profile back at remembered Ask first for scenarios that run after this one. */
+async function resetAccessPreference(panel) {
+  await panel?.evaluate?.(async () => {
+    const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+    if (pref && (!pref.remember || pref.mode === 'full-access')) {
+      let rev = pref.profileRevision;
+      if (!pref.remember) {
+        const on = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: true, expectedProfileRevision: rev });
+        rev = on?.result?.preference?.profileRevision ?? rev;
+      }
+      const off = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: false, expectedProfileRevision: rev });
+      rev = off?.result?.preference?.profileRevision ?? rev;
+      await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: false, expectedProfileRevision: rev });
+    }
+    await chrome.storage.local.remove('accessPreference');
+  }).catch(() => {});
+}
+
 /** Chrome has no recognizer in a test: the panel gets one that says nothing. */
 function mockRecognition() {
   class MockRecognition {
@@ -221,6 +239,19 @@ export async function runAccessUiScenario(context, extensionId) {
     if (start.value !== 'ask-first') failures.push(`a new chat starts at ${start.value}`);
     if (!start.riskHidden) failures.push('the risk is shown before the worker confirmed anything');
     if (!start.state) failures.push('the control shows no status of its own');
+    const rememberStartsOn = await panel.evaluate(() => document.getElementById('rememberAccessMode')?.checked === true);
+    if (!rememberStartsOn) failures.push('"remember" did not start enabled by default');
+
+    // Opt out of "remember" so the per-chat UI assertions verify the chat-only contract cleanly.
+    await panel.evaluate(async () => {
+      const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+      await chrome.runtime.sendMessage({
+        type: 'set-access-remember',
+        remember: false,
+        expectedProfileRevision: pref?.profileRevision,
+      });
+    });
+    await panel.waitForFunction(() => document.getElementById('rememberAccessMode')?.checked === false, { timeout: 10000 });
 
     // The draft of the composer is the user's, not the control's.
     await panel.fill('#input', 'a draft that must survive');
@@ -486,6 +517,7 @@ export async function runAccessUiScenario(context, extensionId) {
     console.log(`\n== scenario: access-ui ==\n${failures.length ? failures.join('\n') : 'the consent UI behaved'}`);
     return failures;
   } finally {
+    await resetAccessPreference(panel);
     await second?.close();
     await target?.close();
     await panel.close();

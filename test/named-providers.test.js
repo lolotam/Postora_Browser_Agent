@@ -1,6 +1,6 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GEMINI_API_URL, KIMI_CODE_URL, KIMI_OAUTH_URL, MOONSHOT_API_URL, mergeSettings, modelListRoute, settingsProblem, slotSettings } from '../src/lib/settings.js';
+import { GEMINI_API_URL, KIMI_CODE_URL, MOONSHOT_API_URL, mergeSettings, modelListRoute, settingsProblem, slotSettings } from '../src/lib/settings.js';
 import { createModelSession, modelSessionKey } from '../src/agent/model-session.js';
 import { listGeminiModels } from '../src/providers/named-api.js';
 import { KimiSession, listKimiModels } from '../src/providers/kimi.js';
@@ -13,13 +13,22 @@ globalThis.chrome = { storage: { local: {
 } } };
 let calls;
 let handler;
-const credential = () => ({ kimiAuthority: KIMI_OAUTH_URL, type: 'oauth', access: 'SUBSCRIPTION-ACCESS', refresh: 'SUBSCRIPTION-REFRESH', expires: Date.now() + 3600000 });
+const credential = () => ({ kimiAuthority: 'https://auth.kimi.ai', type: 'oauth', access: 'SUBSCRIPTION-ACCESS', refresh: 'SUBSCRIPTION-REFRESH', expires: Date.now() + 3600000 });
 const stream = (delta, finish = 'stop') => new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
 beforeEach(() => {
   for (const key of Object.keys(store)) delete store[key];
   calls = [];
   handler = () => assert.fail('unexpected network request');
   globalThis.fetch = async (url, options = {}) => { calls.push({ url: String(url), options }); return handler(String(url), options); };
+});
+
+test('old mainland or unscoped credentials never leave the extension for the global endpoint', async () => {
+  for (const kimiAuthority of [undefined, 'https://auth.kimi.com']) {
+    store['accountAuth.kimi'] = { generation: 1, credential: { ...credential(), kimiAuthority } };
+    await assert.rejects(listKimiModels({ auth: 'account' }), /not connected/);
+    assert.equal(calls.length, 0);
+    assert.equal(store['accountAuth.kimi'].credential.access, 'SUBSCRIPTION-ACCESS');
+  }
 });
 
 test('named API provider settings are independent, validated, and invalidate model sessions', () => {

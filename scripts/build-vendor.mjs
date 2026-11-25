@@ -29,11 +29,8 @@ export function kimiBrowserSource(source) {
   const host = /function getOauthHost\(\) \{[\s\S]*?\n\}/;
   const requests = source.match(/signal: requestSignal\(signal\),/g) ?? [];
   if (!host.test(source) || requests.length !== 3) throw new Error('Review the updated pi Kimi OAuth source before bundling it');
-  const authority = 'const DEFAULT_OAUTH_HOST = "https://auth.kimi.com";';
-  if (!source.includes(authority)) throw new Error('Review the updated pi Kimi OAuth source before bundling it');
-  // The international service: the bundle and the verification-URL allowlist in
-  // src/background/account-login.js move together.
-  return source.replace(authority, 'const DEFAULT_OAUTH_HOST = "https://auth.kimi.ai";')
+  if (!source.includes('const DEFAULT_OAUTH_HOST = "https://auth.kimi.com";')) throw new Error('Review the updated Kimi authority before bundling');
+  return source.replace('const DEFAULT_OAUTH_HOST = "https://auth.kimi.com";', 'const DEFAULT_OAUTH_HOST = "https://auth.kimi.ai";')
     .replace(host, 'function getOauthHost() { return DEFAULT_OAUTH_HOST; }')
     .replaceAll('signal: requestSignal(signal),', 'redirect: "error", signal: requestSignal(signal),');
 }

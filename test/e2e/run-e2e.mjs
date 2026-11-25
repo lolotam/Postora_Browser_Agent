@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { runAccessUiScenario } from './access-ui.mjs';
 import { runAccessRuntimeScenario } from './access-runtime.mjs';
+import { runAccessRememberedScenario } from './access-remembered.mjs';
 import { runVoiceAccessScenario } from './voice-access.mjs';
 import { runFocusedWorkspaceScenario } from './focused-workspace.mjs';
 import { runNamedProvidersScenario } from './named-providers.mjs';
@@ -29,6 +30,13 @@ import { extensionWorker } from './extension-worker.mjs';
 import { runDriveBackupScenario } from './drive-backup.mjs';
 import { runZenFastScenario } from './zen-fast.mjs';
 import { runComposerScenario } from './composer.mjs';
+import { runTabPanelsScenario } from './tab-panels.mjs';
+import { runResumeSessionScenario } from './resume-session.mjs';
+import { runOverlayScenario } from './overlay.mjs';
+import { runVoiceCleanupScenario } from './voice-cleanup.mjs';
+import { runNemotronVoiceScenario } from './nemotron-voice.mjs';
+import { runDialogsAndStopScenario } from './dialogs-and-stop.mjs';
+import { runSnapshotGenerationScenario } from './snapshot-generation.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -510,8 +518,11 @@ async function enableFullAccess(panel) {
   // The panel is a real tab in E2E, unlike Chrome's visible side-panel surface.
   // Foreground it so native-dialog scrolling/stability is not background-throttled.
   await panel.bringToFront();
+  await panel.waitForFunction(() => document.getElementById('accessState')?.textContent?.trim(), { timeout: 15000 }).catch(() => {});
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await panel.evaluate(() => document.getElementById('accessSelect')?.value === 'full-access')) return true;
     await panel.selectOption('#accessSelect', 'full-access');
+    if (await panel.evaluate(() => document.getElementById('accessSelect')?.value === 'full-access')) return true;
     const opened = await panel.waitForSelector('#accessWarning[open]', { timeout: 15000 }).then(() => true, () => false);
     if (!opened) continue;
     try {
@@ -529,7 +540,25 @@ async function enableFullAccess(panel) {
     if (confirmed) return true;
     await panel.keyboard.press('Escape').catch(() => {});
   }
-  return false;
+  return panel.evaluate(() => document.getElementById('accessSelect')?.value === 'full-access').catch(() => false);
+}
+
+/** Resets any remembered Full access and restores default Ask-first + remember:true after a scenario. */
+async function resetAccessPreference(panel) {
+  await panel?.evaluate?.(async () => {
+    const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+    if (pref && (!pref.remember || pref.mode === 'full-access')) {
+      let rev = pref.profileRevision;
+      if (!pref.remember) {
+        const on = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: true, expectedProfileRevision: rev });
+        rev = on?.result?.preference?.profileRevision ?? rev;
+      }
+      const off = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: false, expectedProfileRevision: rev });
+      rev = off?.result?.preference?.profileRevision ?? rev;
+      await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: false, expectedProfileRevision: rev });
+    }
+    await chrome.storage.local.remove('accessPreference');
+  }).catch(() => {});
 }
 
 async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null, needsFullAccess = true }) {
@@ -677,6 +706,7 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     })).catch(() => null);
     throw new Error(`${name}: ${error.message}; UI: ${JSON.stringify(state)}; setup: ${setupFailures.join('; ')}`);
   } finally {
+    if (needsFullAccess && !sendEarly) await resetAccessPreference(panel);
     await panel.close();
     server.close();
   }
@@ -779,6 +809,7 @@ async function runParallelScenario(context, extensionId) {
     if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
     return failures;
   } finally {
+    await resetAccessPreference(pages[0]);
     for (const page of pages) await page.close();
     server.close();
   }
@@ -920,10 +951,18 @@ async function runVoiceScenario(context, extensionId) {
       count: document.querySelectorAll('#voiceLive').length,
       inView: Boolean(document.getElementById('voiceLive').closest('#voiceView')),
       chatHidden: document.getElementById('chatView').hidden,
+      handsFreeChecked: document.getElementById('voiceHandsfree')?.checked,
+      listeningOnOpen: Boolean(window.__recognition?.started),
     }));
     if (screen.count !== 1) failures.push(`the panel has ${screen.count} transcripts`);
     if (!screen.inView) failures.push('the transcript is not the one in the voice screen');
     if (!screen.chatHidden) failures.push('the chat is still shown behind the voice screen');
+    if (screen.handsFreeChecked !== false) failures.push('hands-free did not default to off for a new profile');
+    if (screen.listeningOnOpen) failures.push('a new profile started listening before hands-free or the mic was turned on');
+
+    // Turning hands-free on starts continuous listening and is remembered.
+    await panel.check('#voiceHandsfree');
+    await panel.waitForFunction(() => window.__recognition?.started === true, { timeout: 10000 });
 
     // The microphone icon fills the button, and the empty log says so in the
     // panel's language.
@@ -963,8 +1002,16 @@ async function runVoiceScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     const asked = await panel.textContent('#approvals');
     if (!/Go/.test(asked)) failures.push(`the approval does not name the element: ${asked}`);
-    const focusedAllow = await panel.evaluate(() => document.activeElement?.classList.contains('permission-allow'));
+    const focusedAllow = await panel.evaluate(() => document.activeElement?.classList.contains('permission-allow')
+      || Boolean(document.activeElement?.closest('#voiceApproval')));
     if (focusedAllow) failures.push('a new approval stole keyboard focus onto Allow');
+    // Space and Enter typed into the voice command box while a card is open must never approve it.
+    await panel.focus('#voiceTypedInput');
+    await panel.keyboard.type(' ');
+    await panel.press('#voiceTypedInput', 'Enter');
+    await panel.waitForTimeout(150);
+    if ((await target.textContent('#out')) !== '') failures.push('Space or Enter in the voice command box approved the waiting card');
+    if (!(await panel.locator('#approvals .permission-request').count())) failures.push('Space or Enter in the voice command box settled the waiting card');
     await panel.click('#approvals .permission-deny');
     await panel.waitForSelector('#approvals .permission-request', { state: 'hidden', timeout: 10000 });
     if ((await target.textContent('#out')) !== '') failures.push('the page was clicked although the answer was no');
@@ -1072,6 +1119,7 @@ async function runVoiceWindowScenario(context, extensionId) {
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      voiceHandsfree: true,
       settings: {
         transcription: { mode: 'browser' },
         provider: 'compatible',
@@ -1108,10 +1156,15 @@ async function runVoiceWindowScenario(context, extensionId) {
     if ((await target.textContent('#out')) !== 'clicked 1') failures.push('the command did not act on the page the user was on');
     if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
 
-    // Back closes the microphone window.
+    // Back closes the microphone window: the removal is asynchronous, so the
+    // check polls for the tab disappearing instead of sleeping a fixed beat
+    // a loaded runner cannot keep.
     await panel.click('#voiceBackBtn');
     await panel.waitForSelector('#voiceView', { state: 'hidden' });
-    await panel.waitForTimeout(500);
+    await panel.waitForFunction(async () => {
+      const tabs = await chrome.tabs.query({});
+      return !tabs.some((t) => (t.url ?? '').includes('mic.html'));
+    }, { timeout: 10000 }).catch(() => {});
     const left = await panel.evaluate(async () => (await chrome.tabs.query({})).some((t) => (t.url ?? '').includes('mic.html')));
     if (left) failures.push('the microphone window stayed open after Back');
 
@@ -1153,6 +1206,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      voiceHandsfree: true,
       settings: {
         transcription: { mode: 'browser' },
         provider: 'compatible',
@@ -1180,6 +1234,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 1, { timeout: 15000 }).catch(() => {});
     const clicked = await target.evaluate(() => ({
       text: document.getElementById('out')?.textContent ?? '',
       trusted: document.getElementById('out')?.dataset.trusted ?? '',
@@ -1192,6 +1247,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('field')?.value === 'hello', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 2, { timeout: 15000 }).catch(() => {});
     const typed = await target.evaluate(() => ({
       value: document.getElementById('field')?.value ?? '',
       trusted: document.getElementById('out')?.dataset.trusted ?? '',
@@ -1204,6 +1260,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'entered', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 3, { timeout: 15000 }).catch(() => {});
     const entered = await target.evaluate(() => document.getElementById('out')?.textContent ?? '');
     if (entered !== 'entered') failures.push(`Enter did not reach the page ("${entered}")`);
 
@@ -1254,6 +1311,7 @@ async function runVoiceSwitchScenario(context, extensionId) {
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      voiceHandsfree: true,
       settings: {
         transcription: { mode: 'browser' },
         provider: 'compatible',
@@ -1318,10 +1376,16 @@ async function runVoiceSwitchScenario(context, extensionId) {
     if (counts.llm !== 0) failures.push(`the main model was asked ${counts.llm} times`);
     if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
 
-    // Back closes the microphone window, so the next scenario starts clean.
+    // Back closes the microphone window, so the next scenario starts clean:
+    // the removal is asynchronous, so the check polls for the tab
+    // disappearing instead of sleeping a fixed beat a loaded runner cannot
+    // keep.
     await panel.click('#voiceBackBtn');
     await panel.waitForSelector('#voiceView', { state: 'hidden' });
-    await panel.waitForTimeout(500);
+    await panel.waitForFunction(async () => {
+      const tabs = await chrome.tabs.query({});
+      return !tabs.some((t) => (t.url ?? '').includes('mic.html'));
+    }, { timeout: 10000 }).catch(() => {});
     const left = await panel.evaluate(async () => (await chrome.tabs.query({})).some((t) => (t.url ?? '').includes('mic.html')));
     if (left) failures.push('the microphone window stayed open after Back');
 
@@ -1417,6 +1481,7 @@ async function runVoiceReplayScenario(context, extensionId) {
     console.log(`\n== scenario: voice-replay ==\nmodel calls before ${before}, after ${counts.llm}`);
     return failures;
   } finally {
+    await resetAccessPreference(panel);
     await target?.close();
     await panel.close();
     server.close();
@@ -1705,8 +1770,10 @@ async function runUiLayoutScenario(context, extensionId) {
     if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
     await panel.waitForSelector('#settingsView:not([hidden])');
     if (await panel.isHidden('#page-provider-main')) {
-      await panel.click('#settingsRowModels');
-      await panel.waitForSelector('#page-models:not([hidden])');
+      if (await panel.isHidden('#page-models')) {
+        await panel.click('#settingsRowModels');
+        await panel.waitForSelector('#page-models:not([hidden])');
+      }
       await panel.click('#settingsRowMain');
     }
     await panel.waitForSelector('#page-provider-main:not([hidden])');
@@ -1887,12 +1954,17 @@ async function main() {
       ...(await verify(runSessionRefreshRestartScenario)),
       ...(await verify(runUiLayoutScenario)),
       ...(await verify(runComposerScenario)),
+      ...(await verify(runTabPanelsScenario)),
+      ...(await verify(runResumeSessionScenario)),
+      ...(await verify(runOverlayScenario)),
       ...(await verify(runFocusedWorkspaceScenario)),
       ...(await verify(runNamedProvidersScenario)),
       ...(await verify(runZenFastScenario)),
       ...(await verify(runDriveBackupScenario)),
       ...(await verify(runParallelScenario)),
       ...(await verify(runVoiceScenario)),
+      ...(await verify(runVoiceCleanupScenario)),
+      ...(await verify(runNemotronVoiceScenario)),
       ...(await verify(runVoiceTrustedScenario)),
       ...(await verify(runVoiceSafetyScenario)),
       ...(await verify(runVoiceSwitchScenario)),
@@ -1900,7 +1972,10 @@ async function main() {
       ...(await verify(runVoiceReplayScenario)),
       ...(await verify(runAccessUiScenario)),
       ...(await verify(runAccessRuntimeScenario)),
+      ...(await verify(runAccessRememberedScenario)),
       ...(await verify(runVoiceAccessScenario)),
+      ...(await verify(runDialogsAndStopScenario)),
+      ...(await verify(runSnapshotGenerationScenario)),
       ...(await runScenario(context, extensionId, {
         name: 'fast-access-disabled',
         task: 'Fill the form and report the result',

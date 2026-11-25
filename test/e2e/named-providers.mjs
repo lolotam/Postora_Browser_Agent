@@ -13,7 +13,7 @@ export async function runNamedProvidersScenario(context, extensionId) {
   let target;
   let worker;
   let previousSettings;
-  const verificationRoute = 'https://www.kimi.com/code/postora-test**';
+  const verificationRoute = 'https://www.kimi.ai/code/postora-test**';
   const verificationHandler = (route) => route.fulfill({ contentType: 'text/html', body: '<h1>Synthetic authorization page</h1>' });
   await context.route(verificationRoute, verificationHandler);
   async function openSettings() {
@@ -57,16 +57,16 @@ export async function runNamedProvidersScenario(context, extensionId) {
       globalThis.__kimiGrant = false;
       globalThis.fetch = async (input, init = {}) => {
         const url = String(input);
-        const named = ['https://generativelanguage.googleapis.com/', 'https://api.moonshot.ai/', 'https://api.kimi.com/', 'https://auth.kimi.com/'].some((origin) => url.startsWith(origin));
+        const named = ['https://generativelanguage.googleapis.com/', 'https://api.moonshot.ai/', 'https://api.kimi.ai/', 'https://auth.kimi.ai/'].some((origin) => url.startsWith(origin));
         if (!named) return original(input, init);
         const headers = new Headers(init.headers);
         globalThis.__namedCalls.push({ url, auth: headers.get('authorization') });
-        if (url.endsWith('/device_authorization')) return Response.json({ device_code: 'SYNTHETIC-DEVICE', user_code: 'KIMI-TEST', verification_uri: 'https://www.kimi.com/code/postora-test', verification_uri_complete: 'https://www.kimi.com/code/postora-test?user_code=KIMI-TEST', interval: 1, expires_in: 60 });
+        if (url.endsWith('/device_authorization')) return Response.json({ device_code: 'SYNTHETIC-DEVICE', user_code: 'KIMI-TEST', verification_uri: 'https://www.kimi.ai/code/postora-test', verification_uri_complete: 'https://www.kimi.ai/code/postora-test?user_code=KIMI-TEST', interval: 1, expires_in: 60 });
         if (url.endsWith('/oauth/token')) return globalThis.__kimiGrant
           ? Response.json({ access_token: 'SYNTHETIC-CODE-ACCESS', refresh_token: 'SYNTHETIC-CODE-REFRESH', expires_in: 3600 })
           : Response.json({ error: 'authorization_pending' }, { status: 400 });
         const google = url.startsWith('https://generativelanguage.googleapis.com/');
-        const code = url.startsWith('https://api.kimi.com/');
+        const code = url.startsWith('https://api.kimi.ai/');
         const expected = google ? 'Bearer SYNTHETIC-GEMINI-KEY' : code ? 'Bearer SYNTHETIC-CODE-ACCESS' : 'Bearer SYNTHETIC-MOONSHOT-KEY';
         if (headers.get('authorization') !== expected) return Response.json({ error: { message: 'wrong credential scope' } }, { status: 401 });
         const model = google ? 'gemini-test' : code ? 'kimi-for-coding' : 'kimi-k3.1-pro';
@@ -164,7 +164,7 @@ export async function runNamedProvidersScenario(context, extensionId) {
     }).catch(() => {});
     await panel.close();
     await target?.close();
-    for (const page of context.pages()) if (page.url().startsWith('https://www.kimi.com/code/postora-test')) await page.close();
+    for (const page of context.pages()) if (page.url().startsWith('https://www.kimi.ai/code/postora-test')) await page.close();
     await context.unroute(verificationRoute, verificationHandler);
     server.closeAllConnections(); // Chromium may leave a speculative connection open.
     await new Promise((resolve) => server.close(resolve));

@@ -4,13 +4,10 @@
 import { providerMessage } from '../lib/failure.js';
 import { MODEL_IDLE_MS, fetchModel, readSse } from '../lib/sse.js';
 import { requestJson } from '../lib/json.js';
-import { ProviderHttpError, readError, withRetry } from '../lib/retry.js';
+import { ProviderHttpError, readError, retryStreamBeforeOutput, withRetry } from '../lib/retry.js';
 import { parseTextToolCalls } from './text-tool-calls.js';
-import { kindOf } from '../agent/tool-kinds.js';
-import { NOTEBOOK_HEADER, NOTE_SAVED_ARGS, trimKeepingNotebook, withoutNotebook } from '../agent/notebook.js';
+import { compactChatMessages, estimateConversationTokens, SCREENSHOT_MESSAGE_PREFIX } from '../agent/trimming.js';
 
-const KEEP_FULL_OBSERVATIONS = 2;
-const TRIMMED_OBSERVATION_CHARS = 400;
 // Gateways such as Vercel's list image, video and embedding models next to chat
 // models. "evaluation" models (typesafe-ai/jev) are kept, flagged as decision models.
 const NON_CHAT_TYPES = new Set(['embedding', 'image', 'video', 'reranking', 'speech', 'transcription', 'realtime']);
@@ -45,6 +42,10 @@ const NO_VISION = /image input|support(?:s)? images?|does not support vision|vis
 const NO_VISION_STATUS = new Set([400, 404, 415, 422]);
 // finish_reason values that mean the answer is complete.
 const COMPLETE = new Set(['stop', 'tool_calls', 'function_call']);
+// The finish reason of a reply that ran out of output room. It is not an
+// answer: the call it was writing is half a call, and running it would act on
+// arguments nobody finished writing.
+const TRUNCATED_FINISH = 'length';
 
 // The only MiniMax model that reads reasoning_effort; the others think at their
 // own depth and ignore it.
@@ -86,11 +87,15 @@ export class CompatibleSession {
     this.pendingImages.push(...images);
   }
 
-  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }, deadline = Date.now() + MODEL_IDLE_MS, retrying = false) {
+  estimatedInputTokens() {
+    return estimateConversationTokens(this.messages);
+  }
+
+  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }, deadline = Date.now() + MODEL_IDLE_MS, retrying = false, streamRetried = false) {
     if (this.pendingImages.length) {
       this.messages.push(this.textOnly
         ? userMessage('A screenshot was taken, but this model cannot read images. Use read_page or get_text instead.')
-        : userMessage('Screenshot returned by the last tool call:', this.pendingImages));
+        : userMessage(SCREENSHOT_MESSAGE_PREFIX, this.pendingImages));
       this.pendingImages = [];
     }
     compactMessages(this.messages);
@@ -106,12 +111,12 @@ export class CompatibleSession {
       // deadline, once (no images are left after that); later screenshots become a note.
       if (NO_VISION_STATUS.has(status) && NO_VISION.test(detail) && dropImages(this.messages)) {
         this.textOnly = true;
-        return this.next({ signal, onEvent, toolChoice }, deadline, true);
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, streamRetried);
       }
       // An endpoint that refuses the usage option: ask again without it, once.
       if (status === 400 && this.usage && /stream_options/i.test(detail)) {
         this.usage = false;
-        return this.next({ signal, onEvent, toolChoice }, deadline, true);
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, streamRetried);
       }
       // OpenRouter's own advice for this one is to drop a tool, which the agent cannot do.
       if (/support tool use/i.test(detail)) throw failure(err, 'this model cannot call tools, which the agent needs to use the browser. Pick another model.');
@@ -128,30 +133,40 @@ export class CompatibleSession {
     let shown = '';
     let done = false;
     let received = false; // any part of the answer (text, reasoning or a call) arrived
-    for await (const { data } of readSse(res, signal)) {
-      if (data === '[DONE]') {
-        done = true;
-        break;
-      }
-      const chunk = JSON.parse(data);
-      if (chunk.error) {
-        const message = chunk.error.message ?? JSON.stringify(chunk.error);
-        // vLLM answers HTTP 200 and reports a model without vision inside the stream
-        // ("multimodal processing is not enabled"): handled like the HTTP error, once,
-        // and only before anything was shown, so a retry never adds to a shown answer.
-        if (!received && NO_VISION.test(message) && dropImages(this.messages)) {
-          this.textOnly = true;
-          return this.next({ signal, onEvent, toolChoice }, deadline, true);
+    try {
+      for await (const { data } of readSse(res, signal)) {
+        if (data === '[DONE]') {
+          done = true;
+          break;
         }
-        if (shown) onEvent({ type: 'text-reset' }); // the backup's answer must not follow a half answer
-        throw new Error(message);
+        const chunk = JSON.parse(data);
+        if (chunk.error) {
+          const message = chunk.error.message ?? JSON.stringify(chunk.error);
+          // vLLM answers HTTP 200 and reports a model without vision inside the stream
+          // ("multimodal processing is not enabled"): handled like the HTTP error, once,
+          // and only before anything was shown, so a retry never adds to a shown answer.
+          if (!received && NO_VISION.test(message) && dropImages(this.messages)) {
+            this.textOnly = true;
+            return this.next({ signal, onEvent, toolChoice }, deadline, true, streamRetried);
+          }
+          if (shown) onEvent({ type: 'text-reset' }); // the backup's answer must not follow a half answer
+          throw new Error(message);
+        }
+        const delta = acc.push(chunk);
+        if (delta.text || delta.reasoning || chunk.choices?.[0]?.delta?.tool_calls?.length) received = true;
+        const text = filter ? filter.push(delta.text) : delta.text;
+        shown += text;
+        if (text) onEvent({ type: 'text-delta', delta: text });
+        if (delta.reasoning) onEvent({ type: 'reasoning-delta', delta: delta.reasoning });
       }
-      const delta = acc.push(chunk);
-      if (delta.text || delta.reasoning || chunk.choices?.[0]?.delta?.tool_calls?.length) received = true;
-      const text = filter ? filter.push(delta.text) : delta.text;
-      shown += text;
-      if (text) onEvent({ type: 'text-delta', delta: text });
-      if (delta.reasoning) onEvent({ type: 'reasoning-delta', delta: delta.reasoning });
+    } catch (err) {
+      if (!received && !streamRetried) {
+        return retryStreamBeforeOutput(
+          () => { throw err; },
+          { signal, deadline, canRetry: () => true },
+        ).catch(() => this.next({ signal, onEvent, toolChoice }, deadline, true, true));
+      }
+      throw err;
     }
 
     const result = acc.result();
@@ -167,13 +182,46 @@ export class CompatibleSession {
     let content = result.text;
     // Neither a finish reason nor [DONE]: the connection dropped mid-answer.
     if (!result.finishReason && !done) {
+      if (!received && !streamRetried && signal && !signal.aborted && deadline - Date.now() > 0) {
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, true);
+      }
+      if (!received && !streamRetried && !signal && deadline - Date.now() > 0) {
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, true);
+      }
       if (answer) onEvent({ type: 'text-reset' }); // withdrawn before the backup or the error shows
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
+    }
+    this.turn += 1;
+    // A reply that ran out of output room, or a call whose arguments are not
+    // JSON, was cut off. It is not a turn that can be run: the call was cut off
+    // half written, and running it would act on arguments nobody finished.
+    // The turn is reported as `truncated` and is not committed to the
+    // conversation, so the request that asks again is a valid one and nothing
+    // of this turn is run.
+    // A text-only request (`toolChoice: 'none'`: the step-limit report, a
+    // compaction summary, the connection test) has no call to cut in half and
+    // no caller that asks again, so a long text answer is kept as it was.
+    if (toolChoice !== 'none' && (result.finishReason === TRUNCATED_FINISH || result.brokenCalls.length)) {
+      if (answer) onEvent({ type: 'text-reset' }); // the cut-off text is withdrawn before the retry
+      return { truncated: true, text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
+    }
+    // A text-only request asked for no call. An endpoint that ignores
+    // `tool_choice: 'none'` and sends one anyway is not obeyed: the call is
+    // neither run nor kept, so the history never holds a call without a result.
+    if (toolChoice === 'none' && result.toolCalls.length) {
+      result.toolCalls = [];
+      result.rawToolCalls = [];
+      // A reply that was only a call has no text to give: it is an empty
+      // answer, which the caller handles (the step-limit report falls back to
+      // its own words), and nothing of it is kept in the history.
+      // Only a reply that finished normally: a filtered or otherwise failed
+      // one still fails below.
+      const finished = COMPLETE.has(result.finishReason) || (done && !result.finishReason);
+      if (!answer.trim() && finished) return { text: '', toolCalls: [], usage: result.usage, retryWaitMs: this.retryWaitMs };
     }
     if (!answer.trim() && !result.toolCalls.length) {
       throw new Error(`Model request failed: the model returned no text or tool calls (${result.finishReason ?? 'empty completion'}). Choose a chat model with tool support.`);
     }
-    this.turn += 1;
     const complete = COMPLETE.has(result.finishReason) || (done && !result.finishReason);
     if (complete && !result.toolCalls.length && toolChoice !== 'none' && this.textToolCalls) {
       const calls = parseTextToolCalls(answer, this.tools);
@@ -185,6 +233,7 @@ export class CompatibleSession {
         onEvent({ type: 'text-reset' }); // the streamed text was a call, not an answer
       }
     }
+    const estimatedPromptTokens = this.estimatedInputTokens();
     this.messages.push({
       role: 'assistant',
       content: content || null,
@@ -193,7 +242,12 @@ export class CompatibleSession {
       // a tool call keeps it.
       ...(minimax || this.thinkingStyle === 'kimi' ? storedReasoning(result) : {}),
     });
-    return { text: answer, toolCalls: result.toolCalls, usage: result.usage, retryWaitMs: this.retryWaitMs };
+    const usage = result.usage ?? {
+      prompt_tokens: estimatedPromptTokens,
+      completion_tokens: Math.ceil(((content || answer || '').length + (result.rawToolCalls.length ? JSON.stringify(result.rawToolCalls).length : 0)) / 4),
+      estimated: true,
+    };
+    return { text: answer, toolCalls: result.toolCalls, usage, retryWaitMs: this.retryWaitMs };
   }
 
   /** The request up to its response headers, retried on rate limits and overloads. */
@@ -299,6 +353,7 @@ export function createAccumulator({ reasoningDetails = false } = {}) {
     },
     result() {
       const present = calls.filter(Boolean).map((c, n) => ({ ...c, id: c.id || `call_${n}_${Date.now()}` }));
+      const parsed = present.map((c) => ({ id: c.id, name: c.name, parsed: toolArgs(c.arguments) }));
       return {
         text,
         usage,
@@ -309,7 +364,10 @@ export function createAccumulator({ reasoningDetails = false } = {}) {
           function: { name: c.name, arguments: c.arguments || '{}' },
           ...(c.extra ? { extra_content: c.extra } : {}),
         })),
-        toolCalls: present.map((c) => ({ id: c.id, name: c.name, args: safeJson(c.arguments) })),
+        toolCalls: parsed.map((c) => ({ id: c.id, name: c.name, args: c.parsed.args })),
+        // The calls whose arguments are not JSON: they were cut off, and
+        // running them would act on arguments nobody finished writing.
+        brokenCalls: parsed.filter((c) => !c.parsed.ok).map((c) => c.id),
         reasoning,
         reasoningField,
         reasoningDetails: detailEntries,
@@ -357,33 +415,7 @@ function mergeableDetail(last, entry) {
  * ones are cut. Notes are short and never cut, and do not push observations out.
  */
 export function compactMessages(messages) {
-  const names = new Map();
-  for (const m of messages) for (const tc of m.tool_calls ?? []) names.set(tc.id, tc.function?.name);
-  const toolMessages = messages.filter((m) => m.role === 'tool');
-  const kindOfResult = (m) => kindOf(names.get(m.tool_call_id));
-  const observations = toolMessages.filter((m) => !['bookkeeping', 'notes'].includes(kindOfResult(m)));
-  const notebookReads = toolMessages.filter((m) => kindOfResult(m) === 'notes');
-  // Only the agent adds the notebook header (tools quote it in page text), so it marks
-  // a notebook copy; one copy is enough, the latest.
-  const lastNotebook = messages.findLastIndex((m) => m.role === 'tool' && typeof m.content === 'string' && m.content.includes(NOTEBOOK_HEADER));
-  messages.forEach((m, i) => {
-    if (m.role === 'tool' && i < lastNotebook && typeof m.content === 'string') m.content = withoutNotebook(m.content);
-  });
-  for (const m of [...observations.slice(0, -KEEP_FULL_OBSERVATIONS), ...notebookReads.slice(0, -1)]) {
-    if (typeof m.content === 'string') m.content = trimKeepingNotebook(m.content, TRIMMED_OBSERVATION_CHARS);
-  }
-  // A note's text is in the latest notebook copy, so once one follows, the call keeps
-  // only a marker and old notes no longer grow the context.
-  const resultAt = new Map(messages.map((m, i) => [m.role === 'tool' ? m.tool_call_id : null, i]));
-  for (const m of messages) {
-    for (const tc of m.tool_calls ?? []) {
-      if (tc.function?.name === 'note' && resultAt.get(tc.id) < lastNotebook) tc.function.arguments = NOTE_SAVED_ARGS;
-    }
-  }
-  const withImages = messages.filter((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((c) => c.type === 'image_url'));
-  for (const m of withImages.slice(0, -1)) {
-    m.content = m.content.map((c) => (c.type === 'image_url' ? { type: 'text', text: '[older screenshot removed]' } : c));
-  }
+  compactChatMessages(messages);
 }
 
 // A `<think>…</think>` block in an answer: a model whose thinking could not be
@@ -499,11 +531,15 @@ function userMessage(text, images = []) {
   };
 }
 
-function safeJson(text) {
+/**
+ * The arguments of a call. Arguments that are not JSON are not arguments: the
+ * call was cut off, and running it would act on a half-written instruction.
+ */
+function toolArgs(text) {
   try {
-    return JSON.parse(text || '{}');
+    return { ok: true, args: JSON.parse(text || '{}') };
   } catch {
-    return { _raw: text };
+    return { ok: false, args: { _raw: text } };
   }
 }
 

@@ -36,10 +36,15 @@ export const ASK_FIRST = 'ask-first';
 export const FULL_ACCESS = 'full-access';
 export const MODES = [ASK_FIRST, FULL_ACCESS];
 
+// Running a command, evaluating page JavaScript or writing a project file. It
+// is a kind of its own so Full access never covers it.
+export const LOCAL_EXECUTION = 'local-execution';
+
 /** What an action is, by the tool that performs it. */
 export const OBSERVE = 'observe';
 export const INTERACT = 'interact';
 export const SENSITIVE = 'sensitive';
+export const DIALOG = 'dialog';
 
 /** The two answers a question can get. */
 export const ALLOW = 'allow';
@@ -59,6 +64,16 @@ const OBSERVATIONS = new Set([
 // An explicit read of one field's value, secret or not.
 const SENSITIVE_READS = new Set(['read_field']);
 
+// Answering a page dialog (accepting a confirm or answering a prompt).
+const DIALOG_ACTIONS = new Set(['dialog']);
+
+// Running code or writing files is never part of Full access. It needs its own
+// approval card in every mode, even when nothing else on the page does.
+const LOCAL_EXECUTION_ACTIONS = new Set(['project_write', 'project_run', 'run_terminal']);
+// @store-strip-start
+LOCAL_EXECUTION_ACTIONS.add('run_javascript');
+// @store-strip-end
+
 /** Anything but the exact Full-access name is Ask first. */
 export function normalizeMode(mode) {
   return mode === FULL_ACCESS ? FULL_ACCESS : ASK_FIRST;
@@ -66,13 +81,16 @@ export function normalizeMode(mode) {
 
 /** What kind of action a tool is. Unknown tools are interactions. */
 export function classifyAction(tool) {
+  if (LOCAL_EXECUTION_ACTIONS.has(tool)) return LOCAL_EXECUTION;
   if (OBSERVATIONS.has(tool)) return OBSERVE;
   if (SENSITIVE_READS.has(tool)) return SENSITIVE;
+  if (DIALOG_ACTIONS.has(tool)) return DIALOG;
   return INTERACT;
 }
 
 /** Whether the mode lets this action run without asking the user first. */
 export function requiresApproval(mode, action) {
+  if (action === LOCAL_EXECUTION) return true;
   if (action === OBSERVE) return false;
   return normalizeMode(mode) !== FULL_ACCESS;
 }
@@ -81,7 +99,9 @@ export function requiresApproval(mode, action) {
 function kindRank(kind) {
   if (kind === OBSERVE) return 0;
   if (kind === INTERACT) return 1;
+  if (kind === DIALOG) return 1;
   if (kind === SENSITIVE) return 2;
+  if (kind === LOCAL_EXECUTION) return 3;
   return -1;
 }
 
@@ -90,9 +110,18 @@ function kindRank(kind) {
  *
  * The authority classifies the action itself. A caller may only ask for
  * more, never for less: nothing may call a click an observation, and
- * nothing may call a field read a harmless one.
+ * nothing may call a field read a harmless one. Dismissing a page dialog
+ * (`action: 'dialog', args: { accept: false }`) is an observation so it never
+ * blocks on user approval when backing out of a dialog.
  */
-function effectiveKind(action, supplied) {
+function effectiveKind(action, supplied, args = null, target = null) {
+  if (action === 'dialog') {
+    const dismiss = args && typeof args === 'object' && args.accept === false;
+    const alertDialog = target && typeof target === 'object' && target.dialogType === 'alert';
+    if (dismiss || alertDialog) {
+      return kindRank(supplied) > kindRank(OBSERVE) ? supplied : OBSERVE;
+    }
+  }
   const derived = classifyAction(action);
   return kindRank(supplied) > kindRank(derived) ? supplied : derived;
 }
@@ -265,12 +294,18 @@ export class AccessAuthority {
    * `sessionId` is required: an authority without a session has nothing to
    * bind an approval to, and a missing session must never be able to answer
    * a question.
+   *
+   * `initialMode` is the mode a chat opens in: Ask first unless the worker
+   * restores the mode the owner chose to remember. Anything that is not the
+   * exact Full-access name is Ask first, and the revision starts at 1 either
+   * way, so every permit is still bound to a revision.
    */
-  constructor({ sessionId, onChange = () => {}, onRequest = () => {}, onRequestSettled = () => {} } = {}) {
+  constructor({ sessionId, initialMode = ASK_FIRST, onChange = () => {}, onRequest = () => {}, onRequestSettled = () => {} } = {}) {
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new TypeError('AccessAuthority needs the session it belongs to');
     }
     this.#sessionId = sessionId;
+    this.#mode = normalizeMode(initialMode);
     this.#onChange = typeof onChange === 'function' ? onChange : () => {};
     this.#onRequest = typeof onRequest === 'function' ? onRequest : () => {};
     this.#onRequestSettled = typeof onRequestSettled === 'function' ? onRequestSettled : () => {};
@@ -384,16 +419,18 @@ export class AccessAuthority {
     signal = null,
   } = {}) {
     const id = newId('req');
+    const copiedArgs = cloneJson(args);
+    const copiedTarget = cloneJson(target);
     const request = Object.freeze({
       id,
       sessionId: this.#sessionId,
       revision: this.#revision,
       mode: this.#mode,
       action: typeof action === 'string' ? action : '',
-      kind: effectiveKind(action, kind),
-      args: deepFreeze(cloneJson(args)),
+      kind: effectiveKind(action, kind, copiedArgs, copiedTarget),
+      args: deepFreeze(copiedArgs),
       tabId: tabId ?? null,
-      target: deepFreeze(cloneJson(target)),
+      target: deepFreeze(copiedTarget),
       describe: typeof describe === 'string' ? describe : null,
     });
     let settle = () => {};
@@ -507,9 +544,10 @@ export class AccessAuthority {
   /**
    * The one call an executor makes.
    *
-   * An observation, and every supported action under Full access, is allowed
-   * right away. An interaction or a sensitive read under Ask first waits for
-   * the user, and is allowed only if the user said yes to that very action.
+   * An observation, and every action except local execution under Full access,
+   * is allowed right away. Local execution and every interaction or sensitive
+   * read under Ask first wait for the user, and are allowed only if the user
+   * said yes to that very action.
    *
    * The command's signal is honoured in every mode: a command that was
    * aborted gets no permit, and a permit that was already issued is
@@ -526,7 +564,7 @@ export class AccessAuthority {
     if (op.kind === OBSERVE) {
       return { permit: this.#issuePermit(op, 'observation', signal), reason: null, source: 'observation' };
     }
-    if (this.#mode === FULL_ACCESS) {
+    if (this.#mode === FULL_ACCESS && op.kind !== LOCAL_EXECUTION) {
       return { permit: this.#issuePermit(op, 'full-access', signal), reason: null, source: 'full-access' };
     }
     const { promise } = this.requestApproval({
@@ -591,12 +629,14 @@ export class AccessAuthority {
     if (tabId !== null && typeof tabId !== 'number' && typeof tabId !== 'string') {
       throw new TypeError('the tab of an operation must be a number or a string');
     }
+    const args = cloneJson(operation?.args ?? null);
+    const target = cloneJson(operation?.target ?? null);
     return {
       action,
-      kind: effectiveKind(action, operation?.kind),
-      args: cloneJson(operation?.args ?? null),
+      kind: effectiveKind(action, operation?.kind, args, target),
+      args,
       tabId,
-      target: cloneJson(operation?.target ?? null),
+      target,
       describe: typeof operation?.describe === 'string' ? operation.describe : null,
     };
   }

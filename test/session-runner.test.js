@@ -124,3 +124,87 @@ test('one "trying again" notice per task, however often the provider stalls', as
   assert.deepEqual(shown, ['retrying', 'switched']);
   runner.dispose();
 });
+
+test('a provider error keeps the checkpoint so Resume is offered, while a non-provider error clears it', async () => {
+  const { isResumableProviderError } = await import('../src/background/session-runner.js');
+  assert.equal(isResumableProviderError(Object.assign(new Error('HTTP 503'), { status: 503 })), true);
+  assert.equal(isResumableProviderError(new Error('Model request failed: the response stream ended before the answer was complete.')), true);
+  assert.equal(isResumableProviderError(new Error('Primary failed: HTTP 429 Backup failed: HTTP 503')), true);
+  assert.equal(isResumableProviderError(new Error('No active tab found.')), false);
+
+  const meta = await sessions.createStoredSession('CheckpointKept');
+  const runner = new SessionRunner({ meta, body: await sessions.loadSession(meta.id), color: 'cyan', isTakenByOther: () => null, onSessionsChanged: () => {} });
+  const statuses = [];
+  const origEmit = runner.emit.bind(runner);
+  runner.emit = (e) => {
+    const out = origEmit(e);
+    if (e.type === 'status') statuses.push({ running: e.running, resumable: e.resumable });
+    return out;
+  };
+  runner.prepareModelSession = () => { runner.session = { model: 'test-model' }; };
+  runner.browser.overlay = { begin() {}, end: async () => {}, frame: async () => {} };
+  runner.browser.closeDisposableTabs = async () => {};
+  runner.browser.detachAll = async () => {};
+  runner.browser.startOn = async () => {
+    const err = new Error('Model request failed (HTTP 503): service overloaded');
+    err.status = 503;
+    throw err;
+  };
+  await runner.start('collect prices');
+  assert.ok(runner.continuation, 'checkpoint is kept after a provider error');
+  assert.equal(runner.continuation.task, 'collect prices');
+  assert.equal(statuses.at(-1)?.running, false);
+  assert.equal(statuses.at(-1)?.resumable, true, 'final status offers Resume');
+
+  runner.browser.startOn = async () => {
+    throw new Error('No active tab found.');
+  };
+  await runner.start('collect prices');
+  assert.equal(runner.continuation, null, 'non-provider error clears checkpoint');
+  assert.equal(statuses.at(-1)?.resumable, false);
+  runner.dispose();
+});
+
+test('debugger onDetach with canceled_by_user stops the running task, ask_user times out, and emit is guarded against disposed runners and broken ports', async () => {
+  let detachListener = null;
+  const prevAddListener = globalThis.chrome.debugger.onDetach.addListener;
+  globalThis.chrome.debugger.onDetach.addListener = (fn) => { detachListener = fn; };
+  try {
+    const meta = await sessions.createStoredSession('DebuggerCancel');
+    const runner = new SessionRunner({
+      meta,
+      body: await sessions.loadSession(meta.id),
+      color: 'cyan',
+      isTakenByOther: () => null,
+      onSessionsChanged: () => {},
+      askUserTimeoutMs: 25,
+    });
+    assert.ok(detachListener, 'BrowserController registered debugger.onDetach listener');
+
+    // Guarded emit: broken port or disposed runner never throws
+    runner.ports.add({ postMessage() { throw new Error('port closed'); } });
+    assert.doesNotThrow(() => runner.emit({ type: 'notice', id: 'n1', kind: 'info', level: 'info' }));
+
+    // ask_user timeout
+    const askController = new AbortController();
+    await assert.rejects(
+      runner.askUser('What is the OTP?', askController.signal),
+      /Timed out waiting for the user’s answer/,
+    );
+    assert.equal(runner.pendingQuestion, null);
+
+    // canceled_by_user stops the task
+    runner.abort = new AbortController();
+    runner.browser.tabId = 42;
+    runner.browser.attached.add(42);
+    detachListener({ tabId: 42 }, 'canceled_by_user');
+    assert.equal(runner.abort.signal.aborted, true, 'debugger cancel stops the running task');
+
+    runner.dispose();
+    const lenBefore = runner.transcript.length;
+    assert.doesNotThrow(() => runner.emit({ type: 'user', text: 'after dispose' }));
+    assert.equal(runner.transcript.length, lenBefore, 'disposed runner ignores emitted events');
+  } finally {
+    globalThis.chrome.debugger.onDetach.addListener = prevAddListener;
+  }
+});

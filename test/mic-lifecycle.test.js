@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { createConfiguredRecognition } from '../src/voice/recognition-factory.js';
 import { heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey } from '../src/sidepanel/voice.js';
+import { createConfiguredRecognition } from '../src/voice/recognition-factory.js';
+import { isSidePanelSender } from '../src/permissions/panel-sender.js';
 
 // Run the actual microphone page with a small browser boundary. No recognizer
 // or relay logic is duplicated in the test.
@@ -34,7 +35,9 @@ async function microphone() {
   const location = { search: '?epoch=42&continuous=1', href: 'chrome-extension://test/src/sidepanel/mic.html?epoch=42&continuous=1' };
   await vm.runInNewContext(`(async () => { ${source}\n })()`, {
     loadSettings: async () => ({ transcription: { mode: 'browser' } }),
-    createConfiguredRecognition, heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey,
+    createConfiguredRecognition,
+    heardText, MIC_PANEL, MIC_WINDOW, speechLang, voiceErrorKey,
+    isSidePanelSender: (sender) => isSidePanelSender(sender, { id: 'ext', getURL: (path) => `chrome-extension://ext/${path}` }),
     setLanguage() {}, t: (key) => key,
     URL, URLSearchParams, location,
     document: { getElementById: (id) => elements[id] },
@@ -47,6 +50,8 @@ async function microphone() {
     },
     chrome: {
       runtime: {
+        id: 'ext',
+        getURL: (path) => `chrome-extension://ext/${path}`,
         sendMessage: async (message) => { messages.push(message); },
         onMessage: { addListener: (handler) => { relay = handler; } },
       },
@@ -56,7 +61,7 @@ async function microphone() {
   return {
     messages, created, opened, scheduled,
     start: () => click(),
-    relay: (kind, epoch = 42) => relay({ source: MIC_PANEL, kind, epoch }),
+    relay: (kind, epoch = 42, sender = { id: 'ext', url: 'chrome-extension://ext/src/sidepanel/index.html' }) => relay({ source: MIC_PANEL, kind, epoch }, sender),
     closes: () => closes,
   };
 }
@@ -92,6 +97,8 @@ test('a permission popup moving into a tab does not finish the new capture', asy
 test('a different microphone epoch cannot pause, cancel or restart this window', async () => {
   const mic = await microphone();
   mic.start();
+  // A page's content script cannot control the window either, even with the right epoch.
+  mic.relay('cancel', 42, { id: 'ext', tab: { id: 5 }, url: 'https://evil.test/' });
   mic.relay('pause', 99);
   mic.created[0].final('still listening');
   mic.relay('cancel', 99);

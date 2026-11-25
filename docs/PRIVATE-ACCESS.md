@@ -80,10 +80,11 @@ allows only that extension ID. It does not request administrator access, expose 
 HTTP listener, or register the host for other Windows accounts. Native messaging
 registration follows [Chrome's native messaging documentation](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging).
 
-Reload the extension and choose **Full access** in the relevant chat. `run_terminal`
-runs PowerShell as the signed-in Windows user, including local file operations,
-program execution, and `Get-Clipboard` / `Set-Clipboard`. Ask first requires an
-approval for each native command. Command output reaches the AI provider and saved
+Reload the extension. `run_terminal` runs PowerShell as the signed-in Windows
+user, including local file operations, program execution, and `Get-Clipboard` /
+`Set-Clipboard`. Every native command needs its own approval, in Ask first and in
+Full access alike: the card shows the whole command and its working directory.
+The same holds for `project_run`, `project_write` and `run_javascript`. Command output reaches the AI provider and saved
 history. There is no automatic administrator elevation or password-vault access.
 Maximum command length is 16000 characters, timeout 60 seconds, captured output
 64 KiB. Commands are independent; supply `cwd` explicitly when required.
@@ -100,8 +101,22 @@ before execution. A denial is never retried. Returning to Ask first stops the ta
 and revokes old permits. The live mode is sent to the model on its next turn.
 
 The mode is per chat and stays through task completion and panel reconnects while
-the worker remains alive. A new chat, browser restart, or worker restart starts
-Ask first. The mode selector shows the worker-confirmed state.
+the worker remains alive. The mode selector shows the worker-confirmed state.
+
+**Remembered access mode.** Settings → Behavior has a **Remember my choice of
+access mode** switch, on by default. With it on, the Full access you choose also
+applies to new chats and survives a worker or browser restart; choosing Ask first
+(or turning the switch off) takes Full access away from every open chat at once.
+With it off, Full access applies to that chat only and every new chat starts at
+Ask first. The choice is kept in its own storage record (`accessPreference`),
+outside Settings: a settings save, a backup, a Drive backup or an import can
+neither carry nor change it, and the extension closes that storage to content
+scripts (`TRUSTED_CONTEXTS`) when the worker starts. If the browser cannot do
+that, or the record cannot be read, every chat starts at Ask first and the panel
+says so. If a downgrade cannot be written to storage it still applies to the open
+chats; the panel then warns that Full access was not cleared and will return
+after a browser restart. A remembered Full access never covers PowerShell,
+project commands, project file writes or page JavaScript: those always ask.
 
 Chrome protected pages, the browser password vault, native dialogs, and OS account
 restrictions are not unlocked by extension permissions. The store packaging path

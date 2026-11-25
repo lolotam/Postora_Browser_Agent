@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runAgent } from '../src/agent/agent.js';
-import { formatSnapshot, normalizeUrl, toolDefinitions } from '../src/agent/tools.js';
-import { renderMarkdown, reportFileName } from '../src/sidepanel/markdown.js';
+import { runAgent, hashStallKey } from '../src/agent/agent.js';
+import { createToolExecutor, formatSnapshot, normalizeUrl, toolDefinitions } from '../src/agent/tools.js';
+import { BrowserController } from '../src/browser/controller.js';
+import { AccessAuthority, FULL_ACCESS } from '../src/permissions/policy.js';
+import { renderMarkdown, renderMarkdownToDom, reportFileName } from '../src/sidepanel/markdown.js';
 
 /** Scripted provider session: returns the queued turns in order and records results. */
 function scriptedSession(turns) {
@@ -125,11 +127,76 @@ test('formatSnapshot and normalizeUrl produce model-readable output', () => {
   assert.equal(normalizeUrl('http://x.y'), 'http://x.y');
 });
 
-test('renderMarkdown escapes HTML and only links http(s) URLs', () => {
-  const html = renderMarkdown('<img src=x onerror=alert(1)> [bad](javascript:alert(1)) [ok](https://a.b)');
+test('navigate and open_tab allow only http and https URLs', async () => {
+  for (const forbidden of ['javascript:alert(1)', 'data:text/html,<h1>x</h1>', 'file:///C:/Windows/win.ini', 'chrome://settings', 'about:blank', 'ftp://files.example.com']) {
+    assert.throws(() => normalizeUrl(forbidden), /only http and https/i, `normalizeUrl must reject ${forbidden}`);
+  }
+
+  const access = new AccessAuthority({ sessionId: 'b6-nav' });
+  access.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision: access.revision });
+  const fakeBrowser = {
+    overlay: {},
+    currentTab: async () => ({ id: 1, url: 'https://example.com' }),
+    captureTarget: async () => ({ scope: 'tab', kind: 'tab', tabId: 1, url: 'https://example.com' }),
+    validateTarget: async () => ({ ok: true }),
+    navigate: async () => { throw new Error('browser.navigate should not be called'); },
+    openTab: async () => { throw new Error('browser.openTab should not be called'); },
+  };
+  const execute = createToolExecutor(fakeBrowser, { access });
+  for (const tool of ['navigate', 'open_tab']) {
+    for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,hi', 'chrome://extensions']) {
+      const res = await execute(tool, { url });
+      assert.equal(res.isError, true, `${tool} should fail for ${url}`);
+      assert.match(res.output, /only http and https/i);
+    }
+  }
+
+  const controller = Object.create(BrowserController.prototype);
+  await assert.rejects(() => controller.navigate('javascript:alert(1)'), /only http and https/i);
+  await assert.rejects(() => controller.openTab('file:///C:/test.txt'), /only http and https/i);
+});
+
+test('renderMarkdown escapes HTML and only links http(s) URLs without re-matching inside href', () => {
+  const html = renderMarkdown('<img src=x onerror=alert(1)> [bad](javascript:alert(1)) [data](data:text/html,hi) [ok](https://a.b)');
   assert.ok(!html.includes('<img'));
   assert.ok(!html.includes('href="javascript:'));
+  assert.ok(!html.includes('href="data:'));
   assert.match(html, /<a href="https:\/\/a\.b"/);
+
+  // A Markdown link whose URL or label contains a URL or parentheses must not be re-matched by the autolinker.
+  const nestedUrl = renderMarkdown('[Visit https://inner.example/path](https://outer.example/go?next=https://inner.example/path)');
+  assert.equal(nestedUrl.split('<a ').length - 1, 1, 'single <a> tag without nested autolink corruption');
+  assert.equal(
+    nestedUrl,
+    '<p><a href="https://outer.example/go?next=https://inner.example/path" target="_blank" rel="noopener noreferrer">Visit https://inner.example/path</a></p>',
+  );
+
+  // DOM builder builds element nodes directly without innerHTML and only links http(s).
+  class MiniNode {
+    constructor(tag) {
+      this.tagName = tag.toUpperCase();
+      this.children = [];
+      this.attributes = {};
+      this.textContent = '';
+    }
+    setAttribute(k, v) { this.attributes[k] = String(v); }
+    appendChild(child) { this.children.push(child); return child; }
+  }
+  const fakeDoc = {
+    createElement: (tag) => new MiniNode(tag),
+    createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
+  };
+  const root = new MiniNode('div');
+  renderMarkdownToDom('[safe](https://example.com/a?u=https://example.org) [evil](javascript:alert(1)) https://auto.example/x', {
+    document: fakeDoc,
+    container: root,
+  });
+  const p = root.children[0];
+  const links = p.children.filter((c) => c.tagName === 'A');
+  assert.equal(links.length, 2);
+  assert.equal(links[0].attributes.href, 'https://example.com/a?u=https://example.org');
+  assert.equal(links[0].textContent, 'safe');
+  assert.equal(links[1].attributes.href, 'https://auto.example/x');
 });
 
 test('a report downloads as a markdown file named after the session', () => {
@@ -218,4 +285,110 @@ test('a batch stops when an action changes the page or fails, and every call sti
     assert.match(session.results[1].output, reason);
     assert.match(session.results[2].output, reason);
   }
+});
+
+test('stall detector nudges after two repeats and stops the task after four repeats on the same page state', async () => {
+  const samePage = [
+    'Clicked [3] <button>.',
+    '',
+    'URL: https://shop.test/cart',
+    'Title: Cart',
+    'Generation: 1',
+    'Scroll: 0px of 800px (100% down, viewport 800px)',
+    'Interactive elements:',
+    '[3] button "Checkout"',
+    '',
+    'Visible text (truncated; use get_text for more):',
+    'Empty cart',
+  ].join('\n');
+
+  const session = scriptedSession([
+    { text: '', toolCalls: [call('1', 'click', { index: 3, generation: 1 })] },
+    { text: '', toolCalls: [call('2', 'click', { index: 3, generation: 2 })] },
+    { text: '', toolCalls: [call('3', 'click', { index: 3, generation: 3 })] },
+    { text: '', toolCalls: [call('4', 'click', { index: 3, generation: 4 })] },
+    { text: '', toolCalls: [call('5', 'click', { index: 3, generation: 5 })] },
+    { text: '', toolCalls: [call('6', 'done', { report: 'should not reach', success: true })] },
+  ]);
+  const events = [];
+  await runAgent({
+    session,
+    task: 'checkout',
+    maxSteps: 10,
+    emit: (e) => events.push(e),
+    execute: async () => ({ output: samePage }),
+  });
+
+  // First 2 occurrences (1 initial + 1st repeat): no nudge.
+  assert.doesNotMatch(session.results[0].output, /Stall warning/);
+  assert.doesNotMatch(session.results[1].output, /Stall warning/);
+  // 3rd and 4th occurrences (2nd and 3rd repeats): nudged.
+  assert.match(session.results[2].output, /Stall warning/);
+  assert.match(session.results[3].output, /Stall warning/);
+  // 5th occurrence (4th repeat): task stops before step 6.
+  assert.equal(session.results.length, 5);
+  const final = events.at(-1);
+  assert.equal(final.type, 'final');
+  assert.equal(final.success, false);
+  assert.match(final.report, /repeated the same action/i);
+});
+
+test('stall detector does not trigger when the page fingerprint changes between actions', async () => {
+  let stepNum = 0;
+  const session = scriptedSession([
+    { text: '', toolCalls: [call('1', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('2', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('3', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('4', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('5', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('6', 'done', { report: 'finished scrolling', success: true })] },
+  ]);
+  const events = [];
+  await runAgent({
+    session,
+    task: 'scroll through feed',
+    maxSteps: 10,
+    emit: (e) => events.push(e),
+    execute: async () => {
+      stepNum += 1;
+      return {
+        output: `Scrolled down.\n\nURL: https://feed.test\nTitle: Feed\nScroll: ${stepNum * 500}px of 5000px (viewport 800px)\nInteractive elements:\n(none)\n\nVisible text (truncated; use get_text for more):\nSection ${stepNum}`,
+      };
+    },
+  });
+
+  for (const r of session.results) {
+    assert.doesNotMatch(r.output, /Stall warning/);
+  }
+  assert.deepEqual(events.at(-1), { type: 'final', report: 'finished scrolling', success: true });
+  assert.equal(
+    hashStallKey('click', { index: 1, generation: 2 }, 'fp1'),
+    hashStallKey('click', { generation: 9, index: 1 }, 'fp1'),
+    'generation differences and key order do not change the stall hash',
+  );
+});
+
+test('a text-only turn with empty text or after an unresolved tool error is not an automatic success', async () => {
+  const emptyEvents = [];
+  await runAgent({
+    session: scriptedSession([{ text: '', toolCalls: [] }]),
+    task: 't',
+    maxSteps: 3,
+    emit: (e) => emptyEvents.push(e),
+    execute: async () => ({ output: 'ok' }),
+  });
+  assert.equal(emptyEvents.find((e) => e.type === 'final')?.success, false);
+
+  const afterFailureEvents = [];
+  await runAgent({
+    session: scriptedSession([
+      { text: '', toolCalls: [call('1', 'click', { index: 0 })] },
+      { text: 'I could not click the element because it failed.', toolCalls: [] },
+    ]),
+    task: 't',
+    maxSteps: 3,
+    emit: (e) => afterFailureEvents.push(e),
+    execute: async () => ({ output: 'Error: no element', isError: true }),
+  });
+  assert.equal(afterFailureEvents.find((e) => e.type === 'final')?.success, false);
 });

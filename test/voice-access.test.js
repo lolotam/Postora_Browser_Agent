@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 // while the question is open.
 
 const EXTENSION_ID = 'voice-access-extension';
-const PANEL_URL = `chrome-extension://${EXTENSION_ID}/src/sidepanel/index.html`;
+const PANEL_URL = `chrome-extension://${EXTENSION_ID}/src/sidepanel/index.html?tabId=7`;
 
 const records = {};
 const tabCalls = [];
@@ -195,7 +195,7 @@ test('Ask first asks the user about a click, and the click runs only after the a
     const request = world.panel.requests()[0].request;
     assert.equal(request.action, 'click');
     assert.equal(request.sessionId, world.runner.id);
-    assert.equal(request.origin, 'https://shop.test');
+    assert.equal(request.origin, 'https://shop.test/checkout');
     assert.equal(request.label, 'Send');
     assert.equal(request.args, undefined, 'the arguments never travel');
 

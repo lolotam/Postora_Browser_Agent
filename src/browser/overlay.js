@@ -13,15 +13,17 @@ export class AgentOverlay {
   constructor(browser) {
     this.browser = browser;
     this.enabled = false;
+    this.active = false;
     this.language = 'en';
     this.position = null; // last cursor point, so the glide continues across page loads
     this.tabs = new Set(); // tabs that may still show the overlay
   }
 
-  /** Called when a task starts; `enabled` is the user's setting. */
+  /** Called when a task starts; `enabled` is the user's cursor setting. */
   begin({ enabled, uiLanguage }) {
+    this.active = true;
     this.enabled = Boolean(enabled);
-    this.language = resolveLanguage(uiLanguage, chrome.i18n?.getUILanguage?.());
+    this.language = resolveLanguage(uiLanguage, globalThis.chrome?.i18n?.getUILanguage?.());
     this.position = null;
   }
 
@@ -29,6 +31,7 @@ export class AgentOverlay {
   async end() {
     const tabs = [...this.tabs];
     this.tabs.clear();
+    this.active = false;
     this.enabled = false;
     await Promise.all(tabs.map((tabId) => this.send({ op: 'remove' }, tabId)));
   }
@@ -47,7 +50,7 @@ export class AgentOverlay {
 
   /** Shows the frame and Stop bar; re-creates them after a navigation wiped the page. */
   frame() {
-    return this.command({ op: 'frame' });
+    return this.command({ op: 'frame' }, { always: true });
   }
 
   /** Glides the cursor to a target and waits until it arrives. `caption` is [key, vars]. */
@@ -68,22 +71,23 @@ export class AgentOverlay {
 
   /** Runs `capture` with the overlay hidden, so screenshots show only the page. */
   async hiddenDuring(capture) {
-    if (!this.enabled) return capture();
-    await this.command({ op: 'hide' });
+    if (!this.active && !this.enabled) return capture();
+    await this.command({ op: 'hide' }, { always: true });
     try {
       return await capture();
     } finally {
-      await this.command({ op: 'show' });
+      await this.command({ op: 'show' }, { always: true });
     }
   }
 
-  async command(cmd) {
-    if (!this.enabled) return;
+  async command(cmd, { always = false } = {}) {
+    if (!this.enabled && !(always && this.active)) return;
     const tabId = this.browser.tabId;
     if (tabId === null) return;
     this.tabs.add(tabId);
     await this.send({
       ...cmd,
+      showFrame: this.enabled,
       from: this.position,
       dir: RTL.has(this.language) ? 'rtl' : 'ltr',
       texts: { working: this.text('working'), stop: this.text('stop') },
@@ -189,7 +193,7 @@ export function overlayCommand(cmd) {
   ui.stop.textContent = cmd.texts.stop;
   ui.bar.dir = cmd.dir;
   ui.caption.dir = cmd.dir;
-  ui.frame.classList.add('on');
+  ui.frame.classList.toggle('on', cmd.showFrame !== false);
   ui.bar.classList.add('on');
 
   const visible = document.visibilityState === 'visible';

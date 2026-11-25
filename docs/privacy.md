@@ -1,6 +1,6 @@
 # Privacy Policy — Postora Browser Agent
 
-Last updated: 27 October 2026
+Last updated: 20 November 2026
 
 Postora Browser Agent ("the extension") is an AI agent in Chrome's side panel. You give it a task, and it reads and operates the web pages needed to carry it out, then writes you a report. This policy explains what data the extension handles, where it goes, and how to delete it.
 
@@ -11,12 +11,13 @@ The extension has no server of its own. The developer does not receive your task
 | Data | When | Where it goes |
 |---|---|---|
 | Your tasks and the agent's replies | Every task | Stored on your computer; sent to the AI provider you chose |
-| Content of the pages the agent works on: address, title, visible text, the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
+| Content of the pages the agent works on: address, title, visible text (including text inside embedded frames/iframes), the list of buttons and fields, and screenshots if you allow them | While a task runs, only for the tabs the agent controls | Sent to the AI provider you chose, so it can decide the next step |
 | API keys and account sign-in tokens (ChatGPT, Claude, Grok, Kimi Code) you enter | When you save settings or finish sign-in | Stored on your computer; each key/token is sent only to its own provider |
 | Settings | When you save them | Stored on your computer |
 | Speech and its transcript | Only after voice listening is enabled | Chrome's Web Speech recognition service processes speech; the resulting command is sent to your selected execution provider |
 | Google account name, email address and profile picture | Only if you sign in with Google (optional) | Stored on your computer; the picture is shown in the header |
-| A backup of your settings, keys and account sign-in tokens | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
+| A backup of your settings (and, only if you turn on "Include keys and sign-ins in the Drive backup", your API keys and account sign-in tokens) | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
+| Your conversations (the tasks and the replies) in that backup | Only if you turn on "My conversations in the Drive backup" in Settings → Account (it is off by default) | Your own Google Drive, in the same hidden app folder |
 | Feedback message, star rating, and an email address (one you type, or your Google email if signed in) | Only when you press Send in the feedback box, or give a task five stars | Sent to the developer by email through Formspree |
 
 The extension does not collect analytics or telemetry, does not show ads, and does not track the pages you visit when no task is running.
@@ -36,6 +37,8 @@ Account sign-ins are unofficial: they use the providers' own OAuth endpoints, no
 Signing in uses Google's standard sign-in page and asks for your basic profile (name, email, picture), plus access to the extension's own hidden app folder in your Google Drive (`drive.appdata`). The extension cannot see any other file in your Drive.
 
 The backup is stored without extra encryption and is protected by your Google account. To delete it, open Google Drive → Settings → Manage apps → Postora Browser Agent → Delete hidden app data. To stop backups, sign out from the account menu.
+
+The backup holds your settings. API keys and account sign-in tokens are omitted by default and are uploaded only when you turn on "Include keys and sign-ins in the Drive backup" in Settings → Account. Turning that switch off replaces the current Drive file with a credential-free one at once; older revisions that Google Drive keeps are outside the extension's control. Your conversations are in the Drive backup only when you turn on "My conversations in the Drive backup" in Settings → Account; that switch is also off by default, and the file you download yourself always holds the conversations. Turning the conversations switch off does not delete what an earlier backup already uploaded: the conversations stay in Drive until the next backup replaces that file without them.
 
 ## Notifications (optional)
 

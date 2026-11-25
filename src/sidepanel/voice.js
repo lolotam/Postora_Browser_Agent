@@ -23,9 +23,13 @@ export function micListenTarget(permissionState) {
   return permissionState === 'granted' ? 'panel' : 'window';
 }
 
-/** The recognizer language for the interface the user is looking at. */
-export function speechLang(language) {
-  return language === 'ar' ? 'ar-EG' : 'en-US';
+/**
+ * The recognizer language for the chosen speech language preference (`'ar'`,
+ * `'en'`, or `'auto'`) and the current interface language fallback.
+ */
+export function speechLang(language, speechPreference = 'auto') {
+  const chosen = speechPreference === 'ar' || speechPreference === 'en' ? speechPreference : language;
+  return chosen === 'ar' ? 'ar-EG' : 'en-US';
 }
 
 /**

@@ -3,10 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packageFiles, zip } from './package.mjs';
+import { runtimeFiles } from '../native/runtime-files.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
-const names = [...packageFiles(root), 'native/host.mjs', 'native/project.mjs', 'native/speech.mjs', 'native/install.mjs', 'docs/PRIVATE-ACCESS.md'];
+const nativeModules = fs.readdirSync(path.join(root, 'native'))
+  .filter((name) => name.endsWith('.mjs'))
+  .sort()
+  .map((name) => `native/${name}`);
+const docs = ['docs/PRIVATE-ACCESS.md', 'docs/THIRD-PARTY-SPEECH.md']
+  .filter((name) => fs.existsSync(path.join(root, name)));
+const names = [...new Set([...packageFiles(root), ...nativeModules, ...docs, ...runtimeFiles(root)])].sort();
 const entries = names.map((name) => ({ name, data: fs.readFileSync(path.join(root, name)) }));
 const out = path.join(root, 'dist', `postora-private-v${manifest.version}.zip`);
 fs.mkdirSync(path.dirname(out), { recursive: true });

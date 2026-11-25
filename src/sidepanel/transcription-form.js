@@ -107,6 +107,7 @@ export function createTranscriptionForm(root = document) {
     try {
       const { result } = await nativeRequest({ type: 'speech-install', modelId }, {
         signal: controller.signal,
+        confirmWaitMs: 0,
         onProgress: (event) => {
           if (record.generation !== mine) return;
           record.percent = event.percent;
@@ -123,6 +124,21 @@ export function createTranscriptionForm(root = document) {
     } catch (error) {
       if (record.generation !== mine) return;
       record.error = error?.message || String(error);
+      if (error?.outcome === 'unknown') {
+        void nativeRequest({ type: 'speech-status', modelId }).then(
+          ({ result: status }) => {
+            if (record.generation !== mine) return;
+            if (status?.installed === true) {
+              record.installed = true;
+              record.percent = 100;
+              record.phase = 'ready';
+              record.error = '';
+              if (provider === modelId) renderLocal(record);
+            }
+          },
+          () => {},
+        );
+      }
     } finally {
       if (record.generation === mine) {
         record.controller = null;
@@ -138,13 +154,15 @@ export function createTranscriptionForm(root = document) {
       provider = known ? config.provider : 'custom';
       el('transcriptionService').value = provider;
       el('transcriptionMode').value = config.mode;
+      if (el('transcriptionLanguage')) el('transcriptionLanguage').value = config.language || 'auto';
       el('transcriptionPause').value = String(config.endSilenceMs || 1200);
       show(config);
       void sync();
     },
     read() {
       if (!isLocalProvider(provider)) services[provider] = fields();
-      return { mode: el('transcriptionMode').value, provider, endSilenceMs: Number(el('transcriptionPause').value), ...fields(), services: structuredClone(services) };
+      const language = el('transcriptionLanguage')?.value || 'auto';
+      return { mode: el('transcriptionMode').value, language, provider, endSilenceMs: Number(el('transcriptionPause').value), ...fields(), services: structuredClone(services) };
     },
   };
 }

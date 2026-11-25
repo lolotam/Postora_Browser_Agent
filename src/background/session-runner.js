@@ -10,6 +10,8 @@ import { BrowserController } from '../browser/controller.js';
 import { Notebook } from '../agent/notebook.js';
 import { createFastLayer } from '../fast/fast-layer.js';
 import { AccessAuthority, ALLOW, ASK_FIRST, DENY, FULL_ACCESS } from '../permissions/policy.js';
+import { estimateConversationTokens } from '../agent/trimming.js';
+import { projectToolArgs, redactSecretReadOutput, sanitizeSessionBody } from '../agent/redaction.js';
 import { isSidePanelSender } from '../permissions/panel-sender.js';
 import { autoCompactDue, compactPrompt, lastInputTokens, parseCompactCommand } from '../sessions/compaction.js';
 import { checkpointFor, conversationHistory } from '../sessions/continuation.js';
@@ -19,12 +21,14 @@ import { normalizeUsage } from '../lib/usage.js';
 import { clearNotification, notifyTransition } from './notifications.js';
 import * as store from '../sessions/store.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
+import { WorkingTabClosedError, isWorkingTabClosed } from '../browser/working-tab.js';
 // @store-strip-start
 import { nativeRequest } from '../native/client.js';
 // @store-strip-end
 
 const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
+export const ASK_USER_TIMEOUT_MS = 5 * 60_000;
 // How far past the automatic threshold a conversation may grow while "queue" postpones the compaction.
 const POSTPONE_LIMIT = 1.5;
 const STREAMING = new Set(['text-delta', 'reasoning-delta', 'text-reset', 'compacting']);
@@ -37,13 +41,70 @@ const TRANSIENT_EVENTS = new Set(['access-state', 'access-request', 'access-requ
 // The one page of this extension that may ask for the access mode. The check
 // is exact: the side panel of this extension, and nothing else.
 
+const MASK = '•••';
+const SECRET_PREVIEW = '••••••••';
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX_TOKEN_SEGMENT = /^[0-9a-f]{16,}$/i;
+const DIGIT_TOKEN_SEGMENT = /^\d{12,}$/;
+
 /**
- * The site a target is on, without its path, its query or its fragment.
- *
- * A preview names the site and nothing more: a URL that carries a search or
- * a token in its query does not belong in a panel that may be on screen.
+ * True when a URL path segment looks like an opaque token or credential rather
+ * than a readable route name.
  */
-function safeOrigin(url) {
+function isTokenLikeSegment(rawSegment) {
+  let segment = rawSegment;
+  try {
+    segment = decodeURIComponent(rawSegment);
+  } catch {
+    // Keep the raw segment if percent-encoding is malformed.
+  }
+  if (!segment || segment.length < 16) return false;
+  if (UUID_SEGMENT.test(segment) || HEX_TOKEN_SEGMENT.test(segment) || DIGIT_TOKEN_SEGMENT.test(segment)) {
+    return true;
+  }
+  if (!/^[A-Za-z0-9._~+-]+=*$/.test(segment)) return false;
+  const hasLower = /[a-z]/.test(segment);
+  const hasUpper = /[A-Z]/.test(segment);
+  const hasDigit = /\d/.test(segment);
+  if (hasDigit && (hasLower || hasUpper)) {
+    // Readable slug words separated by hyphens (e.g. "account-settings-2026")
+    // have short alphabetic words; opaque tokens have long unbroken runs or
+    // mixed case + digits inside a single run.
+    const parts = segment.split(/[-_]/);
+    if (parts.some((part) => part.length >= 12 && /\d/.test(part) && /[A-Za-z]/.test(part))) return true;
+    if (parts.length === 1) return true;
+  }
+  if (hasLower && hasUpper && segment.length >= 20 && !segment.includes('-')) return true;
+  return false;
+}
+
+function maskUrlQuery(search) {
+  if (!search || search === '?') return '';
+  const raw = search.startsWith('?') ? search.slice(1) : search;
+  if (!raw) return '';
+  const parts = raw.split('&').filter(Boolean).map((part) => {
+    const eq = part.indexOf('=');
+    const rawKey = eq === -1 ? part : part.slice(0, eq);
+    let key = rawKey;
+    try {
+      key = decodeURIComponent(rawKey.replace(/\+/g, ' '));
+    } catch {
+      // Keep the raw key if malformed.
+    }
+    const cleanKey = key.replace(/[^\w.-]/g, '_').slice(0, 40) || 'param';
+    return `${cleanKey}=${MASK}`;
+  });
+  return parts.length ? `?${parts.join('&')}` : '';
+}
+
+/**
+ * The destination or site a target is on: origin and path, with URL
+ * credentials, query values and token-like path segments masked.
+ *
+ * When the URL is at the root path (`/`) with no credentials and no query,
+ * only the origin is returned so simple site previews stay compact.
+ */
+function safeUrlPreview(url) {
   if (typeof url !== 'string' || !url) return null;
   let parsed;
   try {
@@ -52,7 +113,16 @@ function safeOrigin(url) {
     return null;
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-  return parsed.origin;
+  const hasCredentials = Boolean(parsed.username || parsed.password);
+  const host = `${parsed.protocol}//${hasCredentials ? `${MASK}@` : ''}${parsed.host}`;
+  const rawSegments = parsed.pathname.split('/');
+  const maskedSegments = rawSegments.map((seg, idx) => (idx > 0 && isTokenLikeSegment(seg) ? MASK : seg));
+  const pathname = maskedSegments.join('/') || '/';
+  const search = maskUrlQuery(parsed.search);
+  if (!hasCredentials && (pathname === '/' || pathname === '') && !search) {
+    return parsed.origin;
+  }
+  return `${host}${pathname}${search}`;
 }
 
 /**
@@ -67,6 +137,58 @@ function safeLabel(label) {
   if (typeof label !== 'string') return null;
   const clean = label.replace(/\s+/g, ' ').trim().slice(0, 80);
   return clean || null;
+}
+
+/**
+ * The exact action detail a card approves.
+ *
+ * A command or an expression must be shown whole, however long it is: a cut
+ * preview would approve one thing and run another. A write only names its
+ * target and how much text would be written; the text itself stays private.
+ * Typing actions show the text to be typed, or a fixed mask when the target
+ * field holds a secret.
+ */
+function publicExecDetail(action, args, target = null) {
+  if (action === 'run_terminal' || action === 'project_run') {
+    return Object.freeze({
+      command: typeof args?.command === 'string' ? args.command : '',
+      ...(typeof args?.cwd === 'string' && args.cwd ? { cwd: args.cwd } : {}),
+    });
+  }
+  // @store-strip-start
+  if (action === 'run_javascript') {
+    return Object.freeze({ expression: typeof args?.expression === 'string' ? args.expression : '' });
+  }
+  // @store-strip-end
+  if (action === 'project_write') {
+    return Object.freeze({
+      path: typeof args?.path === 'string' ? args.path : '',
+      size: typeof args?.text === 'string' ? args.text.length : 0,
+    });
+  }
+  if (action === 'type_text' || action === 'insert_text') {
+    if (target?.element?.secret) {
+      return Object.freeze({ text: SECRET_PREVIEW, secret: true });
+    }
+    if (typeof args?.text === 'string') {
+      return Object.freeze({ text: args.text });
+    }
+  }
+  if (action === 'choose_suggestion') {
+    if (target?.element?.secret) {
+      return Object.freeze({ text: SECRET_PREVIEW, secret: true });
+    }
+    const picked = typeof args?.option === 'string' && args.option ? args.option : args?.text;
+    if (typeof picked === 'string') {
+      return Object.freeze({ text: picked });
+    }
+  }
+  if (action === 'select_option') {
+    if (typeof args?.option === 'string') {
+      return Object.freeze({ text: args.option });
+    }
+  }
+  return null;
 }
 
 /**
@@ -98,8 +220,16 @@ function portBoundToSession(port, sessionId) {
 }
 
 export class SessionRunner {
-  constructor({ meta, body, color, isTakenByOther, onSessionsChanged }) {
+  /**
+   * `initialAccessMode`, `onAccessModeChange` and `getProfileAccess` belong to
+   * the worker that remembers the owner's choice. A runner built without them
+   * is the standalone one: it starts at Ask first, changes its mode by itself
+   * and says nothing about a profile.
+   */
+  constructor({ meta, body, color, isTakenByOther, onSessionsChanged, initialAccessMode = ASK_FIRST, onAccessModeChange = null, getProfileAccess = null, askUserTimeoutMs = ASK_USER_TIMEOUT_MS }) {
     this.id = meta.id;
+    this.askUserTimeoutMs = askUserTimeoutMs;
+    this.lastActiveAt = Date.now();
     this.continuation = checkpointFor(body);
     this.title = meta.title;
     this.project = body.project ?? null;
@@ -119,6 +249,10 @@ export class SessionRunner {
     this.autoCompactBlockedUntil = 0; // the size a conversation must pass before it is compacted again
     this.awaitingShrink = false; // an automatic compaction happened and its effect is not measured yet
     this.onSessionsChanged = onSessionsChanged;
+    // Asked to store a mode change before it is applied, and what the profile
+    // remembers. Both are the worker's; null means the standalone runner.
+    this.onAccessModeChange = typeof onAccessModeChange === 'function' ? onAccessModeChange : null;
+    this.getProfileAccess = typeof getProfileAccess === 'function' ? getProfileAccess : null;
     this.ports = new Set();
     // The live panels that may ask for the access mode, and the listeners
     // this runner left on each port, so a port that goes away takes its
@@ -137,10 +271,13 @@ export class SessionRunner {
     this.askNotices = []; // "needs your answer" notifications still shown
     this.settings = null;
     // The worker's own authority for this session: what it may do and what the
-    // user has approved. It lives in the worker's memory only, so a new chat
-    // and a restarted worker both start at Ask first.
+    // user has approved. It lives in the worker's memory only. A chat opens in
+    // the mode the worker hands it: Ask first, or the mode the owner chose to
+    // remember for this profile. The approvals and permits never outlive the
+    // worker.
     this.access = new AccessAuthority({
       sessionId: this.id,
+      initialMode: initialAccessMode,
       onChange: (state) => this.onAccessChanged(state),
       onRequest: (request) => this.onAccessRequest(request),
       onRequestSettled: (settled) => this.onAccessRequestSettled(settled),
@@ -158,6 +295,8 @@ export class SessionRunner {
       color,
       isTakenByOther: (tab) => voiceClaims.tabHolder(isTakenByOther, tab, { sessionId: this.id }),
       reservation: voiceClaims.tabReservation({ sessionId: this.id, controllerId: this.id, owner: meta.title || 'this session' }),
+      onLost: () => this.endForLostTab(),
+      onCancel: () => this.stop(),
     });
     this.browser.groupId = body.groupId ?? null;
   }
@@ -169,7 +308,7 @@ export class SessionRunner {
   /** `early` holds what the panel sent before this session finished loading. */
   attach(port, early = []) {
     try {
-      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, resumable: Boolean(this.continuation), question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), permissions: this.currentPermissions(), project: this.project });
+      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, resumable: Boolean(this.continuation), question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), ...this.profileAccessField(), permissions: this.currentPermissions(), project: this.project });
     } catch {
       // The panel closed or moved on while this session loaded. Keeping its closed
       // port would make every later emit throw before reaching the next panel.
@@ -210,6 +349,7 @@ export class SessionRunner {
       }
     }
     if (!this.trustedPorts.size) this.access.cancel('panel-lost');
+    this.lastActiveAt = Date.now();
   }
 
   /**
@@ -290,6 +430,9 @@ export class SessionRunner {
       this.broadcastAccess();
       return this.refusal('invalid-mode');
     }
+    // A worker that remembers the owner's choice stores it before it applies
+    // it, so the answer comes later.
+    if (this.onAccessModeChange) return this.changeProfileMode(msg, mode);
     const result = this.access.setMode(mode, {
       trusted: true,
       acknowledged: msg.acknowledged === true,
@@ -300,6 +443,59 @@ export class SessionRunner {
     if (!result.changed) this.broadcastAccess();
     else this.emit({ type: 'access-mode-note', mode: this.access.mode });
     return result;
+  }
+
+  /**
+   * A mode request of a worker that remembers the owner's choice.
+   *
+   * The worker stores the choice first (Full access) or applies it to every
+   * chat first (Ask first). Whatever the answer is, the panels are told what is
+   * really in force, and a refusal or a warning is told in words they know.
+   */
+  async changeProfileMode(msg, mode) {
+    const before = this.access.mode;
+    let result;
+    try {
+      result = await this.onAccessModeChange({
+        runner: this,
+        mode,
+        acknowledged: msg.acknowledged === true,
+        expectedRevision: msg.expectedRevision,
+        expectedProfileRevision: msg.expectedProfileRevision,
+      });
+    } catch {
+      result = { ok: false, changed: false, reason: 'storage-failed' };
+    }
+    if (this.disposed) return result;
+    // The mode in force comes first: the panel clears its notice when it is
+    // told the mode, so a notice that came before it would never be read.
+    this.broadcastAccess();
+    if (mode === FULL_ACCESS && this.access.mode !== before) this.emit({ type: 'access-mode-note', mode: this.access.mode });
+    if (!result?.ok) this.broadcast({ type: 'access-preference-notice', reason: result?.reason ?? 'refused' });
+    else if (result.warning) this.broadcast({ type: 'access-preference-notice', reason: result.warning });
+    return { ...result, ...this.access.state() };
+  }
+
+  /**
+   * The owner chose Ask first somewhere, or turned "remember" off: every live
+   * session goes back to Ask first at once, its permits are revoked and any
+   * pending approvals are cancelled.
+   */
+  forceDowngradeToAskFirst() {
+    if (this.access.mode === FULL_ACCESS) {
+      const result = this.access.setMode(ASK_FIRST, { trusted: true });
+      if (result.changed) this.emit({ type: 'access-mode-note', mode: ASK_FIRST });
+      return result;
+    }
+    this.access.cancel('mode-changed');
+    this.stop();
+    return { ok: true, changed: false, ...this.access.state() };
+  }
+
+  /** The profile's remembered choice, as a field of an event; nothing when there is no profile. */
+  profileAccessField() {
+    const preference = this.getProfileAccess?.();
+    return preference ? { accessPreference: preference } : {};
   }
 
   /** A request that changed nothing, and the state that is in force. */
@@ -327,27 +523,33 @@ export class SessionRunner {
   /**
    * What a panel may show about a question.
    *
-   * Arguments are left out except the bounded command preview for project_run
-   * and run_terminal, which must be visible before approving execution. The
-   * text that was going to be typed, the
-   * value that was going to be read and the permit itself never belong in a
-   * preview that may be on screen. What is left is the action, its kind, the
-   * site it happens on and the name the page itself gave the target — enough
-   * to know what is being asked for, and nothing that repeats what the user
-   * asked to keep private.
+   * Arguments are left out except the exact detail of a local execution: the
+   * whole command, expression or write target the card is approving. The
+   * bounded command preview is kept for panels that still read it, but the
+   * card shows the full value from `execDetail`. The text that was going to be
+   * typed, the value that was going to be read, the content of a write and the
+   * permit itself never belong in a preview that may be on screen. What is
+   * left is the action, its kind, the site it happens on and the name the page
+   * itself gave the target.
    */
   publicRequest(request) {
-    const destination = request.action === 'navigate' || request.action === 'open_tab'
+    const isNavigation = request.action === 'navigate' || request.action === 'open_tab';
+    const destination = isNavigation
       ? request.args?.url
       : request.action === 'web_search' ? 'https://www.google.com' : null;
+    const origin = isNavigation
+      ? safeUrlPreview(destination)
+      : (safeUrlPreview(destination) ?? safeUrlPreview(request.target?.url));
+    const execDetail = publicExecDetail(request.action, request.args, request.target);
     return Object.freeze({
       id: request.id,
       sessionId: request.sessionId,
       revision: request.revision,
       action: request.action,
       kind: request.kind,
-      origin: safeOrigin(destination) ?? safeOrigin(request.target?.url),
+      origin,
       label: safeLabel(request.target?.element?.label) ?? (request.action.startsWith('project_') ? safeLabel(request.args?.path || this.project?.name) : null),
+      ...(execDetail ? { execDetail } : {}),
       ...(['project_run', 'run_terminal'].includes(request.action) ? {
         command: String(request.args?.command ?? '').slice(0, 16000),
         commandTruncated: String(request.args?.command ?? '').length > 16000,
@@ -436,7 +638,7 @@ export class SessionRunner {
 
   /** The mode that is really in force, to every panel of this session. */
   broadcastAccess() {
-    this.broadcast({ type: 'access-state', ...this.access.state() });
+    this.broadcast({ type: 'access-state', ...this.access.state(), ...this.profileAccessField() });
   }
 
   /**
@@ -458,16 +660,38 @@ export class SessionRunner {
   }
 
   emit(event) {
+    if (this.disposed || !event || typeof event !== 'object') return;
+    this.lastActiveAt = Date.now();
     if (event.type === 'final') this.continuation = null;
     if (event.type === 'status') event.resumable = Boolean(this.continuation) && !event.running;
+    if (event.type === 'tool-end' && event.secret && event.callId) {
+      for (let i = this.transcript.length - 1; i >= 0; i -= 1) {
+        const prev = this.transcript[i];
+        if (prev?.type === 'tool-start' && prev.callId === event.callId) {
+          this.transcript[i] = { ...prev, args: projectToolArgs(prev.name, prev.args, { secret: true }) };
+          break;
+        }
+      }
+    }
+    if (event.type === 'tool-end' && typeof event.summary === 'string') {
+      event.summary = redactSecretReadOutput(event.summary);
+    }
     if (!STREAMING.has(event.type)) {
       event.at ??= Date.now(); // the panel shows durations from these
       this.transcript.push(event);
       this.scheduleSave();
-      if (event.type === 'final') this.transition('finished');
-      else if (event.type === 'ask') this.transition('ask', `ask-${(this.asks += 1)}`);
+      try {
+        if (event.type === 'final') void Promise.resolve(this.transition('finished')).catch(() => {});
+        else if (event.type === 'ask') void Promise.resolve(this.transition('ask', `ask-${(this.asks += 1)}`)).catch(() => {});
+      } catch {
+        // Notification errors never stop event emission.
+      }
     }
-    for (const port of this.ports) port.postMessage(event);
+    try {
+      this.broadcast(event);
+    } catch {
+      // Closed or dead ports are ignored so emit is as safe as broadcast.
+    }
   }
 
   /** Shows a notice and returns its id; `{ dismiss: id }` withdraws one (a retry that ended). */
@@ -579,11 +803,38 @@ export class SessionRunner {
    * conversation is comes from the last turn's input tokens, or, on a task's
    * first turn, from the turn the previous task ended with.
    */
+  estimatedSessionTokens(session = this.session) {
+    if (typeof session?.estimatedInputTokens === 'function') {
+      const est = session.estimatedInputTokens();
+      if (Number.isFinite(est) && est > 0) return est;
+    }
+    if (Array.isArray(session?.messages)) {
+      const est = estimateConversationTokens(session.messages);
+      if (est > 0) return est;
+    }
+    let chars = 0;
+    let sawTurn = false;
+    for (let i = this.transcript.length - 1; i >= 0; i -= 1) {
+      const e = this.transcript[i];
+      if (e?.type === 'compacted') {
+        chars += String(e.summary ?? '').length;
+        break;
+      }
+      if (e?.type === 'turn-end') sawTurn = true;
+      if (typeof e?.text === 'string') chars += e.text.length;
+      if (typeof e?.report === 'string') chars += e.report.length;
+      if (typeof e?.summary === 'string') chars += e.summary.length;
+    }
+    return sawTurn && chars > 0 ? Math.ceil(chars / 4) : 0;
+  }
+
   compaction(model = '') {
     return {
       // `start` is the check before the task is added to the conversation: nothing to continue yet.
       beforeTurn: async ({ session, inputTokens, signal, task, images, start = false }) => {
-        const size = inputTokens || lastInputTokens(this.transcript);
+        const estimated = !inputTokens ? this.estimatedSessionTokens(session) : 0;
+        const effectiveInput = inputTokens || estimated;
+        const size = effectiveInput || lastInputTokens(this.transcript);
         const carry = start ? null : { task, images };
         const asked = this.inbox.filter((m) => m.compact && (m.now || m.mode !== 'queue'));
         for (const m of asked) this.dropMessage(m.id);
@@ -609,7 +860,7 @@ export class SessionRunner {
           if (size < this.autoCompactBlockedUntil && size < urgent) return false;
           this.autoCompactBlockedUntil = 0;
         }
-        if (this.autoCompactBlocked || this.compactedNotShrunk(tuned, inputTokens)) return false;
+        if (this.autoCompactBlocked || this.compactedNotShrunk(tuned, effectiveInput)) return false;
         if (!autoCompactDue(tuned, size)) return false;
         // "Queue" postpones it to the end of the task, unless the conversation has grown so far past the
         // threshold that waiting would risk the model's limit.
@@ -682,7 +933,7 @@ export class SessionRunner {
       // The session that holds the conversation, even if the backup finished the last task:
       // rebuilding it would put the summary request to the provider that had failed.
       if (!this.session) this.prepareModelSession(settings);
-      const done = await this.runCompaction(this.session, { focus, auto, continueTask: false, signal: abort.signal, size: lastInputTokens(this.transcript) });
+      const done = await this.runCompaction(this.session, { focus, auto, continueTask: false, signal: abort.signal, size: lastInputTokens(this.transcript) || this.estimatedSessionTokens(this.session) });
       return done ? 'done' : 'failed';
     } catch (err) {
       // Stop during a compaction is not a stopped task: a "stopped" event would offer to resume the last task.
@@ -714,7 +965,7 @@ export class SessionRunner {
    */
   async settle({ keep = new Set(), auto: allowAuto = true } = {}) {
     if (this.disposed || this.running) return;
-    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript));
+    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript) || this.estimatedSessionTokens(this.session));
     // A /compact typed while one is running waits for it, so asking again finds it.
     for (let asked = this.takeCompactRequests(keep); asked.length || auto; asked = this.takeCompactRequests(keep)) {
       const how = await this.compactIdle({ focus: joinFocus(asked), auto: !asked.length });
@@ -751,6 +1002,7 @@ export class SessionRunner {
     const attached = Array.isArray(images) ? images : [];
     const abort = new AbortController();
     this.abort = abort;
+    this.tabLost = false;
     this.continuation = { task: text, images: attached, tabId: tabId ?? null, at: Date.now() };
     // Extension API calls reset the service worker idle timer while the model thinks.
     const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
@@ -810,16 +1062,27 @@ export class SessionRunner {
         getAccessState: () => this.access.state(),
       });
       finished = true;
-    } catch (err) {
-      const stopped = abort.signal.aborted || err.name === 'AbortError';
-      if (!stopped) this.continuation = null;
-      this.emit(stopped ? { type: 'stopped' } : { type: 'error', message: err.message });
+    } catch (thrown) {
+      // A task ended because its tab was closed is a failure, not a stop by the
+      // user, even though it was ended through the abort signal.
+      const err = this.tabLost && !isWorkingTabClosed(thrown) ? new WorkingTabClosedError(this.browser.homeTabId) : thrown;
+      const stopped = !this.tabLost && (abort.signal.aborted || err.name === 'AbortError');
+      const resumableError = !stopped && !this.tabLost && !isWorkingTabClosed(err) && isResumableProviderError(err);
+      if (!stopped && !resumableError) this.continuation = null;
+      // The code is the stable name of the failure: the panel translates it, and
+      // the message is what a reader without the code sees.
+      const code = typeof err?.code === 'string' ? err.code : '';
+      this.emit(stopped ? { type: 'stopped' } : { type: 'error', message: err.message, code });
       if (!stopped) this.transition('failed'); // stopped by the user: they know
     } finally {
       clearInterval(keepAlive);
       // The run is over: nothing it approved survives it. The mode the user
       // chose stays, so the next task of this chat runs under it.
       this.access.finish('finished');
+      // The task is over: its tab closing later does not end other work. This
+      // happens before the runner takes a new task, so the cleanup below cannot
+      // disarm the next task's tracking.
+      this.browser.finishTask?.();
       this.abort = null;
       this.pendingQuestion = null;
       this.clearAskNotices();
@@ -886,11 +1149,26 @@ export class SessionRunner {
     return this.start(checkpoint.task, { images: checkpoint.images ?? [], tabId: tabId ?? checkpoint.tabId ?? undefined, resumed: true });
   }
 
+  /**
+   * The tab the task works on is gone. The task ends now, not at its next
+   * tool: a model turn, an approval or a question it waits on is cancelled,
+   * and nothing approved may run.
+   */
+  endForLostTab() {
+    if (!this.abort || this.tabLost) return;
+    this.tabLost = true;
+    this.access.cancel('tab-closed');
+    void this.browser.dismissAllDialogs?.('tab-closed');
+    this.abort.abort();
+    this.browser.overlay.end();
+  }
+
   stop() {
     // A stop withdraws what was approved: nothing waits for an answer and
     // nothing that was allowed may run any more. The mode itself stays: the
     // session may go on with the mode the user chose.
     this.access.cancel('stopped');
+    void this.browser.dismissAllDialogs?.('stopped');
     if (!this.abort) return;
     this.abort.abort();
     this.browser.overlay.end(); // feedback now, not after the current step returns
@@ -906,9 +1184,38 @@ export class SessionRunner {
 
   askUser(question, signal) {
     return new Promise((resolve, reject) => {
-      this.pendingQuestion = { question, resolve };
+      let settled = false;
+      const finish = (fn) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener?.('abort', onAbort);
+        fn();
+      };
+      const onResolve = (text) => finish(() => resolve(text));
+      const onAbort = () => finish(() => {
+        if (this.pendingQuestion?.resolve === onResolve) {
+          this.pendingQuestion = null;
+          this.clearAskNotices();
+        }
+        reject(new DOMException('Stopped by user', 'AbortError'));
+      });
+      const timeoutMs = Number.isFinite(this.askUserTimeoutMs) && this.askUserTimeoutMs > 0
+        ? this.askUserTimeoutMs
+        : ASK_USER_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        finish(() => {
+          if (this.pendingQuestion?.resolve === onResolve) {
+            this.pendingQuestion = null;
+            this.clearAskNotices();
+            this.emit({ type: 'ask-expired' });
+          }
+          reject(new Error('Timed out waiting for the user’s answer.'));
+        });
+      }, timeoutMs);
+      this.pendingQuestion = { question, resolve: onResolve };
       this.emit({ type: 'ask', question });
-      signal.addEventListener('abort', () => reject(new DOMException('Stopped by user', 'AbortError')), { once: true });
+      signal?.addEventListener?.('abort', onAbort, { once: true });
     });
   }
 
@@ -947,11 +1254,28 @@ export class SessionRunner {
   async save() {
     clearTimeout(this.saveTimer);
     if (this.disposed) return;
-    await store.saveSession(this.id, { transcript: this.transcript, log: this.session?.log ?? this.storedLog, groupId: this.browser.groupId, notebook: this.notebook.toJSON(), pending: this.inbox, project: this.project, continuation: this.continuation });
+    const body = sanitizeSessionBody({
+      transcript: this.transcript,
+      log: this.session?.log ?? this.storedLog,
+      groupId: this.browser.groupId,
+      notebook: this.notebook.toJSON(),
+      pending: this.inbox,
+      project: this.project,
+      continuation: this.continuation,
+    });
+    await store.saveSession(this.id, body);
   }
 }
 
 /** The focus texts of waiting /compact requests, as one. */
 function joinFocus(items) {
   return items.map((m) => m.compact?.focus).filter(Boolean).join('; ');
+}
+
+export function isResumableProviderError(err) {
+  if (!err) return false;
+  if (Number.isInteger(err.status)) return true;
+  if (err.network || err.name === 'DeadlineError' || err.name === 'ProviderHttpError') return true;
+  const msg = String(err.message ?? '');
+  return /Model request failed|Primary failed:|HTTP \d{3}|did not answer within|response stream ended|The model returned an error|The model response failed|Claude request failed|ChatGPT request failed|Grok request failed|Gemini request failed|Kimi request failed/i.test(msg);
 }

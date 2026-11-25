@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSettingsSaver, settingsEdits } from '../src/sidepanel/settings-save.js';
+import { createSettingsSaver, settingsEdits, settingsFieldEdit } from '../src/sidepanel/settings-save.js';
 
 test('overlapping mutations and a form save rebase on the latest successful reply', async () => {
   let current = { uiLanguage: 'en', maxSteps: 40, compatible: { model: 'old', effort: 'high' } };
@@ -64,4 +64,29 @@ test('explicit key removal is not lost when rebasing a form save', () => {
   assert.deepEqual(apply({ keys: { typesafe: 'old-key', anthropic: 'other-key' }, fast: { apiKey: 'old-key' }, uiLanguage: 'ar' }), {
     keys: { anthropic: 'other-key' }, fast: { apiKey: '' }, uiLanguage: 'ar',
   });
+});
+
+test('settingsFieldEdit auto-saves a standalone switch or picker without touching unrelated fields', async () => {
+  let current = { vision: true, showCursor: true, steerMode: 'next-step', maxSteps: 40 };
+  const writes = [];
+  const save = createSettingsSaver({
+    getSettings: () => current,
+    onSaved: (value) => { current = value; },
+    save: async (next) => {
+      writes.push(structuredClone(next));
+      return structuredClone(next);
+    },
+  });
+
+  await save(settingsFieldEdit('vision', false));
+  await save(settingsFieldEdit('steerMode', 'interrupt'));
+  await save(settingsFieldEdit('steerMode', 'interrupt')); // unchanged no-op
+
+  assert.deepEqual(current, {
+    vision: false,
+    showCursor: true,
+    steerMode: 'interrupt',
+    maxSteps: 40,
+  });
+  assert.equal(writes.length, 2);
 });

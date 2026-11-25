@@ -1,0 +1,435 @@
+// A2: local execution must never ride the Full-access shortcut, and the card
+// must say exactly what would run locally.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+const { ASK_FIRST, FULL_ACCESS, DENY, LOCAL_EXECUTION, AccessAuthority, classifyAction, requiresApproval } = await import('../src/permissions/policy.js');
+const { SessionRunner } = await import('../src/background/session-runner.js');
+const { createPermissionUi } = await import('../src/sidepanel/permissions.js');
+const { MESSAGES } = await import('../src/sidepanel/messages.js');
+
+const LOCAL_ACTIONS = ['run_terminal', 'project_run', 'run_javascript', 'project_write'];
+const SESSION = 'session-local';
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+function makeAuthority({ mode = ASK_FIRST, extra = {} } = {}) {
+  const asked = [];
+  const authority = new AccessAuthority({
+    sessionId: SESSION,
+    onRequest: (request) => asked.push(request),
+    ...extra,
+  });
+  if (mode === FULL_ACCESS) {
+    const result = authority.setMode(FULL_ACCESS, {
+      trusted: true,
+      acknowledged: true,
+      expectedRevision: authority.revision,
+    });
+    assert.equal(result.ok, true);
+  }
+  return { authority, asked };
+}
+
+async function refuse(request, pending, authority) {
+  const settled = authority.respondApproval({
+    id: request.id,
+    sessionId: SESSION,
+    revision: request.revision,
+    decision: DENY,
+  });
+  assert.equal(settled.ok, true);
+  const answer = await pending;
+  assert.equal(answer.permit, null);
+  assert.equal(answer.reason, 'denied');
+  return answer;
+}
+
+test('the result kinds used for trimming are unchanged for the four tools', async () => {
+  const { kindOf } = await import('../src/agent/tool-kinds.js');
+  // The access kind lives in the policy; the trimming kinds stay as they were.
+  for (const action of LOCAL_ACTIONS) assert.notEqual(kindOf(action), LOCAL_EXECUTION, action);
+});
+
+test('local execution is classified and still requires approval in Full access', () => {
+  assert.equal(LOCAL_EXECUTION, 'local-execution');
+  for (const action of LOCAL_ACTIONS) {
+    assert.equal(classifyAction(action), LOCAL_EXECUTION, `${action} is not classified as local execution`);
+  }
+  assert.equal(requiresApproval(ASK_FIRST, LOCAL_EXECUTION), true);
+  assert.equal(requiresApproval(FULL_ACCESS, LOCAL_EXECUTION), true);
+});
+
+test('local execution asks and stays blocked when denied in Ask first', async () => {
+  for (const action of LOCAL_ACTIONS) {
+    const { authority, asked } = makeAuthority();
+    const pending = authority.authorize({ action, args: {} });
+    await tick();
+    assert.equal(asked.length, 1, `${action} did not ask in Ask first`);
+    assert.equal(asked[0].kind, 'local-execution', `${action} lost its kind`);
+    await refuse(asked[0], pending, authority);
+  }
+});
+
+test('local execution still asks in Full access and a denial grants nothing', async () => {
+  for (const action of LOCAL_ACTIONS) {
+    const { authority, asked } = makeAuthority({ mode: FULL_ACCESS });
+    const pending = authority.authorize({ action, args: {} });
+    await tick();
+    assert.equal(asked.length, 1, `${action} used the Full-access shortcut`);
+    assert.equal(asked[0].kind, 'local-execution', `${action} lost its kind`);
+    await refuse(asked[0], pending, authority);
+  }
+});
+
+test('a click still gets a permit in Full access without a card', async () => {
+  const { authority, asked } = makeAuthority({ mode: FULL_ACCESS });
+  const answer = await authority.authorize({ action: 'click', args: { index: 1 } });
+  assert.ok(answer.permit);
+  assert.equal(answer.source, 'full-access');
+  assert.equal(asked.length, 0);
+});
+
+test('a stored localExecution flag cannot grant local execution', async () => {
+  const { authority, asked } = makeAuthority({
+    mode: FULL_ACCESS,
+    extra: { settings: { localExecution: true }, localExecution: true },
+  });
+  const pending = authority.authorize({ action: 'run_terminal', args: { command: 'echo fixture' } });
+  await tick();
+  assert.equal(asked.length, 1);
+  await refuse(asked[0], pending, authority);
+});
+
+test('the worker publishes the full command and working directory', () => {
+  const call = SessionRunner.prototype.publicRequest;
+  const command = 'echo ' + 'x'.repeat(17000);
+  const request = {
+    id: 'req-command',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'run_terminal',
+    kind: 'local-execution',
+    args: { command, cwd: 'C:\\fixture' },
+  };
+  const shown = call.call({ project: { name: 'fixture' } }, request);
+  assert.equal(shown.execDetail.command, command);
+  assert.equal(shown.execDetail.cwd, 'C:\\fixture');
+  const project = call.call({}, { ...request, action: 'project_run' });
+  assert.equal(project.execDetail.command, command);
+});
+
+test('the worker publishes the exact JavaScript expression', () => {
+  const expression = 'document.title + "' + 'y'.repeat(17000) + '"';
+  const shown = SessionRunner.prototype.publicRequest.call({}, {
+    id: 'req-js',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'run_javascript',
+    kind: 'local-execution',
+    args: { expression },
+  });
+  assert.equal(shown.execDetail.expression, expression);
+});
+
+test('the worker publishes the write target and content size, but not the content', () => {
+  const shown = SessionRunner.prototype.publicRequest.call({}, {
+    id: 'req-write',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'project_write',
+    kind: 'local-execution',
+    args: { path: 'notes/secret.md', text: 'a'.repeat(4321), expected_hash: 'hash-fixture' },
+  });
+  assert.equal(shown.execDetail.path, 'notes/secret.md');
+  assert.equal(shown.execDetail.size, 4321);
+  assert.equal('text' in shown, false);
+  assert.equal('expected_hash' in shown, false);
+});
+
+class FakeNode {
+  constructor(tag) {
+    this.tagName = String(tag).toUpperCase();
+    this.ownerDocument = null;
+    this.children = [];
+    this.parentNode = null;
+    this.attributes = new Map();
+    this.className = '';
+    this.id = '';
+    this.type = '';
+    this.hidden = false;
+    this.disabled = false;
+    this.dir = '';
+    this._text = '';
+  }
+
+  get textContent() {
+    return this._text + this.children.map((child) => child.textContent).join('');
+  }
+
+  set textContent(value) {
+    this._text = value === null || value === undefined ? '' : String(value);
+    this.children = [];
+  }
+
+  append(...nodes) {
+    for (const node of nodes) {
+      node.parentNode = this;
+      this.children.push(node);
+    }
+  }
+
+  appendChild(node) {
+    this.append(node);
+    return node;
+  }
+
+  removeChild(node) {
+    const index = this.children.indexOf(node);
+    if (index >= 0) this.children.splice(index, 1);
+    node.parentNode = null;
+    return node;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  addEventListener() {}
+
+  all() {
+    return [this, ...this.children.flatMap((child) => child.all())];
+  }
+}
+
+class FakeDocument {
+  createElement(tag) {
+    const node = new FakeNode(tag);
+    node.ownerDocument = this;
+    return node;
+  }
+}
+
+function cardFor(request) {
+  const doc = new FakeDocument();
+  const container = doc.createElement('div');
+  const t = (key, vars) => (vars ? `${key}:${Object.values(vars).join('|')}` : key);
+  const ui = createPermissionUi({
+    container,
+    t,
+    getSessionId: () => SESSION,
+    getConnection: () => ({ name: 'port-local' }),
+    getRevision: () => 1,
+    send: () => true,
+  });
+  assert.equal(ui.apply({ type: 'access-request', request: { id: 'req', sessionId: SESSION, revision: 1, ...request } }), true);
+  return container.all();
+}
+
+test('the card shows a long command in full, without cutting it off', () => {
+  const command = 'Write-Output "' + 'z'.repeat(17000) + '"';
+  const nodes = cardFor({
+    action: 'run_terminal',
+    kind: 'local-execution',
+    execDetail: { command, cwd: 'C:\\fixture' },
+  });
+  const detail = nodes.find((node) => node.className === 'permission-exec-detail');
+  assert.ok(detail, 'the card has a local-execution detail block');
+  assert.ok(detail.textContent.includes(command), 'the whole command is shown');
+  assert.ok(detail.textContent.includes('C:\\fixture'), 'the working directory is shown');
+});
+
+test('the card names the expression, write target and content size', () => {
+  const expression = cardFor({
+    action: 'run_javascript',
+    kind: 'local-execution',
+    execDetail: { expression: 'document.title' },
+  }).map((node) => node.textContent).join('\n');
+  assert.ok(expression.includes('access.approval.exec.expression'));
+  assert.ok(expression.includes('document.title'));
+
+  const write = cardFor({
+    action: 'project_write',
+    kind: 'local-execution',
+    execDetail: { path: 'notes/secret.md', size: 4321 },
+  }).map((node) => node.textContent).join('\n');
+  assert.ok(write.includes('access.approval.exec.target'));
+  assert.ok(write.includes('notes/secret.md'));
+  assert.ok(write.includes('access.approval.exec.size'));
+  assert.ok(write.includes('4321'));
+});
+
+test('both languages name every local-execution detail', () => {
+  const keys = [
+    'access.approval.exec.command',
+    'access.approval.exec.workingDirectory',
+    'access.approval.exec.expression',
+    'access.approval.exec.target',
+    'access.approval.exec.size',
+  ];
+  for (const language of ['ar', 'en']) {
+    for (const key of keys) {
+      assert.ok(MESSAGES[language]?.[key], `${language} is missing ${key}`);
+    }
+  }
+});
+
+test('the card writes out characters that hide or reorder text, and names a default folder', () => {
+  // U+202E reverses what follows on screen; U+200B does not show at all.
+  const command = 'Write-Output safe\u202E\u200Bevil';
+  const nodes = cardFor({ action: 'run_terminal', kind: 'local-execution', execDetail: { command } });
+  const detail = nodes.find((node) => node.className === 'permission-exec-detail');
+  assert.ok(!detail.textContent.includes('\u202E') && !detail.textContent.includes('\u200B'));
+  assert.ok(detail.textContent.includes('safe\\u{202E}\\u{200B}evil'), 'each hidden character is written as its code');
+  assert.ok(detail.textContent.includes('access.approval.exec.defaultDirectory'), 'a missing folder is named as the default');
+});
+
+test('a command that types an escape does not look like one that holds the character', () => {
+  const shown = (command) => cardFor({ action: 'run_terminal', kind: 'local-execution', execDetail: { command, cwd: 'C:\\work' } })
+    .find((node) => node.className === 'permission-exec-detail').textContent;
+  const typed = shown('echo \\u{202E}');
+  const hidden = shown('echo \u202E');
+  const slashThenHidden = shown('echo \\\u202E');
+  assert.notEqual(typed, hidden);
+  assert.notEqual(typed, slashThenHidden);
+  assert.ok(hidden.includes('echo \\u{202E}'));
+  assert.ok(typed.includes('echo \\\\u{202E}'));
+  assert.ok(shown('dir C:\\Users').includes('dir C:\\Users'), 'an ordinary path keeps single backslashes');
+  assert.ok(typed.includes('access.approval.exec.escaped'), 'the card says when backslashes are doubled');
+  assert.ok(!shown('dir C:\\Users').includes('access.approval.exec.escaped'), 'and only then');
+});
+
+test('the escape decision covers the whole card, and a line break in a path cannot pass for typed text', () => {
+  const shown = (execDetail) => cardFor({ action: 'run_terminal', kind: 'local-execution', execDetail })
+    .find((node) => node.className === 'permission-exec-detail').textContent;
+  // Only the command holds a hidden character; the folder's backslash is doubled too.
+  const mixed = shown({ command: 'echo \u200B', cwd: 'C:\\work' });
+  assert.ok(mixed.includes('access.approval.exec.escaped'));
+  assert.ok(mixed.includes('C:\\\\work'), 'every field follows the note at the top');
+  // A real line break and a typed backslash-n in a folder must not look the same.
+  const broken = shown({ command: 'dir', cwd: 'C:\\a\nb' });
+  const typed = shown({ command: 'dir', cwd: 'C:\\a\\nb' });
+  assert.notEqual(broken, typed);
+  assert.ok(broken.includes('C:\\\\a\\nb'));
+  assert.ok(typed.includes('C:\\a\\nb') && !typed.includes('access.approval.exec.escaped'));
+});
+
+test('a line inside a command cannot pass for the card\'s working-directory label', () => {
+  const text = cardFor({
+    action: 'run_terminal',
+    kind: 'local-execution',
+    execDetail: { command: 'del *\naccess.approval.exec.workingDirectory:C:\\safe', cwd: 'C:\\real\nTarget file: x' },
+  }).find((node) => node.className === 'permission-exec-detail').textContent;
+  const lines = text.split('\n');
+  const labelLines = lines.filter((line) => line.startsWith('access.approval.exec.workingDirectory'));
+  // The folder's line break turns escaping on, so backslashes show doubled.
+  assert.deepEqual(labelLines, ['access.approval.exec.workingDirectory:C:\\\\real\\nTarget file: x'], 'one label line, with the real folder on it');
+  assert.ok(lines.includes('│ access.approval.exec.workingDirectory:C:\\\\safe'), 'the command\'s own line is marked as command text');
+  assert.ok(lines.indexOf('│ del *') > lines.indexOf(labelLines[0]), 'the command comes after the labelled fields');
+});
+
+test('approval cards show origin and path, mask credentials, query values and token segments, and never fall back to current origin on navigation', async () => {
+  const call = SessionRunner.prototype.publicRequest;
+
+  // Navigation shows origin + path, masks credentials, query values and high-entropy token segments.
+  const navShown = call.call({}, {
+    id: 'req-nav-token',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'navigate',
+    kind: 'interact',
+    args: {
+      url: 'https://alice:hunter2@app.example.com/reset/550e8400-e29b-41d4-a716-446655440000/a9f4c2e8b1d073654120fedcba987654/confirm?token=secret-jwt&next=/home#frag',
+    },
+    target: { url: 'https://current-origin.example.org/dashboard' },
+  });
+  assert.equal(navShown.origin, 'https://•••@app.example.com/reset/•••/•••/confirm?token=•••&next=•••');
+  assert.ok(!navShown.origin.includes('alice'));
+  assert.ok(!navShown.origin.includes('hunter2'));
+  assert.ok(!navShown.origin.includes('secret-jwt'));
+  assert.ok(!navShown.origin.includes('550e8400'));
+  assert.ok(!navShown.origin.includes('a9f4c2e8b1d073654120fedcba987654'));
+
+  // Never fall back to current tab origin when a navigation destination is invalid or non-http(s).
+  const invalidNavShown = call.call({}, {
+    id: 'req-nav-bad',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'navigate',
+    kind: 'interact',
+    args: { url: 'javascript:alert(1)' },
+    target: { url: 'https://current-origin.example.org/dashboard' },
+  });
+  assert.equal(invalidNavShown.origin, null);
+
+  const openTabBadShown = call.call({}, {
+    id: 'req-open-bad',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'open_tab',
+    kind: 'interact',
+    args: { url: 'not a valid url' },
+    target: { url: 'https://current-origin.example.org/dashboard' },
+  });
+  assert.equal(openTabBadShown.origin, null);
+
+  // Underlying approval in AccessAuthority stays bound to the exact unmasked destination URL.
+  const { authority, asked } = makeAuthority();
+  const unmaskedUrl = 'https://app.example.com/reset/550e8400-e29b-41d4-a716-446655440000?token=secret-1';
+  const pending = authority.authorize({
+    action: 'navigate',
+    args: { url: unmaskedUrl },
+    tabId: 1,
+  });
+  await tick();
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].args.url, unmaskedUrl);
+  authority.respondApproval({
+    id: asked[0].id,
+    sessionId: SESSION,
+    revision: asked[0].revision,
+    decision: 'allow',
+  });
+  const { permit } = await pending;
+  assert.ok(permit);
+  assert.equal(authority.grantValid(permit, { action: 'navigate', args: { url: unmaskedUrl }, tabId: 1 }), true);
+  assert.equal(authority.grantValid(permit, { action: 'navigate', args: { url: 'https://app.example.com/reset/•••?token=•••' }, tabId: 1 }), false);
+});
+
+test('approval cards show typed text for ordinary fields and mask secret fields', () => {
+  const call = SessionRunner.prototype.publicRequest;
+
+  const plainType = call.call({}, {
+    id: 'req-type-plain',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'type_text',
+    kind: 'interact',
+    args: { index: 1, text: 'hello world' },
+    target: { url: 'https://example.com/search', element: { label: 'Search', secret: false } },
+  });
+  assert.equal(plainType.origin, 'https://example.com/search');
+  assert.deepEqual(plainType.execDetail, { text: 'hello world' });
+  const plainCardText = cardFor(plainType).find((node) => node.className === 'permission-exec-detail').textContent;
+  assert.ok(plainCardText.includes('access.approval.exec.text'));
+  assert.ok(plainCardText.includes('│ hello world'));
+
+  const secretType = call.call({}, {
+    id: 'req-type-secret',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'type_text',
+    kind: 'interact',
+    args: { index: 2, text: 'super-secret-password-123' },
+    target: { url: 'https://example.com/login', element: { label: 'Password', secret: true } },
+  });
+  assert.deepEqual(secretType.execDetail, { text: '••••••••', secret: true });
+  assert.ok(!JSON.stringify(secretType).includes('super-secret-password-123'));
+  const secretCardText = cardFor(secretType).find((node) => node.className === 'permission-exec-detail').textContent;
+  assert.ok(secretCardText.includes('access.approval.exec.secretText'));
+  assert.ok(!secretCardText.includes('super-secret-password-123'));
+});

@@ -119,3 +119,42 @@ test('an executor only runs the tools offered in its session', async () => {
   assert.equal((await execute('ask_user', { question: 'ok?' })).output, 'User answered: yes');
   assert.equal((await execute('run_javascript', { expression: '1' })).isError, true);
 });
+test('private package selection includes Nemotron runtime closure and speech docs', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { packageFiles } = await import('../scripts/package.mjs');
+  const { runtimeFiles } = await import('../native/runtime-files.mjs');
+  const root = process.cwd();
+  const nativeModules = fs.readdirSync(path.join(root, 'native'))
+    .filter((name) => name.endsWith('.mjs'))
+    .sort()
+    .map((name) => 'native/' + name);
+  const docs = ['docs/PRIVATE-ACCESS.md', 'docs/THIRD-PARTY-SPEECH.md']
+    .filter((name) => fs.existsSync(path.join(root, name)));
+  const names = [...new Set([...packageFiles(root), ...nativeModules, ...docs, ...runtimeFiles(root)])];
+  assert.ok(names.includes('docs/PRIVATE-ACCESS.md'));
+  assert.ok(names.includes('docs/THIRD-PARTY-SPEECH.md'));
+  assert.ok(names.includes('native/nemotron.mjs'));
+  assert.ok(names.includes('native/runtime-files.mjs'));
+  assert.ok(names.includes('native/host.mjs'));
+  assert.ok(names.includes('native/speech.mjs'));
+  assert.ok(names.includes('node_modules/transcribe-cpp/package.json'));
+  assert.ok(names.includes('node_modules/transcribe-cpp/dist/index.js'));
+  if (fs.existsSync(path.join(root, 'node_modules/@transcribe-cpp/win32-x64-cpu-vulkan'))) {
+    assert.ok(names.includes('node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/package.json'));
+    assert.ok(names.includes('node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/transcribe.dll'));
+  }
+  assert.ok(names.some((name) => /^node_modules\/koffi\/.+\/LICENSE/i.test(name) || /LICENSE/i.test(name) && name.startsWith('node_modules/transcribe-cpp')));
+  // koffi 3.x loads its native module from the @koromix scope package next to
+  // koffi itself (src/koffi/index.cjs). Without it the installed host and the
+  // private package cannot load Nemotron at all on a fresh machine.
+  const koromix = path.join(root, 'node_modules', '@koromix');
+  if (fs.existsSync(koromix)) {
+    for (const entry of fs.readdirSync(koromix)) {
+      assert.ok(names.some((name) => name.startsWith(`node_modules/@koromix/${entry}/`)), `@koromix/${entry} is missing from the runtime closure`);
+      assert.ok(names.some((name) => name.startsWith(`node_modules/@koromix/${entry}/`) && name.endsWith('koffi.node')), `the koffi.node of @koromix/${entry} is missing from the runtime closure`);
+    }
+  }
+  assert.equal(names.some((name) => name.endsWith('.gguf')), false);
+});
+

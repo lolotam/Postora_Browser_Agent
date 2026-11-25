@@ -26,18 +26,33 @@ import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
 import { createVoiceAccess } from './voice-access.js';
-import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive-backup.js';
+import {
+  DRIVE_CREDENTIALS_CONSENT_KEY,
+  afterGoogleSignIn,
+  backUpToDrive,
+  getDriveCredentialsConsent,
+  restoreFromDrive,
+  setDriveCredentialsConsent,
+} from '../lib/drive-backup.js';
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
 import { isMicRelay } from '../sidepanel/voice.js';
 import { installTabPanels } from './tab-panels.js';
 import { isSidePanelSender } from '../permissions/panel-sender.js';
+import { createAccessPreferenceStore } from '../permissions/access-preference.js';
+import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 // @store-strip-start
 import { nativeRequest, runNativeCommand } from '../native/client.js';
 // @store-strip-end
 
 const GROUP_COLORS = ['cyan', 'blue', 'green', 'yellow', 'purple', 'pink', 'orange', 'red'];
 const runners = new Map(); // sessionId → SessionRunner
+// The access mode the owner chose to remember for this profile. The worker is
+// the only one that reads or writes it, and it is started with the worker:
+// until its protection call has resolved, every chat starts at Ask first.
+const accessPref = createAccessPreferenceStore();
+accessPref.init();
+accessPref.subscribe((preference) => postToPanels({ type: 'access-preference-state', accessPreference: preference }));
 const loading = new Map(); // sessionId → Promise<SessionRunner>
 const panels = new Set(); // every open panel port, for list updates and sign-in errors
 // The live panel connections, by their name. The name carries the session and
@@ -49,7 +64,35 @@ const panelPorts = new Map();
 const reserved = new Set();
 const RESERVATION_MS = 10000;
 const DRIVE_BACKUP_DELAY_MS = 3000; // one upload for a burst of changes (a save writes several keys)
+export const IDLE_RUNNER_TTL_MS = 5 * 60_000;
 let driveBackupTimer = null;
+let idleEvictTimer = null;
+
+export function evictIdleRunners({ now = Date.now(), maxIdleMs = IDLE_RUNNER_TTL_MS } = {}) {
+  let evicted = 0;
+  for (const [id, runner] of [...runners.entries()]) {
+    if (
+      runner.running
+      || runner.ports.size > 0
+      || runner.pendingQuestion
+      || runner.saveTimer
+      || runner.access?.mode === FULL_ACCESS
+    ) continue;
+    const idleFor = now - (runner.lastActiveAt ?? 0);
+    if (idleFor >= maxIdleMs) {
+      runners.delete(id);
+      evicted += 1;
+    }
+  }
+  return evicted;
+}
+
+function scheduleIdleEviction(delayMs = IDLE_RUNNER_TTL_MS) {
+  clearTimeout(idleEvictTimer);
+  idleEvictTimer = setTimeout(() => {
+    evictIdleRunners();
+  }, delayMs);
+}
 
 // The browser the voice path borrows tabs with. One controller: the input of
 // two voice commands never runs at the same time, so they cannot fight over
@@ -86,8 +129,24 @@ chrome.tabs.onRemoved.addListener((tabId) => tabSessions.unbindTab(tabId));
 listenToNotifications();
 chrome.permissions.onAdded.addListener(listenToNotifications);
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !(changes.settings || changes.sessions || ACCOUNT_STORAGE_KEYS.some((key) => changes[key]))) return;
+  if (
+    area !== 'local'
+    || !(
+      changes.settings
+      || changes.sessions
+      || changes[DRIVE_CREDENTIALS_CONSENT_KEY]
+      || ACCOUNT_STORAGE_KEYS.some((key) => changes[key])
+    )
+  ) return;
   clearTimeout(driveBackupTimer);
+  // Turning credential consent off replaces the current Drive file with a
+  // credential-free one at once instead of waiting for the debounce timer.
+  if (changes[DRIVE_CREDENTIALS_CONSENT_KEY] && changes[DRIVE_CREDENTIALS_CONSENT_KEY].newValue !== true) {
+    void (async () => {
+      if (await googleAccount()) await backUpToDrive({ force: true });
+    })();
+    return;
+  }
   driveBackupTimer = setTimeout(async () => {
     if (await googleAccount()) await backUpToDrive();
   }, DRIVE_BACKUP_DELAY_MS);
@@ -118,20 +177,67 @@ function listenToNotifications() {
 async function runnerFor(sessionId) {
   if (runners.has(sessionId)) return runners.get(sessionId);
   if (!loading.has(sessionId)) {
-    loading.set(sessionId, store.loadSession(sessionId).then((loaded) => {
+    loading.set(sessionId, (async () => {
+      // The mode a chat opens in is read before the session loads and checked
+      // again right before the runner is published: a choice that was made
+      // while it loaded must not be overtaken by the mode it read earlier.
+      await accessPref.ready;
+      const revisionAtStart = accessPref.profileRevision;
+      const modeAtStart = accessPref.effectiveDefaultMode();
+      const loaded = await store.loadSession(sessionId);
       if (!loaded?.meta) throw new Error('This session no longer exists.');
+      const initialAccessMode = accessPref.profileRevision === revisionAtStart ? modeAtStart : ASK_FIRST;
       const runner = new SessionRunner({
         meta: loaded.meta,
         body: loaded,
         color: GROUP_COLORS[runners.size % GROUP_COLORS.length],
         isTakenByOther,
         onSessionsChanged: broadcastSessions,
+        initialAccessMode,
+        onAccessModeChange: changeAccessMode,
+        getProfileAccess: () => accessPref.snapshot(),
       });
       runners.set(sessionId, runner);
       return runner;
-    }).finally(() => loading.delete(sessionId)));
+    })().finally(() => loading.delete(sessionId)));
   }
   return loading.get(sessionId);
+}
+
+/** What the store needs from the live chats; each request adds what is its own. */
+function liveAccessHooks() {
+  return {
+    anyFull: () => [...runners.values()].some((runner) => runner.access.mode === FULL_ACCESS),
+    downgradeAll: () => {
+      for (const runner of [...runners.values()]) {
+        try {
+          runner.forceDowngradeToAskFirst();
+        } catch {
+          // Never let one runner failure stop remaining profile-wide revocations.
+        }
+      }
+    },
+  };
+}
+
+/**
+ * A chat asked for a mode. The store checks the request against the profile,
+ * writes it when it is to be remembered, and only then is the chat's own
+ * authority asked: its session revision is checked before anything is written.
+ */
+function changeAccessMode({ runner, mode, acknowledged, expectedRevision, expectedProfileRevision }) {
+  return accessPref.setMode({ mode, acknowledged, expectedProfileRevision }, {
+    ...liveAccessHooks(),
+    precheckFull: () => {
+      if (runner.disposed) return { reason: 'disposed' };
+      return typeof expectedRevision === 'number' && expectedRevision === runner.access.revision
+        ? null
+        : { reason: 'stale-revision' };
+    },
+    applyFull: () => (runner.disposed
+      ? { ok: false, reason: 'disposed' }
+      : runner.access.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision })),
+  });
 }
 
 /** The title of another session that is running a task in this tab's group, or null. */
@@ -162,10 +268,22 @@ function sessionWorkingIn(sessionId, tab) {
 }
 
 function broadcastSessions() {
-  for (const port of panels) port.postMessage({ type: 'sessions-changed' });
+  for (const port of panels) {
+    try {
+      port.postMessage({ type: 'sessions-changed' });
+    } catch {
+      panels.delete(port);
+    }
+  }
 }
 
 chrome.runtime.onConnect.addListener((port) => {
+  // Authenticate before the port joins any panel set: an untrusted port gets
+  // no replay, no queued message and no place in the worker's state.
+  if (!isSidePanelSender(port.sender)) {
+    port.disconnect();
+    return;
+  }
   // The port name carries the panel: 'panel:<session>' or, when the panel
   // takes part in the voice path, 'panel:<session>:<panel>'.
   const [kind, sessionId, panelId] = port.name.split(':');
@@ -180,6 +298,7 @@ chrome.runtime.onConnect.addListener((port) => {
     // every one of them is withdrawn at once, and each tab is given back when
     // its own cleanup is over.
     if (panelId) void releaseVoiceClaims(panelId);
+    scheduleIdleEviction();
   });
   // A panel whose port closed when the worker stopped reconnects as it sends, so
   // its task arrives while the session is still loading; it waits for the runner
@@ -211,6 +330,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function handleRequest(msg, sender) {
+  // The overlay's Stop is a page's only request. Everything else comes from
+  // our own side panel, before any storage read, write or runner is touched.
+  if (msg.type !== 'overlay-stop' && !isSidePanelSender(sender)) throw new Error('untrusted sender');
   switch (msg.type) {
     case 'openrouter-login':
       if (!isSidePanelSender(sender)) throw new Error('Sign-in requires the extension settings panel.');
@@ -231,6 +353,15 @@ async function handleRequest(msg, sender) {
     // @store-strip-end
     case 'overlay-stop':
       return stopFromPage(sender);
+    case 'get-access-preference':
+      await accessPref.ready;
+      return accessPref.snapshot();
+    case 'set-access-remember':
+      return accessPref.setRemember({
+        remember: msg.remember,
+        acknowledged: msg.acknowledged === true,
+        expectedProfileRevision: msg.expectedProfileRevision,
+      }, liveAccessHooks());
     case 'get-settings':
       return { settings: await loadSettings(), presets: COMPATIBLE_PRESETS, fastPresets: FAST_PRESETS };
     case 'save-settings':
@@ -328,6 +459,16 @@ async function handleRequest(msg, sender) {
       return null;
     case 'session-delete':
       return deleteSession(msg.id);
+    case 'drive-credentials-consent-get':
+      return { includeCredentials: await getDriveCredentialsConsent() };
+    case 'drive-credentials-consent-set': {
+      const includeCredentials = await setDriveCredentialsConsent(msg.includeCredentials === true);
+      if (!includeCredentials && await googleAccount()) {
+        clearTimeout(driveBackupTimer);
+        await backUpToDrive({ force: true });
+      }
+      return { includeCredentials };
+    }
     case 'drive-after-sign-in':
       return afterGoogleSignIn();
     case 'drive-backup-now':

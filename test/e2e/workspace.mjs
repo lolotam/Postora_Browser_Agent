@@ -13,6 +13,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'postora-workspace-'));
 const project = path.join(temp, 'project'); fs.mkdirSync(project);
 fs.writeFileSync(path.join(project, 'README.md'), 'Original synthetic project.');
+fs.mkdirSync(path.join(project, 'prompts', 'nested'), { recursive: true });
+fs.writeFileSync(path.join(project, 'prompts', 'nested', 'context.md'), 'NESTED-PROJECT-CONTEXT');
 let turn = 0, audioBody = '', modelBodies = [];
 const report = 'npm: تم فحص المشروع بنجاح.\n\n| الفحص | النتيجة |\n| --- | --- |\n| `npm run build` | نجح |\n\n- تم تحديث الملف المطلوب.\n\n```sh\nnpm run build\n```';
 const server = http.createServer((req, res) => {
@@ -95,7 +97,8 @@ try {
   assert.equal(fs.readFileSync(path.join(project, 'README.md'), 'utf8'), 'Updated synthetic project.');
   assert.equal(await panel.locator('.mode-note').count(), 1);
   assert.ok(modelBodies.some((body) => JSON.stringify(body).includes('workspace-command-ok')));
-  assert.ok(modelBodies.some((body) => JSON.stringify(body).includes('Worker access update')));
+  assert.ok(JSON.stringify(modelBodies[0]).includes('NESTED-PROJECT-CONTEXT'), 'nested files must reach the model before its first turn');
+  assert.ok(JSON.stringify(modelBodies[0]).includes('mode in force for this task is **Full access**'));
   assert.equal(await panel.locator('.msg.final').getAttribute('dir'), 'rtl');
   await panel.evaluate(() => { document.documentElement.dir = 'ltr'; });
   assert.equal(await panel.locator('.msg.final').evaluate((el) => getComputedStyle(el).direction), 'rtl');

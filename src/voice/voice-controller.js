@@ -27,6 +27,36 @@ const SPEECH_TIMEOUT_MS = 2000;
 /** The speaking rate used to guess how long the voice output lasts. */
 const WORDS_PER_MINUTE = 150;
 
+const STOP_WORDS = new Set([
+  'stop',
+  'cancel',
+  'وقف',
+  'توقف',
+  'الغ',
+  'الغي',
+  'الغاء',
+  'اوقف',
+]);
+
+/** True when a spoken or typed utterance is one of the stop words. */
+export function isVoiceStopWord(text) {
+  const normalized = String(text ?? '')
+    .trim()
+    .replace(/^[\s.!?,،؛:!؟"'«»()[\]{}]+|[\s.!?,،؛:!؟"'«»()[\]{}]+$/g, '')
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .toLowerCase();
+  return STOP_WORDS.has(normalized);
+}
+
+/** Reads stored voice preferences; hands-free defaults to off for new profiles. */
+export function decodeVoicePrefs(saved = {}) {
+  return {
+    handsFree: saved?.voiceHandsfree === true,
+    speakReplies: saved?.voiceSpeak === true,
+  };
+}
+
 export function createVoiceController({
   createRecognition,
   canListenInPanel,
@@ -45,15 +75,24 @@ export function createVoiceController({
   savePrefs,
   onFailure = () => {},
   onMicBlocked = () => {},
+  isBusy = () => false,
+  onStop = () => {},
   cancelledText = () => 'Cancelled',
+  heardNotRunText = () => 'heard, not run',
   now = () => Date.now(),
 }) {
-  let prefs = { handsFree: true, speakReplies: false };
+  let prefs = { handsFree: false, speakReplies: false };
   // The saved preferences are read as soon as the controller exists, so a
   // switch that is changed before the screen opens is saved with the other
   // one as it was, not as it defaults.
   const ready = Promise.resolve(loadPrefs())
-    .then((loaded) => { prefs = { ...prefs, ...loaded }; return prefs; })
+    .then((loaded) => {
+      if (loaded && typeof loaded === 'object') {
+        if (typeof loaded.handsFree === 'boolean') prefs.handsFree = loaded.handsFree;
+        if (typeof loaded.speakReplies === 'boolean') prefs.speakReplies = loaded.speakReplies;
+      }
+      return prefs;
+    })
     .catch(() => prefs);
 
   let recognition = null;
@@ -75,9 +114,10 @@ export function createVoiceController({
   let speechTimer = null;
 
   const state = () => (busy ? 'thinking' : speaking() ? 'speaking' : listening() ? 'listening' : 'idle');
-  const setState = () => onState(state());
+  const setState = () => onState(state(), { listening: listening() });
   const suppressed = () => now() < suppressUntil || speaking();
   const listening = () => Boolean(capture) && captureActive;
+  const taskRunning = () => busy || Boolean(isBusy());
 
   // ---------- the recognizer ----------
 
@@ -87,7 +127,7 @@ export function createVoiceController({
     rec.interimResults = true;
     rec.continuous = prefs.handsFree;
     rec.maxAlternatives = 1;
-    rec.onprocessing = () => { if (myGeneration === generation) onState('transcribing'); };
+    rec.onprocessing = () => { if (myGeneration === generation) onState('transcribing', { listening: listening() }); };
     rec.onresult = (event) => {
       if (myGeneration !== generation) return; // a retired recognizer
       onResult(event);
@@ -159,9 +199,31 @@ export function createVoiceController({
 
   function onFinal(text) {
     if (suppressed()) return; // the voice output's own words, heard late
-    onTranscript(text, { final: true });
+    const command = String(text ?? '').trim();
+    if (!command) return;
+    const activeTask = taskRunning();
+    if (isVoiceStopWord(command)) {
+      onTranscript(command, { final: true });
+      if (!prefs.handsFree) stopListening();
+      if (activeTask) {
+        dropQueued();
+        cancelRunning();
+        onStop();
+      }
+      return;
+    }
+    if (activeTask) {
+      onTranscript(command, { final: true, dropped: true });
+      if (!prefs.handsFree) stopListening();
+      if (screenOpen) {
+        const entry = onLog(command);
+        entry?.setStatus?.(heardNotRunText(), 'dropped');
+      }
+      return;
+    }
+    onTranscript(command, { final: true });
     if (!prefs.handsFree) stopListening(); // one utterance, then the microphone is off
-    enqueue(text);
+    enqueue(command);
   }
 
   function onError(code, detail) {
@@ -244,7 +306,8 @@ export function createVoiceController({
     busy = true;
     const abort = new AbortController();
     const { command, entry } = queue.shift();
-    running = { abort, entry };
+    const run = { abort, entry };
+    running = run;
     setState();
     try {
       await onCommand(command, { signal: abort.signal, entry });
@@ -254,10 +317,12 @@ export function createVoiceController({
       // failure too: a provider or a browser that timed out.
       if (!abort.signal.aborted) entry?.setErr?.(String(err?.message ?? err));
     } finally {
-      busy = false;
-      running = null;
-      setState();
-      if (queue.length) pump();
+      if (running === run) {
+        busy = false;
+        running = null;
+        setState();
+        if (queue.length) pump();
+      }
     }
   }
 
@@ -299,12 +364,16 @@ export function createVoiceController({
    * so nothing of it may keep working, and the log has to say that it was
    * cancelled instead of waiting for ever.
    */
-  function cancelRunning() {
+  function cancelRunning({ markCancelled = true } = {}) {
     const run = running;
     if (!run) return;
     running = null;
+    busy = false;
     run.abort.abort();
-    run.entry?.setErr?.(cancelledText());
+    if (markCancelled && !run.entry?.isTerminal?.()) {
+      run.entry?.setErr?.(cancelledText());
+    }
+    setState();
   }
 
   function startListening() {
@@ -443,6 +512,22 @@ export function createVoiceController({
       if (!screenOpen) return;
       const command = String(text ?? '').trim();
       if (!command) return;
+      const activeTask = taskRunning();
+      if (isVoiceStopWord(command)) {
+        onTranscript(command, { final: true });
+        if (activeTask) {
+          dropQueued();
+          cancelRunning();
+          onStop();
+        }
+        return;
+      }
+      if (activeTask) {
+        onTranscript(command, { final: true, dropped: true });
+        const entry = onLog(command);
+        entry?.setStatus?.(heardNotRunText(), 'dropped');
+        return;
+      }
       onTranscript(command, { final: true });
       enqueue(command);
     },

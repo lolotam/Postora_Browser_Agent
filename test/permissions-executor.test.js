@@ -205,8 +205,14 @@ function fakeBrowser(page = fakePage()) {
       }
       if (action === 'select-all') return { ok: true };
       if (action === 'select-option') return { ok: true, selected: String(value) };
+      if (action === 'activate' || action === 'focus-el' || action === 'hover-el') {
+        const el = live(index);
+        if (action === 'focus-el') page.focused = el.index;
+        return { ok: true, tag: el.tag };
+      }
       return {};
     },
+    elementFrame: () => null,
     suggestions: async (index, wanted, mode, { guard } = {}) => {
       await guard?.();
       calls.push({ name: 'suggestions', args: { index, wanted, mode } });

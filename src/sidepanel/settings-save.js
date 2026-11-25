@@ -42,3 +42,17 @@ export function settingsEdits(base, draft) {
     return next;
   };
 }
+
+/**
+ * Mutate a single top-level or nested settings field for an immediate auto-save
+ * switch/picker without committing unrelated unsaved drafts on other pages.
+ */
+export function settingsFieldEdit(key, value) {
+  const cloned = structuredClone(value);
+  return (current) => {
+    if (!current || JSON.stringify(current[key]) === JSON.stringify(cloned)) return current;
+    const next = structuredClone(current);
+    next[key] = structuredClone(cloned);
+    return next;
+  };
+}

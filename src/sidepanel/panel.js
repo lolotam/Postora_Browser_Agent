@@ -1,22 +1,25 @@
-import { renderMarkdown, reportFileName } from './markdown.js';
+import { renderMarkdown, renderMarkdownToDom, reportFileName } from './markdown.js';
 import { contentDirection } from './content-direction.js';
 import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
+import { isMicWindowSender, isWorkerSender } from '../permissions/panel-sender.js';
 import { currentLanguage, resolveLanguage, setLanguage, t, translateFor } from './i18n.js';
-import { createAccessUi } from './access.js';
+import { createAccessUi, preferenceNoticeKey } from './access.js';
 import { createProjectUi } from './project.js';
 import { createPermissionUi } from './permissions.js';
 import { bindComposerSize } from './composer-size.js';
+import { createComposerAutocomplete } from './composer-autocomplete.js';
 import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 import { escapeAttr } from './model-picker.js';
 import { createModelDialog } from './model-dialog.js';
 import { createSettingsNav } from './settings-nav.js';
-import { createSettingsSaver, settingsEdits } from './settings-save.js';
+import { createSettingsSaver, settingsEdits, settingsFieldEdit } from './settings-save.js';
 import { authMessage, authView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
+import { stampProviderSlots } from './provider-slot-template.js';
 import { request } from './request.js';
 import { bindTestButton } from './test-button.js';
-import { FEEDBACK_FORM_ID, afterDismissal, afterRating, sendFeedback, shouldAskForRating } from '../lib/feedback.js';
+import { createFeedbackUi } from './feedback-ui.js';
 import { googleAccount, signInWithGoogle, signOutOfGoogle } from '../lib/google-account.js';
 import { ACCOUNT_PROVIDERS, PROVIDER_LABELS, RECOMMENDED_SETUP, recommendedSlots, settingsProblem, slotSettings } from '../lib/settings.js';
 import { STORE_BUILD } from '../lib/build.js';
@@ -24,7 +27,7 @@ import { packFiles } from '../lib/read-file.js';
 import { FILE_LIMITS, readLocalFile } from './attach.js';
 import { createFastAsk } from '../fast/clients.js';
 import { approvalText as approvalMessage } from '../voice/voice-approval.js';
-import { createVoiceController } from '../voice/voice-controller.js';
+import { createVoiceController, decodeVoicePrefs } from '../voice/voice-controller.js';
 import { createConfiguredRecognition } from '../voice/recognition-factory.js';
 import { speechLocale } from '../voice/transcription.js';
 import { createTranscriptionForm } from './transcription-form.js';
@@ -32,8 +35,10 @@ import { playReply } from '../voice/playback.js';
 import { runFastCommand } from '../voice/voice-runner.js';
 import { SECRET_TOKENS } from '../voice/voice-safety.js';
 import { createChromeBrowser } from '../voice/voice-browser.js';
+import { WORKING_TAB_CLOSED } from '../browser/working-tab.js';
 
 const $ = (id) => document.getElementById(id);
+stampProviderSlots(document);
 $('extensionVersion').textContent = `v${chrome.runtime.getManifest().version}`;
 const resizeComposer = bindComposerSize($('input'));
 
@@ -43,7 +48,7 @@ const resizeComposer = bindComposerSize($('input'));
 // question is answered once, and a second answer to it is refused.
 import { contextWindowFor } from '../lib/context-window.js';
 
-const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' } };
+const ui = { thread: null, compacting: null, pending: [], running: false, stopping: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' }, liveStatus: { step: 0, tool: '', model: '' } };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -71,6 +76,15 @@ let port = null;
 let sessionId = null;
 const projectUi = createProjectUi({ getSessionId: () => sessionId, send: (...args) => send(...args), request,
   input: $('input'), isRunning: () => ui.running, t, resize: resizeComposer });
+const composerAutocomplete = createComposerAutocomplete({
+  input: $('input'),
+  list: $('composerSuggest'),
+  getSessionId: () => sessionId,
+  getProject: () => projectUi.current?.(),
+  request,
+  t,
+  resize: resizeComposer,
+});
 $('projectBtn').hidden = STORE_BUILD;
 let sessionList = [];
 let sessionListRefresh = 0;
@@ -149,6 +163,9 @@ const accessUi = createAccessUi({
     voice: $('voiceAccess'),
     warning: $('accessWarning'),
     acknowledge: $('accessAcknowledge'),
+    acknowledgeText: $('accessAcknowledgeText'),
+    scope: $('accessWarningScope'),
+    remember: $('rememberAccessMode'),
     confirm: $('accessConfirm'),
     cancel: $('accessCancel'),
   },
@@ -189,8 +206,20 @@ async function requestAccess(message) {
 function renderAccessError() {
   const node = $('accessError');
   if (!node) return;
-  node.textContent = accessErrorKey ? t(accessErrorKey) : '';
-  node.hidden = !accessErrorKey;
+  // A notice about what the profile remembers stays while it is true: a
+  // downgrade that could not be stored, or a remembered mode that could not
+  // be restored. A failure of a request is shown until the worker speaks.
+  const preference = accessUi.preference;
+  const key = accessErrorKey
+    || (preference?.unpersisted
+      ? 'access.notice.notCleared'
+      : preference?.optOutUnpersisted
+        ? 'access.notice.notRemembered'
+        : preference?.restoreFailed
+          ? 'access.notice.restoreFailed'
+          : '');
+  node.textContent = key ? t(key) : '';
+  node.hidden = !key;
 }
 
 /**
@@ -419,8 +448,8 @@ function refreshApprovals() {
  * under it. What the worker still waits for is what is left; the history of
  * the chat is not a request.
  */
-function applyAccessReplay(state, permissions) {
-  applyAccessState(state);
+function applyAccessReplay(state, permissions, preference) {
+  applyAccessState(state && typeof state === 'object' && preference !== undefined ? { ...state, accessPreference: preference } : state);
   permissionRequests.clear();
   for (const request of Array.isArray(permissions) ? permissions : []) {
     if (request && typeof request.id === 'string') permissionRequests.set(request.id, request);
@@ -434,6 +463,15 @@ function resetApprovals() {
   permissionRequests.clear();
   permissionUi.reset();
   syncApprovals();
+}
+
+/**
+ * The words of a failure. A code is the stable name of the problem, and the
+ * panel has its own words for the ones it knows; the message is what a reader
+ * without such a code sees.
+ */
+function errorText(event) {
+  return event.code === WORKING_TAB_CLOSED ? t('error.working-tab-closed') : event.message;
 }
 
 function onEvent(event) {
@@ -452,6 +490,7 @@ function onEvent(event) {
         event.events.forEach(onEvent);
         ui.replayed = true;
         replaying = false;
+        scrollDown({ force: true });
       }
       setRunning(event.running);
       $('resumeRow').hidden = event.running || !event.resumable;
@@ -461,7 +500,36 @@ function onEvent(event) {
       // The worker's own state, sent with the replay: the mode that is really
       // in force for this chat now, not a moment of the conversation, and the
       // requests it still waits for under it.
-      applyAccessReplay(event.access, event.permissions);
+      applyAccessReplay(event.access, event.permissions, event.accessPreference);
+      break;
+    case 'access-preference-state': {
+      // The profile's remembered choice moved, here or in another panel.
+      const previousRevision = accessUi.preference?.profileRevision ?? null;
+      accessUi.applyPreference(event.accessPreference);
+      if ((accessUi.preference?.profileRevision ?? null) !== previousRevision) {
+        rememberErrorKey = '';
+      }
+      if (!accessUi.preference?.unpersisted) {
+        if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
+        if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
+      }
+      if (!accessUi.preference?.optOutUnpersisted) {
+        if (accessErrorKey === 'access.notice.notRemembered') accessErrorKey = '';
+        if (rememberErrorKey === 'access.notice.notRemembered') rememberErrorKey = '';
+      }
+      renderRemember();
+      renderAccessError();
+      break;
+    }
+    case 'access-preference-notice':
+      if (replaying) break;
+      if (event.reason === 'not-cleared' || (event.reason === 'not-remembered' && accessUi.preference?.optOutUnpersisted)) {
+        renderRemember();
+        renderAccessError();
+        break;
+      }
+      accessErrorKey = preferenceNoticeKey(event.reason) || 'access.error.send';
+      renderAccessError();
       break;
     case 'access-state':
       // The worker says what the mode is now. A state that belongs to the
@@ -488,6 +556,7 @@ function onEvent(event) {
       break;
     case 'status':
       setRunning(event.running);
+      if (!event.running) $('messages')?.setAttribute?.('aria-live', 'polite');
       // The live dot follows the task: it pulses while a task works and goes
       // out when the session settles, replays included.
       $('chatLog').classList.toggle('live', Boolean(event.running));
@@ -519,7 +588,11 @@ function onEvent(event) {
       const node = add(event.steer ? 'msg user steer' : 'msg user', event.text);
       if (event.steer) node.dataset.tag = t('msg.steered');
       // An answer to ask_user or a message sent while working is part of the task.
-      if (!event.answer && !event.steer) ui.stats = newStats(event.at);
+      if (!event.answer && !event.steer) {
+        ui.stats = newStats(event.at);
+        ui.liveStatus = { step: 0, tool: '', model: '' };
+        updateChatLogStatus();
+      }
       break;
     }
     case 'pending-added':
@@ -543,29 +616,31 @@ function onEvent(event) {
       openThread(event.step, event.model);
       break;
     case 'reasoning-delta':
+      $('messages')?.setAttribute?.('aria-live', 'off');
       ui.liveReasoning ??= threadPart('msg reasoning');
-      ui.liveReasoning.textContent += event.delta;
-      ui.liveReasoning.dir = contentDirection(ui.liveReasoning.textContent);
-      if (ui.thread) {
-        ui.thread.reasoning += event.delta;
-        ui.thread.title.textContent = threadTitle(ui.thread);
-      }
-      scrollDown();
+      pendingReasoningDelta += event.delta;
+      scheduleDeltaFlush();
       break;
     case 'text-delta':
+      $('messages')?.setAttribute?.('aria-live', 'off');
       ui.liveText ??= threadPart('msg assistant');
-      ui.liveText.textContent += event.delta;
-      ui.liveText.dir = contentDirection(ui.liveText.textContent);
-      scrollDown();
+      pendingTextDelta += event.delta;
+      scheduleDeltaFlush();
       break;
     case 'text-reset':
+      pendingTextDelta = '';
+      flushPendingDeltas();
       ui.liveText?.remove();
       ui.liveText = null;
       break;
     case 'assistant-text':
+      pendingTextDelta = '';
+      flushPendingDeltas();
+      $('messages')?.setAttribute?.('aria-live', 'polite');
       {
         const node = ui.liveText ?? threadPart('msg assistant');
-        node.innerHTML = renderMarkdown(event.text);
+        node.textContent = '';
+        renderMarkdownToDom(event.text, { document, container: node });
         node.dir = contentDirection(event.text);
       }
       ui.liveText = null;
@@ -617,22 +692,22 @@ function onEvent(event) {
         add('msg ask', event.question);
         break;
       }
-      // The question has to be answered: the chat is shown, so it is never
-      // hidden behind the voice screen.
-      showChat();
-      setQuestion(event.question);
       // The task waits for the answer, but the command that started it is
       // over: the screen is free again, so the answer may be given by voice,
       // and no new task is started for it. The entry of the command keeps
       // the events of the task.
+      const askVoiceEntry = voiceEntryFor(event);
       settleVoiceCommand();
-      voiceEntryFor(event)?.setStatus(t('status.waiting'), 'thinking');
+      showChat();
+      setQuestion(event.question);
+      askVoiceEntry?.setStatus(t('status.waiting'), 'thinking');
       break;
     case 'final': {
       ui.liveText?.remove();
       ui.liveText = null;
       const node = add(`msg final${event.success ? '' : ' partial'}`, '');
-      node.innerHTML = renderMarkdown(event.report);
+      node.textContent = '';
+      renderMarkdownToDom(event.report, { document, container: node });
       node.dir = contentDirection(event.report);
       const heading = document.createElement('h3');
       heading.textContent = t(event.success ? 'report.final' : 'report.partial');
@@ -657,13 +732,15 @@ function onEvent(event) {
       }
       break;
     }
-    case 'error':
-      add('msg error', event.message);
+    case 'error': {
+      const text = errorText(event);
+      add('msg error', text);
       if (voiceEntryFor(event)) {
-        voiceEntryFor(event).setErr(event.message);
+        voiceEntryFor(event).setErr(text);
         if (!replaying) completeVoiceTaskAfterCleanup(voiceTask);
       }
       break;
+    }
     case 'compacting':
       ui.compacting?.remove();
       ui.compacting = add('msg compact working', t(event.auto ? 'compact.workingAuto' : 'compact.working'));
@@ -816,7 +893,14 @@ function openThread(step, model = '') {
     if (!log.dataset.userToggled) log.open = false;
     log.classList.add('live');
   }
+  ui.liveStatus = {
+    step: Number(step) || ui.liveStatus.step,
+    tool: '',
+    model: model || ui.liveStatus.model,
+  };
+  updateChatLogStatus();
   ui.trace = null;
+  collapseOldThreads();
   const box = Object.assign(document.createElement('details'), { className: 'thread', open: false });
   const summary = document.createElement('summary');
   const title = span('title', t('thread.thinking'));
@@ -830,9 +914,18 @@ function openThread(step, model = '') {
   box.append(summary, body);
   $('messages').append(box);
   const thread = { box, title, meta, modelTag, body, step, reasoning: '', text: '', tools: [], trace: null, userToggled: false };
-  summary.addEventListener('click', () => { thread.userToggled = true; });
+  summary.addEventListener('click', () => {
+    thread.userToggled = true;
+    box.dataset.userToggled = 'true';
+  });
   ui.thread = thread;
   scrollDown();
+}
+
+function collapseOldThreads() {
+  $('messages')?.querySelectorAll?.('.thread[open]')?.forEach?.((node) => {
+    if (!node.dataset?.userToggled) node.open = false;
+  });
 }
 
 /**
@@ -846,6 +939,8 @@ function showThreadModel(tag, model) {
 }
 
 function closeThread() {
+  flushPendingDeltas();
+  $('messages')?.setAttribute?.('aria-live', 'polite');
   const thread = ui.thread;
   if (!thread) return;
   if (!thread.userToggled) thread.box.open = false;
@@ -864,6 +959,12 @@ function threadTitle(thread) {
 }
 
 function addStep({ step, callId, name, args, fast }) {
+  ui.liveStatus = {
+    ...ui.liveStatus,
+    step: Number(step) || ui.liveStatus.step,
+    tool: name || ui.liveStatus.tool,
+  };
+  updateChatLogStatus();
   const row = document.createElement('details');
   row.className = fast ? 'step fast' : 'step';
   const compact = JSON.stringify(args ?? {}).replace(/^\{|\}$/g, '');
@@ -910,7 +1011,9 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
     input: Number.isFinite(usage?.input) ? usage.input : ui.context.input,
     model: (model || ui.context.model).split(' · ').pop(),
   };
+  if (model) ui.liveStatus.model = model;
   updateContextBar();
+  updateChatLogStatus();
   const tokens = usage ? t('stats.tokens', { input: number(usage.input), output: number(usage.output) }) : '';
   const waited = retryWaitMs ? t('stats.retryWait', { time: formatDuration(retryWaitMs) }) : '';
   const time = Number.isFinite(ms) ? formatDuration(ms) : '';
@@ -928,6 +1031,27 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   if (time) row.append(span('time', time));
   traceBlock().append(row);
   scrollDown();
+}
+
+/** Live progress in the folded summary line: step n of max, active tool, model, and tokens. */
+function updateChatLogStatus() {
+  const node = $('chatLogStatus');
+  if (!node) return;
+  const active = ui.running || Boolean($('chatLog')?.classList?.contains('live'));
+  if (!active) {
+    node.textContent = '';
+    return;
+  }
+  const max = Number(settings?.maxSteps) || 40;
+  const stepPart = ui.liveStatus.step > 0 ? t('chat.liveStep', { step: ui.liveStatus.step, max }) : '';
+  const toolPart = ui.liveStatus.tool || '';
+  const rawModel = ui.liveStatus.model || ui.context.model || '';
+  const modelPart = String(rawModel).split(' · ').pop().split('/').pop();
+  const totalTokens = (ui.stats?.input ?? 0) + (ui.stats?.output ?? 0);
+  const tokenPart = totalTokens > 0
+    ? t('stats.tokens', { input: number(ui.stats.input), output: number(ui.stats.output) })
+    : '';
+  node.textContent = [stepPart, toolPart, modelPart, tokenPart].filter(Boolean).join(' · ');
 }
 
 /** Under the final report: the whole task's time and tokens. */
@@ -1039,6 +1163,7 @@ async function copyText(text) {
 
 function clearMessages() {
   $('resumeRow').hidden = true;
+  $('emptyState').hidden = false;
   ui.thread = null;
   ui.compacting = null;
   $('messages').querySelectorAll('.msg, .trace, .thread').forEach((n) => n.remove());
@@ -1054,9 +1179,11 @@ function clearMessages() {
     log.open = true;
     log.classList.remove('live');
   }
+  ui.liveStatus = { step: 0, tool: '', model: '' };
+  updateChatLogStatus();
   ui.steps.clear();
   ui.trace = null;
-  ui.notices = [];
+  ui.notices = ui.notices.filter((n) => n.local);
   renderNotices();
 }
 
@@ -1071,13 +1198,21 @@ function renderNotices() {
     row.title = notice.detail ?? '';
     row.dir = 'auto';
     const text = document.createElement('span');
-    text.textContent = `⚠ ${t(NOTICE_TEXT[notice.kind] ?? 'notice.switched', { from: notice.from ?? '', to: notice.to ?? '', reason })}`;
+    const message = notice.message || t(NOTICE_TEXT[notice.kind] ?? 'notice.switched', { from: notice.from ?? '', to: notice.to ?? '', reason });
+    text.textContent = `⚠ ${message}`;
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'ghost icon';
     close.textContent = '×';
     close.setAttribute('aria-label', t('notice.dismiss'));
-    close.addEventListener('click', () => send({ type: 'dismiss-notice', id: notice.id }));
+    close.addEventListener('click', () => {
+      if (notice.local) {
+        ui.notices = ui.notices.filter((n) => n.id !== notice.id);
+        renderNotices();
+      } else {
+        send({ type: 'dismiss-notice', id: notice.id });
+      }
+    });
     row.append(text, close);
     return row;
   }));
@@ -1137,16 +1272,16 @@ function showPendingQuestion(question) {
 
 /**
  * The question that was answered is gone: the card is hidden, the panel waits
- * for the task again and the send button goes away with it. A question that
- * arrived while the answer was on its way is a different one: it keeps its
- * card, its hint and its button.
+ * for the task again and the send button stays available for steering or
+ * follow-up. A question that arrived while the answer was on its way is a
+ * different one: it keeps its card, its hint and its button.
  */
 function clearAnsweredQuestion(questionId) {
   if (ui.questionId !== questionId) return false;
   ui.question = null;
   showPendingQuestion(null);
   $('hint').textContent = t('status.running');
-  $('sendBtn').hidden = true;
+  $('sendBtn').hidden = false;
   return true;
 }
 
@@ -1161,24 +1296,120 @@ function releaseAnswer(questionId) {
 
 function setRunning(running) {
   ui.running = running;
-  if (!running) closeThread();
+  if (!running) {
+    ui.stopping = false;
+    closeThread();
+    $('chatLog')?.classList?.remove('live');
+  }
+  updateChatLogStatus();
   $('statusDot').classList.toggle('running', running);
   $('stopBtn').hidden = !running;
+  $('stopBtn').disabled = running && Boolean(ui.stopping);
   $('voiceToggle').hidden = running;
   $('workspaceStopBtn').hidden = !running || ($('settingsView').hidden && $('voiceView').hidden);
+  $('workspaceStopBtn').disabled = running && Boolean(ui.stopping);
   $('sendBtn').hidden = false; // while running, a message steers the task (see steerMode)
   if (!running) {
     ui.question = null;
     showPendingQuestion(null);
     $('hint').textContent = '';
+  } else if (ui.stopping) {
+    $('hint').textContent = t('status.stopping');
   } else if (!ui.question) {
     $('hint').textContent = t('status.running');
   }
 }
 
-function scrollDown() {
+function requestStopTask() {
+  if (!ui.running || ui.stopping) return;
+  ui.stopping = true;
+  $('stopBtn').disabled = true;
+  if ($('workspaceStopBtn')) $('workspaceStopBtn').disabled = true;
+  $('hint').textContent = t('status.stopping');
+  send({ type: 'stop' }).catch(() => {
+    ui.stopping = false;
+    $('stopBtn').disabled = false;
+    if ($('workspaceStopBtn')) $('workspaceStopBtn').disabled = false;
+    if (ui.running && !ui.question) $('hint').textContent = t('status.running');
+  });
+}
+
+const STICK_THRESHOLD_PX = 24;
+let stickToBottom = true;
+let pendingReasoningDelta = '';
+let pendingTextDelta = '';
+let deltaFrame = null;
+
+function isNearBottom(box) {
+  if (!box) return true;
+  const distance = (Number(box.scrollHeight) || 0) - (Number(box.scrollTop) || 0) - (Number(box.clientHeight) || 0);
+  return distance <= STICK_THRESHOLD_PX;
+}
+
+function updateJumpChip() {
+  const btn = $('jumpLatestBtn');
+  if (btn) btn.hidden = stickToBottom;
+}
+
+function scrollDown({ force = false } = {}) {
+  if (replaying && !force) return;
   const box = $('messages');
-  box.scrollTop = box.scrollHeight;
+  if (!box) return;
+  if (force) stickToBottom = true;
+  if (stickToBottom) {
+    box.scrollTop = box.scrollHeight;
+  }
+  updateJumpChip();
+}
+
+$('messages')?.addEventListener?.('scroll', () => {
+  stickToBottom = isNearBottom($('messages'));
+  updateJumpChip();
+});
+
+$('jumpLatestBtn')?.addEventListener?.('click', () => {
+  scrollDown({ force: true });
+});
+
+function flushPendingDeltas() {
+  if (deltaFrame !== null) {
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(deltaFrame);
+    deltaFrame = null;
+  }
+  let didFlush = false;
+  if (pendingReasoningDelta) {
+    const delta = pendingReasoningDelta;
+    pendingReasoningDelta = '';
+    ui.liveReasoning ??= threadPart('msg reasoning');
+    ui.liveReasoning.textContent += delta;
+    ui.liveReasoning.dir = contentDirection(ui.liveReasoning.textContent);
+    if (ui.thread) {
+      ui.thread.reasoning += delta;
+      ui.thread.title.textContent = threadTitle(ui.thread);
+    }
+    didFlush = true;
+  }
+  if (pendingTextDelta) {
+    const delta = pendingTextDelta;
+    pendingTextDelta = '';
+    ui.liveText ??= threadPart('msg assistant');
+    ui.liveText.textContent += delta;
+    ui.liveText.dir = contentDirection(ui.liveText.textContent);
+    didFlush = true;
+  }
+  if (didFlush) scrollDown();
+}
+
+function scheduleDeltaFlush() {
+  if (replaying || typeof requestAnimationFrame !== 'function') {
+    flushPendingDeltas();
+    return;
+  }
+  if (deltaFrame !== null) return;
+  deltaFrame = requestAnimationFrame(() => {
+    deltaFrame = null;
+    flushPendingDeltas();
+  });
 }
 
 let attachments = [];
@@ -1487,15 +1718,22 @@ function closeMicWindow() {
   // The window handle can be lost (a stale id after a panel reload, a
   // windows.remove that failed), so the microphone's own tabs are removed by
   // address as well: the window closes either way.
+  const micBase = chrome.runtime.getURL('src/sidepanel/mic.html');
   chrome.tabs.query({}).then((tabs) => {
     for (const tab of tabs) {
-      if ((tab.url ?? '').includes('mic.html')) chrome.tabs.remove(tab.id).catch(() => {});
+      const tabUrl = tab.url ?? '';
+      if (tabUrl === micBase || tabUrl.startsWith(`${micBase}?`) || tabUrl.startsWith(`${micBase}#`)) {
+        chrome.tabs.remove(tab.id).catch(() => {});
+      }
     }
   }).catch(() => {});
 }
 
 /** What the microphone window heard. Only the window of this epoch counts. */
-function onMicMessage(message) {
+function onMicMessage(message, sender) {
+  // Only our own microphone window speaks for the user: a content script can
+  // send runtime messages too, and must not inject what was "heard".
+  if (!isMicWindowSender(sender)) return;
   if (message?.source !== MIC_WINDOW || Number(message.epoch) !== micEpoch) return;
   if (message.kind === 'partial') {
     voiceController?.handlePartial(message.text || '');
@@ -1547,9 +1785,14 @@ function voiceLogEntry(command) {
   detail.append(status);
   li.append(cmd, detail);
   log.prepend(li);
+  let entryState = 'executing';
   return {
     node: li,
+    isTerminal() {
+      return entryState === 'err' || entryState === 'ok' || entryState === 'thinking';
+    },
     setStatus(text, state) {
+      entryState = state || 'executing';
       status.textContent = text;
       li.className = `voice-entry${state ? ` ${state}` : ''}`;
     },
@@ -1567,6 +1810,7 @@ function voiceLogEntry(command) {
       detail.append(note);
     },
     setOk(text, ms) {
+      entryState = 'ok';
       status.textContent = `✓ ${text}`;
       li.className = 'voice-entry ok';
       if (Number.isFinite(ms)) {
@@ -1577,19 +1821,20 @@ function voiceLogEntry(command) {
       }
     },
     setErr(text) {
+      entryState = 'err';
       status.textContent = `✗ ${text}`;
       li.className = 'voice-entry err';
     },
   };
 }
 
-function setVoiceState(state) {
+function setVoiceState(state, { listening = Boolean(voiceController?.listening) } = {}) {
   voiceState = state;
   const stateEl = $('voiceState');
   if (!stateEl) return;
   stateEl.textContent = t(`voice.state${state.charAt(0).toUpperCase()}${state.slice(1)}`);
   stateEl.className = `pill voice-pill${state === 'idle' ? '' : ` ${state}`}`;
-  $('voiceMicBtn')?.classList.toggle('on', state === 'listening');
+  $('voiceMicBtn')?.classList.toggle('on', Boolean(listening));
 }
 
 /** What the microphone could not do, said in the panel's language. */
@@ -1625,7 +1870,7 @@ const VOICE_PREF_KEYS = ['voiceHandsfree', 'voiceSpeak'];
 
 async function loadVoicePrefs() {
   const saved = await chrome.storage.local.get(VOICE_PREF_KEYS).catch(() => ({}));
-  return { handsFree: saved.voiceHandsfree !== false, speakReplies: saved.voiceSpeak === true };
+  return decodeVoicePrefs(saved);
 }
 
 async function saveVoicePrefs(prefs) {
@@ -1642,7 +1887,7 @@ function createVoice() {
         const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!Ctor) return null;
         const rec = new Ctor();
-        rec.lang = speechLang(currentLanguage());
+        rec.lang = speechLang(currentLanguage(), settings?.transcription?.language);
         return rec;
       },
     }),
@@ -1657,9 +1902,9 @@ function createVoice() {
     stopSpeech: () => { speechGeneration += 1; try { window.speechSynthesis?.cancel(); } catch { /* no speech */ } },
     speaking: () => Boolean(window.speechSynthesis?.speaking),
     onState: setVoiceState,
-    onTranscript: (text, { final }) => {
+    onTranscript: (text, { final, dropped } = {}) => {
       const live = $('voiceLive');
-      live.textContent = text;
+      live.textContent = dropped ? `${text} — ${t('voice.heardNotRun')}` : text;
       live.classList.toggle('final', Boolean(final));
     },
     onCommand: (text, { signal, entry }) => runVoiceCommand(text, { signal, entry }),
@@ -1668,8 +1913,15 @@ function createVoice() {
     savePrefs: saveVoicePrefs,
     onFailure: voiceFailure,
     onMicBlocked: () => { panelMicBroken = true; },
+    isBusy: () => ui.running && !ui.question,
+    onStop: () => {
+      voiceApproval?.();
+      if (voiceTask) cancelVoiceTask(t('voice.cancelled'));
+      if (ui.running) send({ type: 'stop' }).catch(() => {});
+    },
     // A command that is dropped before it runs says so in the panel's language.
     cancelledText: () => t('voice.cancelled'),
+    heardNotRunText: () => t('voice.heardNotRun'),
   });
 }
 
@@ -1981,11 +2233,14 @@ function askVoiceApproval(what) {
   return new Promise((resolve) => {
     const box = $('voiceApproval');
     box.hidden = false;
+    box.setAttribute('aria-live', 'polite');
     box.replaceChildren();
     const title = document.createElement('strong');
     title.textContent = t('voice.approveTitle');
     const detail = document.createElement('div');
     detail.className = 'voice-approve-detail';
+    detail.setAttribute('role', 'status');
+    detail.setAttribute('aria-live', 'polite');
     detail.dir = 'auto';
     detail.textContent = approvalText(what);
     const actions = document.createElement('div');
@@ -2004,7 +2259,6 @@ function askVoiceApproval(what) {
     actions.append(yes, no);
     box.append(title, detail, actions);
     if ($('voiceView').hidden) openVoice();
-    yes.focus();
   });
 }
 
@@ -2058,8 +2312,10 @@ chrome.runtime.onMessage.addListener(onMicMessage);
 // Auth events arrive via runtime messages too, so a panel without a port
 // (e.g. after a worker restart) still hears the failure or device code.
 const AUTH_RUNTIME_EVENTS = new Set(['auth-success', 'auth-event', 'auth-prompt', 'auth-error']);
-chrome.runtime.onMessage.addListener((message) => {
-  if (AUTH_RUNTIME_EVENTS.has(message?.type)) onEvent(message);
+chrome.runtime.onMessage.addListener((message, sender) => {
+  // Only the worker reports sign-in events: a page's content script must not
+  // show a sign-in prompt or code of its own in the panel.
+  if (AUTH_RUNTIME_EVENTS.has(message?.type) && isWorkerSender(sender)) onEvent(message);
 });
 chrome.windows.onRemoved.addListener((id) => {
   if (id !== micWindowId) return;
@@ -2068,12 +2324,12 @@ chrome.windows.onRemoved.addListener((id) => {
 });
 watchMicrophone();
 $('input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.defaultPrevented) {
     e.preventDefault();
     $('composer').requestSubmit();
   }
 });
-$('stopBtn').addEventListener('click', () => send({ type: 'stop' }));
+$('stopBtn').addEventListener('click', () => requestStopTask());
 $('resumeBtn').addEventListener('click', async () => {
   const expectedSessionId = sessionId;
   $('resumeBtn').disabled = true;
@@ -2324,7 +2580,7 @@ $('sessionSearch').addEventListener('input', renderSessionList);
 // browser owns it), then a menu, then a settings page. Nothing is skipped
 // past, and nothing is closed twice by one keypress.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
   if ($('modelDialog').open || $('accessWarning').open || $('projectDialog').open || $('projectFilesDialog').open) return;
   if (!$('sessionMenu').hidden) { closeSessionMenu(); $('sessionBtn').focus(); return; }
   if (!$('overflowMenu').hidden) { closeOverflowMenu(); $('overflowBtn').focus(); return; }
@@ -2333,6 +2589,11 @@ document.addEventListener('keydown', (e) => {
   if (!$('settingsView').hidden && settingsNav.section() !== null) {
     settingsNav.back();
     syncFooter();
+    return;
+  }
+  if ($('settingsView').hidden && $('voiceView').hidden && ui.running && !composerAutocomplete.isOpen()) {
+    e.preventDefault();
+    requestStopTask();
   }
 });
 document.addEventListener('click', (e) => {
@@ -2474,8 +2735,29 @@ function renderDriveState(state = driveState) {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.driveBackup) renderDriveState(changes.driveBackup.newValue);
+  if (area === 'local' && changes.driveBackupIncludeCredentials && $('backupCredentials')) {
+    $('backupCredentials').checked = changes.driveBackupIncludeCredentials.newValue === true;
+  }
 });
-chrome.storage.local.get('driveBackup').then(({ driveBackup }) => renderDriveState(driveBackup));
+chrome.storage.local.get(['driveBackup', 'driveBackupIncludeCredentials']).then(({ driveBackup, driveBackupIncludeCredentials }) => {
+  if ($('backupCredentials')) $('backupCredentials').checked = driveBackupIncludeCredentials === true;
+  renderDriveState(driveBackup);
+});
+$('backupCredentials')?.addEventListener('change', async (event) => {
+  const box = event.target;
+  const wanted = box.checked === true;
+  if (wanted && !window.confirm(t('backup.credentialsConfirm'))) {
+    box.checked = false;
+    return;
+  }
+  try {
+    const res = await request('drive-credentials-consent-set', { includeCredentials: wanted });
+    box.checked = res?.includeCredentials === true;
+  } catch (err) {
+    box.checked = !wanted;
+    showBackupStatus('fail', `✗ ${err.message}`);
+  }
+});
 
 /**
  * What the Drive backup holds. The conversations are in it only when the user
@@ -2508,134 +2790,18 @@ googleAccount().then((saved) => {
 
 // ---------- feedback and ratings ----------
 
-const STORE_REVIEWS_URL = `https://chromewebstore.google.com/detail/${chrome.runtime.id}/reviews`;
-// Store installs carry update_url; an unpacked copy has no store page to review.
-const fromStore = Boolean(chrome.runtime.getManifest().update_url);
-let feedbackRating = 0;
-
-async function ratingState() {
-  try {
-    return (await chrome.storage.local.get('reviewPrompt')).reviewPrompt ?? {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveRatingState(change) {
-  await chrome.storage.local.set({ reviewPrompt: change(await ratingState()) });
-}
-
-/** Five star buttons; picking one calls onPick(n) and lights the stars up to n. */
-function starRow(onPick) {
-  const row = document.createElement('div');
-  row.className = 'stars';
-  for (let n = 1; n <= 5; n += 1) {
-    const star = document.createElement('button');
-    star.type = 'button';
-    star.className = 'star';
-    star.textContent = '★';
-    star.setAttribute('aria-label', t('rate.star', { n }));
-    star.addEventListener('click', () => {
-      row.querySelectorAll('.star').forEach((s, i) => s.classList.toggle('on', i < n));
-      onPick(n);
-    });
-    row.append(star);
-  }
-  return row;
-}
-
-/** A signed-in user's feedback carries their Google email unless they typed another. */
-function feedbackFields(message, rating, email = '') {
-  return { message, rating, email: email || account?.email || '', version: chrome.runtime.getManifest().version, language: currentLanguage() };
-}
-
-async function askForRating() {
-  if (!shouldAskForRating(await ratingState())) return;
-  const card = add('msg rate-card', '');
-  const question = document.createElement('span');
-  question.textContent = t('rate.question');
-  const close = iconButton(ICONS.close, t('rate.dismiss'), async () => {
-    card.remove();
-    await saveRatingState(afterDismissal);
-  });
-  const head = document.createElement('div');
-  head.className = 'row between';
-  head.append(question, close);
-  const body = document.createElement('div');
-  body.className = 'fields';
-  card.append(head, starRow((n) => rated(n, body, close)), body);
-}
-
-async function rated(stars, body, close) {
-  close.remove();
-  await saveRatingState(afterRating);
-  if (stars === 5) {
-    body.replaceChildren(textLine(t('rate.thanks')));
-    if (fromStore) {
-      const link = Object.assign(document.createElement('a'), { href: STORE_REVIEWS_URL, target: '_blank', rel: 'noopener', textContent: t('rate.store') });
-      body.append(link);
-    }
-    if (FEEDBACK_FORM_ID) sendFeedback(feedbackFields('', 5)).catch(() => {}); // a bare 5★ is a nice-to-know, not worth an error
-    return;
-  }
-  const text = Object.assign(document.createElement('textarea'), { rows: 3, dir: 'auto', placeholder: t('rate.better') });
-  const status = Object.assign(document.createElement('small'), { className: 'muted' });
-  const send = Object.assign(document.createElement('button'), { type: 'button', className: 'primary', textContent: t('feedback.send') });
-  send.addEventListener('click', () => submitFeedback({ message: text.value.trim(), rating: stars }, status, () => body.replaceChildren(textLine(t('feedback.sent')))));
-  const actions = document.createElement('div');
-  actions.className = 'row between';
-  actions.append(status, send);
-  body.replaceChildren(text, actions);
-  text.focus();
-}
-
-function textLine(text) {
-  return Object.assign(document.createElement('span'), { textContent: text });
-}
-
-async function submitFeedback({ message, rating, email = '' }, status, onSent) {
-  if (!message && !rating) {
-    status.textContent = t('feedback.empty');
-    return;
-  }
-  if (!FEEDBACK_FORM_ID) {
-    status.textContent = t('feedback.notConfigured');
-    return;
-  }
-  status.textContent = t('feedback.sending');
-  try {
-    await sendFeedback(feedbackFields(message, rating, email));
-    onSent();
-  } catch (err) {
-    status.textContent = `✗ ${err.message}`;
-  }
-}
-
-function toggleFeedbackMenu() {
-  const opening = $('feedbackMenu').hidden;
-  closeSessionMenu();
-  closeOverflowMenu();
-  $('accountMenu').hidden = true;
-  $('feedbackMenu').hidden = !opening;
-  if (!opening) return;
-  feedbackRating = 0;
-  $('feedbackStars').replaceWith(Object.assign(starRow((n) => { feedbackRating = n; }), { id: 'feedbackStars' }));
-  $('feedbackStatus').textContent = '';
-  if (account && !$('feedbackEmail').value) $('feedbackEmail').value = account.email;
-  $('feedbackText').focus();
-}
-
-$('feedbackBtn').addEventListener('click', toggleFeedbackMenu);
-$('feedbackSend').addEventListener('click', () => submitFeedback(
-  { message: $('feedbackText').value.trim(), rating: feedbackRating, email: $('feedbackEmail').value.trim() },
-  $('feedbackStatus'),
-  () => {
-    $('feedbackText').value = '';
-    $('feedbackStatus').textContent = t('feedback.sent');
+const { askForRating } = createFeedbackUi({
+  $,
+  t,
+  currentLanguage,
+  getAccount: () => account,
+  addCard: add,
+  closeIconButton: (label, onClick) => iconButton(ICONS.close, label, onClick),
+  closeOtherMenus: () => {
+    closeSessionMenu();
+    closeOverflowMenu();
+    $('accountMenu').hidden = true;
   },
-));
-document.addEventListener('click', (e) => {
-  if (!$('feedbackMenu').hidden && !$('feedbackMenu').contains(e.target) && !$('feedbackBtn').contains(e.target)) $('feedbackMenu').hidden = true;
 });
 
 // ---------- language ----------
@@ -2689,6 +2855,7 @@ function applyLanguage(language) {
   // answer do not.
   permissionUi.updateLanguage(approvalWords);
   renderAccessError();
+  renderRemember();
   renderFiles();
   projectUi.render();
   if (!settings) return;
@@ -2698,6 +2865,7 @@ function applyLanguage(language) {
   mainForm.rerender();
   fallbackForm.rerender();
   renderNotices();
+  updateChatLogStatus();
   renderSessionTitle();
   syncFastProvider();
   syncFastFallback();
@@ -2778,7 +2946,40 @@ const saveSettings = createSettingsSaver({
   onSaved: (saved) => { settings = saved; renderDriveContents(); },
   save: (next) => request('save-settings', { settings: next }),
 });
-const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
+const mainForm = createProviderForm($('mainProvider'), {
+  request,
+  getPresets: () => presets,
+  keyStore,
+  onChange: () => syncAuthFrames(),
+  onModels: (info) => {
+    renderModelFields();
+    if (info?.autoPicked && info?.signedIn && settings && !activeModel()) {
+      autoSaveFirstSignInModel();
+    }
+  },
+});
+
+async function autoSaveFirstSignInModel() {
+  if (!settings || activeModel()) return;
+  const draft = mainForm.read();
+  const next = structuredClone(settings);
+  Object.assign(next, draft);
+  next.keys = keyStore.snapshot();
+  if (settingsProblem(next)) return;
+  try {
+    await saveSettings((current) => {
+      if (slotSettings(current).model) return current;
+      const merged = structuredClone(current);
+      Object.assign(merged, draft);
+      merged.keys = keyStore.snapshot();
+      return merged;
+    });
+    updateChip();
+    renderSettingsSummaries();
+  } catch {
+    // Manual Save remains available if background persistence fails.
+  }
+}
 const fallbackForm = createProviderForm($('fallbackProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
 keyStore.register($('fastApiKey'), () => $('fastProvider').value);
 keyStore.register($('fastFallbackApiKey'), () => $('fastFallbackProvider').value);
@@ -2921,18 +3122,31 @@ let settingsDirty = false;
 
 // Fields that hold transient secrets, not settings: typing into them never
 // invents a draft.
-const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field';
+const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field, #rememberAccessMode, #backupCredentials';
+const AUTO_SAVE_SETTING_CONTROLS = '#vision, #allowJavascript, #showCursor, #steerMode, #backupChats, #notify, #voiceEngine';
+
+async function autoSaveControlField(key, readValue) {
+  if (!settings) return;
+  try {
+    await saveSettings(settingsFieldEdit(key, readValue()));
+    renderSettingsSummaries();
+  } catch (err) {
+    showSettingsError(err.message);
+  }
+}
 
 // Any edit in any page marks the draft, wherever the user walks afterwards.
 $('settingsView').addEventListener('input', (e) => {
   if (e.target.id === 'uiLanguage') return;
   if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
+  if (e.target.closest?.(AUTO_SAVE_SETTING_CONTROLS)) return;
   markDirty();
   renderSettingsSummaries();
 });
 $('settingsView').addEventListener('change', (e) => {
   if (e.target.id === 'uiLanguage') return;
   if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
+  if (e.target.closest?.(AUTO_SAVE_SETTING_CONTROLS)) return;
   markDirty();
   renderSettingsSummaries();
 });
@@ -2946,6 +3160,98 @@ function syncFooter() {
   $('settingsFooter').hidden = settingsNav.section() === null && !settingsDirty;
 }
 
+// ---------- remember my choice ----------
+
+// The switch in Settings → Behavior. It is not a setting: it belongs to the
+// profile, the worker keeps it, and the panel only asks and shows the answer.
+let rememberErrorKey = '';
+let rememberBusy = false;
+
+/** The switch itself is drawn by the access control; a failure is shown beside it. */
+function renderRemember() {
+  const node = $('rememberAccessError');
+  if (!node) return;
+  const key = rememberErrorKey
+    || (accessUi.preference?.unpersisted
+      ? 'access.notice.notCleared'
+      : accessUi.preference?.optOutUnpersisted
+        ? 'access.notice.notRemembered'
+        : '');
+  node.textContent = key ? t(key) : '';
+  node.hidden = !key;
+}
+
+/** The worker is asked once; whatever it answers is what the panel shows. */
+async function changeRemember(remember, acknowledged) {
+  rememberBusy = true;
+  rememberErrorKey = '';
+  try {
+    const result = await request('set-access-remember', {
+      remember,
+      acknowledged,
+      expectedProfileRevision: accessUi.preference?.profileRevision,
+    });
+    if (result?.preference) accessUi.applyPreference(result.preference);
+    if (!result?.ok) {
+      // Another chat is in Full access: the same warning is read first.
+      if (result?.reason === 'needs-acknowledgement' && !acknowledged && accessUi.askRememberAcknowledgement(() => changeRemember(true, true))) return;
+      rememberErrorKey = preferenceNoticeKey(result?.reason) || 'access.error.send';
+    } else if (result.warning && result.warning !== 'not-cleared' && result.warning !== 'not-remembered') {
+      rememberErrorKey = preferenceNoticeKey(result.warning);
+    }
+  } catch {
+    rememberErrorKey = 'access.error.send';
+    const rememberBox = $('rememberAccessMode');
+    if (rememberBox) rememberBox.checked = accessUi.preference?.remember ?? true;
+  } finally {
+    rememberBusy = false;
+    renderRemember();
+    renderAccessError();
+  }
+}
+
+$('rememberAccessMode').addEventListener('change', (event) => {
+  const box = event.target;
+  const wanted = box.checked;
+  const confirmedRemember = accessUi.preference?.remember ?? true;
+  if (rememberBusy) {
+    box.checked = confirmedRemember;
+    renderRemember();
+    return;
+  }
+  // Turning it on while Full access is on makes Full access reach new chats:
+  // the warning is read and acknowledged before anything is sent.
+  if (wanted && accessUi.confirmed.mode === FULL_ACCESS) {
+    box.checked = confirmedRemember; // nothing is chosen until the warning is acknowledged
+    if (!accessUi.askRememberAcknowledgement(() => changeRemember(true, true))) {
+      rememberErrorKey = 'access.error.connect';
+      renderRemember();
+    }
+    return;
+  }
+  box.checked = confirmedRemember;
+  changeRemember(wanted, false);
+});
+
+/** The panel opened or the worker came back: what the profile remembers is asked for. */
+async function refreshAccessPreference() {
+  try {
+    accessUi.applyPreference(await request('get-access-preference'));
+    if (!accessUi.preference?.unpersisted) {
+      if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
+      if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
+    }
+    if (!accessUi.preference?.optOutUnpersisted) {
+      if (accessErrorKey === 'access.notice.notRemembered') accessErrorKey = '';
+      if (rememberErrorKey === 'access.notice.notRemembered') rememberErrorKey = '';
+    }
+  } catch {
+    // The replay of the connection carries it too.
+  }
+  renderRemember();
+  renderAccessError();
+}
+
 async function init() {
   const data = await request('get-settings');
   settings = data.settings;
@@ -2956,6 +3262,7 @@ async function init() {
   // The access control is drawn again in the language the panel settled on.
   // The mode it shows is still the one the worker confirmed.
   accessUi.updateLanguage(t);
+  refreshAccessPreference();
   // The same for the approvals: the words change, the requests do not.
   permissionUi.updateLanguage(approvalWords);
   renderDriveState();
@@ -2967,12 +3274,20 @@ async function init() {
   await refreshAuthStates();
   updateChip();
   renderSettingsSummaries();
-  // No model to work with yet: the panel opens straight at the main provider,
-  // so there is an obvious route to set one up.
-  if (!activeModel()) toggleSettings(true, 'provider-main');
+  // No model to work with yet: the panel opens straight at the Models overview,
+  // where the tested free setup and the main provider row are both one click away.
+  if (!activeModel()) toggleSettings(true, 'models');
   mainForm.loadModels();
   loadFastModels();
 }
+
+$('emptyState')?.addEventListener?.('click', (event) => {
+  const btn = event.target.closest?.('[data-example]');
+  if (!btn) return;
+  $('input').value = t(btn.dataset.example);
+  resizeComposer();
+  $('input').focus();
+});
 
 // Tokens land in storage even when the worker that polled for them was restarted
 // and its port to this panel is gone, so storage is the reliable sign-in signal.
@@ -3099,11 +3414,24 @@ $('notify').addEventListener('change', async () => {
     if (!granted) {
       box.checked = false;
       $('notifyNote').hidden = false;
+      return;
     }
   } else {
-    // Given back only once the switch is saved off (see toggleSettings), like the rest of this form.
+    chrome.permissions.remove({ permissions: ['notifications'] }).catch(() => {});
   }
+  await autoSaveControlField('notify', () => box.checked);
 });
+
+for (const [id, key, readValue] of [
+  ['vision', 'vision', () => $('vision').checked],
+  ['allowJavascript', 'allowJavascript', () => $('allowJavascript').checked],
+  ['showCursor', 'showCursor', () => $('showCursor').checked],
+  ['steerMode', 'steerMode', () => $('steerMode').value],
+  ['backupChats', 'backupChats', () => $('backupChats').checked === true],
+  ['voiceEngine', 'voiceEngine', () => $('voiceEngine')?.value || 'postora'],
+]) {
+  $(id)?.addEventListener('change', () => autoSaveControlField(key, readValue));
+}
 
 function syncFallback() {
   // The backup page stays reachable either way; the row that opens it only
@@ -3943,8 +4271,19 @@ function showSettingsError(message) {
   $('settingsError').scrollIntoView({ block: 'nearest' });
 }
 
-pick(startSessions).catch((err) => showSettingsError(err.message));
-init().catch((err) => showSettingsError(err.message));
+let startupNoticeSeq = 0;
+
+function showStartupError(message) {
+  const text = String(message || '');
+  showSettingsError(text);
+  if (!text) return;
+  startupNoticeSeq += 1;
+  ui.notices.push({ id: `startup-${startupNoticeSeq}`, kind: 'startup', level: 'error', message: text, detail: text, local: true });
+  renderNotices();
+}
+
+pick(startSessions).catch((err) => showStartupError(err?.message ?? String(err)));
+init().catch((err) => showStartupError(err?.message ?? String(err)));
 // The chat is the first screen: its docks are wired before anything arrives.
 placeApprovals('chat');
 syncHeaderContext();

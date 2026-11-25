@@ -126,11 +126,19 @@
          user opens it to watch the chat live. While the chat is still empty
          it stays open, so the landing examples stay visible. -->
     <details id="chatLog" open>
-      <summary id="chatLogSummary"><span class="chat-log-dot"></span><span data-i18n="chat.live"></span></summary>
+      <summary id="chatLogSummary"><span class="chat-log-dot"></span><span data-i18n="chat.live"></span><span id="chatLogStatus" class="chat-log-status" dir="auto"></span></summary>
       <section id="messages" aria-live="polite">
         <div class="empty" id="emptyState">
+          <strong class="empty-title" data-i18n="empty.title"></strong>
+          <p class="empty-body muted" data-i18n="empty.body"></p>
+          <div class="empty-steps">
+            <button type="button" class="empty-step" data-example="empty.ex1"><span class="empty-step-num">1</span><span data-i18n="empty.ex1"></span></button>
+            <button type="button" class="empty-step" data-example="empty.ex2"><span class="empty-step-num">2</span><span data-i18n="empty.ex2"></span></button>
+            <button type="button" class="empty-step" data-example="empty.ex3"><span class="empty-step-num">3</span><span data-i18n="empty.ex3"></span></button>
+          </div>
         </div>
       </section>
+      <button type="button" id="jumpLatestBtn" class="jump-latest" data-i18n="chat.jumpLatest" hidden></button>
     </details>
     <!-- The context bar: the conversation's estimated size against the model's
          context window. It fills as the chat grows; past most of the window it
@@ -149,6 +157,7 @@
       <ul id="pending" class="pending" hidden></ul>
       <ul id="fileChips" class="file-chips" hidden></ul>
       <div id="projectChip" class="project-chip" hidden></div>
+      <ul id="composerSuggest" class="composer-suggest" role="listbox" hidden></ul>
       <div class="composer-box" id="composerBox">
         <textarea id="input" rows="1" dir="auto" data-i18n-placeholder="composer.placeholder"></textarea>
         <div class="composer-toolbar">
@@ -222,7 +231,7 @@
 
       <div class="voice-toggles">
         <label class="check voice-toggle">
-          <input type="checkbox" id="voiceHandsfree" checked />
+          <input type="checkbox" id="voiceHandsfree" />
           <span data-i18n="voice.handsfree"></span>
         </label>
         <label class="check voice-toggle">
@@ -232,7 +241,7 @@
       </div>
     </div>
 
-    <div id="voiceApproval" class="voice-approval" role="group" aria-live="assertive" hidden></div>
+    <div id="voiceApproval" class="voice-approval" role="group" aria-live="polite" hidden></div>
 
     <div id="voicePending" class="voice-pending" role="note" hidden>
       <strong data-i18n="voice.pendingQuestion"></strong>
@@ -348,170 +357,7 @@
       <button type="button" class="link" id="showRecommended" data-i18n="setup.show" hidden></button>
     </div>
 
-    <div class="settings-page" id="page-provider-main" hidden>
-      <h2 tabindex="-1" data-i18n="head.provider"></h2>
-      <p class="section-desc muted" data-i18n="sub.providerDesc"></p>
-      <div id="mainProvider" class="fields">
-        <label class="field">
-          <span data-i18n="settings.provider"></span>
-          <select id="provider" data-field="provider">
-            <option value="chatgpt" data-i18n="settings.provider.chatgpt"></option>
-            <option value="claude" data-i18n="settings.provider.claude"></option>
-            <option value="grok" data-i18n="settings.provider.grok"></option>
-            <option value="gemini" data-i18n="settings.provider.gemini"></option>
-            <option value="kimi" data-i18n="settings.provider.kimi"></option>
-            <option value="compatible" data-i18n="settings.provider.compatible"></option>
-          </select>
-        </label>
-
-        <div id="chatgptSection" class="inset" data-field="chatgptSection" data-provider="chatgpt">
-          <div class="row between">
-            <span data-auth="status"></span>
-            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
-          </div>
-          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.chatgpt"></button>
-          <div class="device" data-auth="device" hidden>
-            <p data-i18n="auth.deviceHelp"></p>
-            <code data-auth="deviceCode" dir="ltr"></code>
-            <div class="row between">
-              <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
-              <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
-            </div>
-          </div>
-          <small class="error" data-auth="message" hidden></small>
-          <details>
-            <summary data-i18n="auth.importSummary"></summary>
-            <p class="muted"><span data-i18n="auth.importRun"></span> <code dir="ltr">codex login</code> <span data-i18n="auth.importThen"></span> <code dir="ltr">~/.codex/auth.json</code> <span data-i18n="auth.importHere"></span></p>
-            <textarea id="authJson" rows="4" dir="ltr" placeholder='{"tokens": {...}}'></textarea>
-            <button type="button" id="importBtn" data-i18n="auth.import"></button>
-          </details>
-        </div>
-
-        <div id="claudeSection" class="inset" data-field="claudeSection" data-provider="claude" hidden>
-          <div data-field="claudeAccount">
-          <div class="row between">
-            <span data-auth="status"></span>
-            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
-          </div>
-          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.claude"></button>
-          <div class="device" data-auth="code" hidden>
-            <p data-i18n="auth.codeHelp"></p>
-            <input data-auth="codeInput" type="text" dir="ltr" autocomplete="off" />
-            <button type="button" data-auth="codeSubmit" data-i18n="auth.codeSubmit"></button>
-          </div>
-          <small class="error" data-auth="message" hidden></small>
-          </div>
-          <label class="field">
-            <span data-i18n="claude.auth"></span>
-            <select data-field="claudeAuth">
-              <option value="account" data-i18n="claude.authAccount"></option>
-              <option value="apiKey" data-i18n="claude.authApiKey"></option>
-            </select>
-          </label>
-          <label class="field">
-            <span data-i18n="claude.apiKey"></span>
-            <input data-field="claudeApiKey" type="password" dir="ltr" autocomplete="off" />
-          </label>
-        </div>
-
-        <div id="grokSection" class="inset" data-field="grokSection" data-provider="grok" hidden>
-          <div class="row between">
-            <span data-auth="status"></span>
-            <button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button>
-          </div>
-          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.grok"></button>
-          <div class="device" data-auth="device" hidden>
-            <p data-i18n="auth.deviceHelp"></p>
-            <code data-auth="deviceCode" dir="ltr"></code>
-            <div class="row between">
-              <a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a>
-              <button type="button" data-auth="cancel" data-i18n="common.cancel"></button>
-            </div>
-          </div>
-          <small class="error" data-auth="message" hidden></small>
-        </div>
-
-        <div class="fields" data-field="geminiSection" hidden>
-          <label class="field"><span data-i18n="gemini.apiKey"></span><input data-field="geminiApiKey" type="password" dir="ltr" autocomplete="off" /></label>
-          <p class="muted"><span data-i18n="gemini.keyHelp"></span> <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" data-i18n="provider.createKey"></a></p>
-        </div>
-        <div class="fields" data-field="kimiSection" hidden>
-          <label class="field"><span data-i18n="kimi.auth"></span><select data-field="kimiAuth"><option value="apiKey" data-i18n="kimi.authApiKey"></option><option value="account" data-i18n="kimi.authAccount"></option></select></label>
-          <div data-field="kimiKeyField">
-            <label class="field"><span data-i18n="kimi.apiKey"></span><input data-field="kimiApiKey" type="password" dir="ltr" autocomplete="off" /></label>
-            <p class="muted"><span data-i18n="kimi.apiHelp"></span> <a href="https://platform.kimi.ai/console/api-keys" target="_blank" rel="noopener" data-i18n="provider.createKey"></a></p>
-          </div>
-          <div class="inset" data-field="kimiAccount" data-provider="kimi" hidden>
-            <p class="muted" data-i18n="kimi.accountHelp"></p>
-            <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
-            <button type="button" class="primary" data-auth="login" data-i18n="auth.login.kimi"></button>
-            <div class="device" data-auth="device" hidden>
-              <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
-              <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
-            </div>
-            <small class="error" data-auth="message" hidden></small>
-          </div>
-        </div>
-        <div class="inset" data-field="minimaxOAuthAccount" data-provider="minimax" hidden>
-          <p class="muted" data-i18n="connection.minimaxOAuthHelp"></p>
-          <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
-          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.minimax"></button>
-          <div class="device" data-auth="device" hidden>
-            <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
-            <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
-          </div>
-          <small class="error" data-auth="message" hidden></small>
-        </div>
-        <div class="inset" data-field="zaiOAuthAccount" data-provider="zai" hidden>
-          <p class="muted" data-i18n="connection.zaiOAuthHelp"></p>
-          <div class="row between"><span data-auth="status"></span><button type="button" data-auth="logout" data-i18n="auth.logout" hidden></button></div>
-          <button type="button" class="primary" data-auth="login" data-i18n="auth.login.zai"></button>
-          <div class="device" data-auth="device" hidden>
-            <p data-i18n="auth.deviceHelp"></p><code data-auth="deviceCode" dir="ltr"></code>
-            <div class="row between"><a data-auth="deviceLink" target="_blank" rel="noopener" data-i18n="auth.openPage"></a><button type="button" data-auth="cancel" data-i18n="common.cancel"></button></div>
-          </div>
-          <small class="error" data-auth="message" hidden></small>
-        </div>
-        <div id="compatibleSection" class="fields" data-field="compatibleSection" hidden>
-          <div data-field="openrouterLogin" hidden><p class="muted" data-i18n="connection.openrouterHelp"></p><button type="button" data-field="openrouterSignIn" data-i18n="connection.signIn"></button><small role="status" data-field="openrouterStatus"></small></div>
-          <p class="muted" data-field="planHelp" data-i18n="connection.planHelp"></p>
-          <a data-field="planAccount" href="https://platform.minimax.io/subscribe/coding-plan" target="_blank" rel="noopener noreferrer" data-i18n="connection.minimaxAccount" hidden></a>
-          <a data-field="zaiAccount" href="https://z.ai/manage-apikey/apikey-list" target="_blank" rel="noopener noreferrer" data-i18n="connection.zaiAccount" hidden></a>
-          <label class="field" data-field="presetField">
-            <span data-i18n="compat.preset"></span>
-            <select id="preset" data-field="preset"></select>
-          </label>
-          <label class="field" data-field="baseUrlField">
-            <span>Base URL</span>
-            <input id="baseUrl" data-field="baseUrl" dir="ltr" />
-          </label>
-          <label class="field" data-field="apiKeyField">
-            <span data-field="apiKeyLabel">API Key</span>
-            <input id="apiKey" data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
-          </label>
-        </div>
-
-        <div class="field model-field">
-          <span data-i18n="model.label"></span>
-          <button type="button" class="model-button" id="modelBtnMain">
-            <span class="model-current" id="modelMainLabel" dir="ltr"></span>
-            <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-          </button>
-          <input id="modelInput" data-field="modelInput" type="text" dir="ltr" hidden />
-          <small class="muted" id="modelInfo" data-field="modelInfo"></small>
-        </div>
-        <label class="field">
-          <span data-i18n="effort.label"></span>
-          <select id="effort" data-field="effort"></select>
-        </label>
-        <div class="row"><button type="button" class="test-btn" data-field="test" data-i18n="provider.test"></button><small class="muted test-result" data-field="testResult"></small></div>
-      </div>
-    </div>
-
-    <div class="settings-page" id="page-provider-backup" hidden>
-      <h2 tabindex="-1" data-i18n="head.provider"></h2>
-      <p class="section-desc muted" data-i18n="sub.providerDesc"></p>
-      <div id="fallbackProvider" class="fields">
+    <template id="providerSlotTemplate">
         <label class="field">
           <span data-i18n="settings.provider"></span>
           <select data-field="provider">
@@ -542,8 +388,8 @@
           <details>
             <summary data-i18n="auth.importSummary"></summary>
             <p class="muted"><span data-i18n="auth.importRun"></span> <code dir="ltr">codex login</code> <span data-i18n="auth.importThen"></span> <code dir="ltr">~/.codex/auth.json</code> <span data-i18n="auth.importHere"></span></p>
-            <textarea id="backupAuthJson" rows="4" dir="ltr" placeholder='{"tokens": {...}}'></textarea>
-            <button type="button" id="backupImportBtn" data-i18n="auth.import"></button>
+            <textarea data-field="authJson" rows="4" dir="ltr" placeholder='{"tokens": {...}}'></textarea>
+            <button type="button" data-field="importBtn" data-i18n="auth.import"></button>
           </details>
         </div>
 
@@ -642,30 +488,41 @@
             <select data-field="preset"></select>
           </label>
           <label class="field" data-field="baseUrlField">
-            <span>Base URL</span>
+            <span data-i18n="compat.baseUrl"></span>
             <input data-field="baseUrl" dir="ltr" />
           </label>
           <label class="field" data-field="apiKeyField">
-            <span data-field="apiKeyLabel">API Key</span>
+            <span data-field="apiKeyLabel" data-i18n="compat.apiKey"></span>
             <input data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
         </div>
 
         <div class="field model-field">
           <span data-i18n="model.label"></span>
-          <button type="button" class="model-button" id="modelBtnBackup">
-            <span class="model-current" id="modelBackupLabel" dir="ltr"></span>
+          <button type="button" class="model-button" data-field="modelBtn">
+            <span class="model-current" data-field="modelLabel" dir="ltr"></span>
             <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
           </button>
           <input data-field="modelInput" type="text" dir="ltr" hidden />
-          <small class="muted" id="modelBackupInfo" data-field="modelInfo"></small>
+          <small class="muted" data-field="modelInfo"></small>
         </div>
         <label class="field">
           <span data-i18n="effort.label"></span>
           <select data-field="effort"></select>
         </label>
         <div class="row"><button type="button" class="test-btn" data-field="test" data-i18n="provider.test"></button><small class="muted test-result" data-field="testResult"></small></div>
-      </div>
+    </template>
+
+    <div class="settings-page" id="page-provider-main" hidden>
+      <h2 tabindex="-1" data-i18n="head.provider"></h2>
+      <p class="section-desc muted" data-i18n="sub.providerDesc"></p>
+      <div id="mainProvider" class="fields"></div>
+    </div>
+
+    <div class="settings-page" id="page-provider-backup" hidden>
+      <h2 tabindex="-1" data-i18n="head.provider"></h2>
+      <p class="section-desc muted" data-i18n="sub.providerDesc"></p>
+      <div id="fallbackProvider" class="fields"></div>
     </div>
 
     <div class="settings-page" id="page-fast" hidden>
@@ -686,7 +543,7 @@
             </select>
           </label>
           <label class="field">
-            <span>API Key</span>
+            <span data-i18n="compat.apiKey"></span>
             <input id="fastApiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
           <div class="field model-field">
@@ -697,7 +554,7 @@
             </button>
             <input id="fastModel" type="text" dir="ltr" hidden />
           </div>
-          <label class="field" data-field="baseUrlField"><span>Base URL</span><input id="fastBaseUrl" dir="ltr" /></label>
+          <label class="field" data-field="baseUrlField"><span data-i18n="compat.baseUrl"></span><input id="fastBaseUrl" dir="ltr" /></label>
           <div class="row">
             <label class="field grow"><span data-i18n="fast.minProb"></span><input id="fastMinProb" type="number" min="0.3" max="0.99" step="0.05" /></label>
             <label class="field grow"><span data-i18n="fast.riskyMax"></span><input id="fastRiskyMax" type="number" min="0.05" max="0.9" step="0.05" /></label>
@@ -713,7 +570,7 @@
         <label class="check switch"><input type="checkbox" id="fastFallbackEnabled" role="switch" /> <span data-i18n="fast.fallbackEnable"></span></label>
         <div id="fastFallbackFields" class="fields">
           <label class="field"><span data-i18n="fast.provider"></span><select id="fastFallbackProvider"></select></label>
-          <label class="field"><span>API Key</span><input id="fastFallbackApiKey" type="password" dir="ltr" autocomplete="off" /></label>
+          <label class="field"><span data-i18n="compat.apiKey"></span><input id="fastFallbackApiKey" type="password" dir="ltr" autocomplete="off" /></label>
           <div class="field model-field">
             <span data-i18n="model.label"></span>
             <button type="button" class="model-button" id="modelBtnFastBackup">
@@ -733,6 +590,7 @@
       <div class="fields">
         <label class="field"><span data-i18n="voice.transcriptionMode"></span><select id="transcriptionMode"><option value="auto" data-i18n="voice.transcriptionAuto"></option><option value="browser" data-i18n="voice.transcriptionBrowser"></option></select></label>
         <p class="muted" data-i18n="voice.transcriptionDesc"></p>
+        <label class="field"><span data-i18n="voice.speechLanguage"></span><select id="transcriptionLanguage"><option value="auto" data-i18n="lang.auto"></option><option value="ar">العربية</option><option value="en">English</option></select></label>
         <label class="field"><span data-i18n="voice.pause"></span><select id="transcriptionPause"><option value="600" data-i18n="voice.pauseFast"></option><option value="900" data-i18n="voice.pauseBalanced"></option><option value="1200" data-i18n="voice.pausePatient"></option></select></label>
         <label class="field"><span data-i18n="voice.service"></span><select id="transcriptionService"><option value="openai">OpenAI</option><option value="groq">Groq</option><option value="deepgram">Deepgram</option><optgroup label="Local" data-i18n-label="voice.localGroup"><option value="local-nemotron" data-i18n="voice.localNemotron"></option><option value="local-whisper" data-i18n="voice.localWhisper"></option></optgroup><option value="custom">Custom · OpenAI-compatible</option></select></label>
         <div class="fields" id="transcriptionCloud">
@@ -787,6 +645,11 @@
           <input id="autoCompactTokens" type="number" min="8000" max="1000000" step="1000" dir="ltr" />
         </label>
         <p class="muted" data-i18n="settings.autoCompactHint"></p>
+        <!-- A choice of the profile, not a setting: it is kept by the worker, never
+             read by the settings form, never saved with it, never in a backup. -->
+        <label class="check"><input type="checkbox" id="rememberAccessMode" checked /> <span data-i18n="settings.rememberAccess"></span></label>
+        <p class="muted" data-i18n="settings.rememberAccessHint"></p>
+        <p class="access-error" id="rememberAccessError" role="status" hidden></p>
       </div>
     </div>
 
@@ -834,6 +697,13 @@
         <label class="switch-row">
           <span class="grow"><strong data-i18n="backup.chats"></strong><small class="muted" data-i18n="backup.chatsDesc"></small></span>
           <input type="checkbox" id="backupChats" role="switch" />
+        </label>
+        <!-- A profile-local consent, stored outside settings: never exported,
+             imported or restored. Turning it off replaces the current Drive
+             file with a credential-free one at once. -->
+        <label class="switch-row">
+          <span class="grow"><strong data-i18n="backup.credentials"></strong><small class="muted" data-i18n="backup.credentialsDesc"></small></span>
+          <input type="checkbox" id="backupCredentials" role="switch" />
         </label>
         <small class="muted" id="backupResult"></small>
       </div>
@@ -892,6 +762,7 @@
   <dialog id="accessWarning" class="access-warning" aria-labelledby="accessWarningTitle" aria-describedby="accessWarningDesc">
     <h2 id="accessWarningTitle" data-i18n="access.warning.title"></h2>
     <p id="accessWarningDesc" class="access-warning-desc" data-i18n="access.warning.desc"></p>
+    <p id="accessWarningScope" class="access-warning-desc" data-i18n="access.warning.scopeRemembered"></p>
     <ul class="access-warning-list">
       <li data-i18n="access.warning.forms"></li>
       <li data-i18n="access.warning.data"></li>
@@ -904,7 +775,7 @@
     </ul>
     <label class="check access-ack">
       <input type="checkbox" id="accessAcknowledge" />
-      <span data-i18n="access.warning.acknowledge"></span>
+      <span id="accessAcknowledgeText" data-i18n="access.warning.acknowledge"></span>
     </label>
     <div class="row end access-warning-actions">
       <button type="button" class="ghost" id="accessCancel" data-i18n="access.warning.cancel"></button>

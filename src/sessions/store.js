@@ -2,6 +2,8 @@
 // unlimitedStorage). The index holds titles, times and tab groups; each session's
 // body is its own key so listing never loads transcripts.
 
+import { sanitizeSessionBody } from '../agent/redaction.js';
+
 const INDEX = 'sessions';
 const bodyKey = (id) => `session:${id}`;
 const TITLE_WORDS = 6;
@@ -43,7 +45,8 @@ export async function loadSession(id) {
 }
 
 export async function saveSession(id, { transcript, log, groupId, notebook = null, pending = [], project = null, continuation = null }) {
-  await chrome.storage.local.set({ [bodyKey(id)]: { transcript, log, groupId, notebook, pending, project, continuation } });
+  const clean = sanitizeSessionBody({ transcript, log, groupId, notebook, pending, project, continuation });
+  await chrome.storage.local.set({ [bodyKey(id)]: clean });
   await updateIndex((index) => index.map((s) => (s.id === id ? { ...s, groupId, updatedAt: Date.now() } : s)));
 }
 
@@ -72,7 +75,8 @@ export async function exportSessions() {
   return index.map((meta) => {
     const body = bodies[bodyKey(meta.id)];
     if (!body) throw new Error('A session is missing its history. Backup was not created.');
-    return { meta: { ...meta, groupId: null }, body: { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null } };
+    const clean = sanitizeSessionBody(body);
+    return { meta: { ...meta, groupId: null }, body: { ...clean, groupId: null, continuation: clean.continuation ? { ...clean.continuation, tabId: null } : null } };
   });
 }
 
@@ -84,7 +88,9 @@ export function validateSessions(archive) {
     const { meta, body } = entry ?? {};
     if (!meta || typeof meta.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(meta.id) || ids.has(meta.id)
       || typeof meta.title !== 'string' || !Number.isFinite(meta.createdAt) || !Number.isFinite(meta.updatedAt)
-      || !body || !Array.isArray(body.transcript) || body.transcript.some((e) => !e || typeof e.type !== 'string')
+      || !body || typeof body !== 'object' || Array.isArray(body)
+      || Object.prototype.hasOwnProperty.call(body, 'meta')
+      || !Array.isArray(body.transcript) || body.transcript.some((e) => !e || typeof e.type !== 'string')
       || (body.log != null && (typeof body.log !== 'object' || Array.isArray(body.log)))
       || (body.continuation != null && (typeof body.continuation.task !== 'string' || !body.continuation.task.trim()))) {
       throw new Error('This backup is damaged: a session cannot be read.');
@@ -112,10 +118,11 @@ export function importSessions(archive) {
     const writes = {};
     const added = [];
     for (const { meta, body } of entries) {
-      const portable = { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
+      const { project: _droppedProject, meta: _droppedMeta, ...restBody } = body;
+      const portable = { ...restBody, project: null, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
       if (used.has(meta.id)) {
         const current = await loadSession(meta.id);
-        const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.project, value?.continuation ? { ...value.continuation, tabId: null } : null];
+        const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.continuation ? { ...value.continuation, tabId: null } : null];
         if (JSON.stringify(historyFields(current)) === JSON.stringify(historyFields(portable))) continue;
       }
       const id = used.has(meta.id) ? crypto.randomUUID() : meta.id;

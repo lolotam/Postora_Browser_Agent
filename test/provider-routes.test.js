@@ -44,3 +44,15 @@ test('OpenRouter rejects a substituted callback and resets its in-flight lock', 
   const identity = { getRedirectURL: () => 'https://fixture.chromiumapp.org/expected', launchWebAuthFlow: async () => 'https://attacker.invalid/?code=x' };
   for (let i = 0; i < 2; i++) await assert.rejects(signInOpenRouter({ identity, cryptoApi: webcrypto, fetcher: () => { throw new Error('Must not exchange'); } }), /invalid sign-in callback/);
 });
+
+
+test('coding plans have their own group and legacy routes still resolve', () => {
+  assert.equal(routeForSettings(mergeSettings({ provider: 'compatible', compatible: { preset: 'openrouter' } })), 'api:openrouter');
+  for (const [preset, id] of [['minimax-coding-plan', 'minimax-plan'], ['zai-coding', 'zai-plan']]) {
+    assert.equal(connectionRoute(id).group, 'plans');
+    assert.equal(connectionRoute(`api:${preset}`).id, id);
+    assert.equal(routeForSettings(mergeSettings({ provider: 'compatible', connectionRoute: `api:${preset}`, compatible: { preset } })), id);
+    assert.equal(CONNECTION_ROUTES.filter((r) => r.preset === preset && r.group === 'plans').length, 1);
+    assert.equal(CONNECTION_ROUTES.filter((r) => r.preset === preset && r.group === 'auth').length, 1);
+  }
+});

@@ -72,6 +72,20 @@ test('a click after a worker restart still finds the tab, brings it forward and 
   assert.equal(await openFromNotification(id, { sessionExists: async () => true, bindTab: async () => {} }), 'gone'); // used once
 });
 
+test('a click tells the open panels which session the tab belongs to', async () => {
+  const id = await notifyTransition({ kind: 'ask', sessionId: 's1', tabId: 7, settings: on });
+  const told = [];
+  // A panel Chrome keeps for the tab does not look its session up again on its
+  // own, so the click tells it.
+  const outcome = await openFromNotification(id, {
+    sessionExists: async () => true,
+    bindTab: async () => {},
+    notifyPanels: (message) => { told.push(message); },
+  });
+  assert.equal(outcome, 'opened');
+  assert.deepEqual(told, [{ type: 'tab-session-changed', tabId: 7, sessionId: 's1' }]);
+});
+
 test('a panel Chrome refuses to open still leaves the tab in front', async () => {
   resetChrome({ panelOpens: false });
   const id = await notifyTransition({ kind: 'finished', sessionId: 's1', tabId: 7, settings: on });

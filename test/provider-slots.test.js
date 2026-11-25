@@ -33,7 +33,7 @@ function fakeElement() {
 const MODEL_FIELDS = ['modelSearch', 'modelSelect', 'modelInput', 'modelInfo', 'refresh', 'effort', 'test', 'testResult'];
 const NAMED_FIELDS = ['geminiSection', 'geminiApiKey', 'kimiSection', 'kimiAuth', 'kimiApiKey', 'kimiKeyField', 'kimiAccount'];
 const MAIN_FIELDS = ['provider', 'preset', 'baseUrl', 'apiKey', 'chatgptSection', 'claudeSection', 'grokSection', 'compatibleSection', 'claudeAuth', 'claudeApiKey', ...MODEL_FIELDS, ...NAMED_FIELDS];
-const BACKUP_FIELDS = ['provider', 'preset', 'baseUrl', 'apiKey', 'accountNote', 'fallbackAuth', 'claudeSection', 'compatibleSection', 'claudeAuth', 'claudeApiKey', ...MODEL_FIELDS, ...NAMED_FIELDS];
+const BACKUP_FIELDS = [...MAIN_FIELDS];
 
 /** A form root: its fields are found by data-field, and only the ones it has. */
 function fakeRoot(fields) {
@@ -64,6 +64,20 @@ test('a new install has a Claude and a Grok slot, in the main settings and in th
   assert.deepEqual(settings.fallback.grok, { model: '', effort: '' });
 });
 
+test('a stale worker preset catalog does not crash provider rendering', () => {
+  const { root, el } = fakeRoot(MAIN_FIELDS);
+  const form = createProviderForm(root, {
+    request: async () => [], getPresets: () => ({ custom: COMPATIBLE_PRESETS.custom }), keyStore: createKeyStore(),
+  });
+  assert.doesNotThrow(() => form.fill(mergeSettings({ provider: 'compatible', compatible: { preset: 'custom' } })));
+  assert.match(el('provider').innerHTML, /value="api:openrouter" disabled/);
+  assert.doesNotThrow(() => form.fill({ provider: 'compatible', compatible: { preset: 'custom', model: 'old-worker-model' } }));
+  assert.equal(form.read().kimi.auth, 'apiKey');
+  assert.doesNotThrow(() => form.fill({ provider: 'claude', claude: undefined, kimi: undefined }));
+  assert.equal(form.read().claude.auth, 'account');
+  assert.doesNotThrow(() => form.fill(null));
+});
+
 test('legacy voice stays usable without a transcription key; configured services remain opt-in', () => {
   assert.equal(mergeSettings({}).transcription.mode, 'browser');
   assert.equal(mergeSettings({ transcription: { mode: 'auto', provider: 'deepgram', apiKey: 'fixture' } }).transcription.mode, 'auto');
@@ -85,6 +99,19 @@ test('the factory builds the session of the provider the slot names', () => {
   assert.ok(claude.active instanceof AnthropicSession, 'a Claude slot speaks the Anthropic Messages API');
   const grok = createModelSession(mergeSettings({ provider: 'grok', grok: { model: 'grok-4' } }), {});
   assert.ok(grok.active instanceof GrokAccountSession, 'a Grok slot speaks the Responses API');
+});
+
+test('a session built later describes the access mode that is in force then', () => {
+  const settings = mergeSettings({ provider: 'compatible', compatible: { preset: 'openrouter', apiKey: 'fixture-key', model: 'openai/gpt-5' },
+    fallback: { enabled: true, provider: 'compatible', compatible: { preset: 'openrouter', apiKey: 'fixture-key', model: 'openai/gpt-5' } } });
+  let mode = { mode: 'ask-first', revision: 1 };
+  const session = createModelSession(settings, { accessState: () => mode, conversationId: 'conversation' });
+  assert.match(session.active.messages[0].content, /ask\s*first/i, 'the main model was told the mode in force');
+
+  // The mode moves while the task runs. A session built after that, such as the
+  // backup that takes over, must describe the mode that is in force now.
+  mode = { mode: 'full-access', revision: 2 };
+  assert.match(session.createBackup().messages[0].content, /full\s*access/i, 'the backup describes the mode in force now');
 });
 
 test('a Claude or Grok slot is saved with its own model, not the compatible one', () => {
@@ -150,15 +177,18 @@ test('the form shows the section of the provider it is set to', () => {
   assert.equal(el('claudeSection').hidden, true);
 });
 
-test('the backup frame has no sign-in sections of its own', () => {
+test('the backup frame has the same provider sections as the main frame', () => {
   const { root, el } = fakeRoot(BACKUP_FIELDS);
   const form = formFor(root);
 
   form.fill(mergeSettings({}).fallback);
-  assert.equal(el('chatgptSection'), null, 'the backup frame has no ChatGPT section');
-  assert.equal(el('grokSection'), null, 'and no Grok one');
+  assert.equal(el('chatgptSection').hidden, true);
+  assert.equal(el('grokSection').hidden, true);
   assert.equal(el('compatibleSection').hidden, false, 'a compatible backup shows its own fields');
   assert.equal(form.read().provider, 'compatible');
+  el('provider').value = 'chatgpt'; el('provider').dispatch('change');
+  assert.equal(el('chatgptSection').hidden, false);
+  assert.equal(form.accountProvider(), 'chatgpt');
 });
 
 test('reselecting the same model preserves effort; a changed model clears the old test result', () => {
@@ -284,4 +314,43 @@ test('a Claude slot set to an API key is not saved without one', () => {
   assert.equal(settingsProblem(backup), 'err.fallbackAnthropicKey');
   backup.fallback.enabled = false;
   assert.equal(settingsProblem(backup), null, 'a backup that is off is not checked');
+});
+
+
+test('OpenRouter OAuth hides manual fields and plan routes keep only the plan key', () => {
+  const fields = [...MAIN_FIELDS, 'presetField', 'baseUrlField', 'apiKeyField', 'apiKeyLabel', 'openrouterLogin', 'openrouterStatus', 'planHelp', 'planAccount', 'zaiAccount'];
+  for (const connectionRoute of ['openrouter-auth', 'api:openrouter', 'minimax-plan', 'zai-plan']) {
+    const { root, el } = fakeRoot(fields);
+    const form = formFor(root);
+    const plan = connectionRoute.endsWith('-plan');
+    const preset = connectionRoute === 'minimax-plan' ? 'minimax-coding-plan' : connectionRoute === 'zai-plan' ? 'zai-coding' : 'openrouter';
+    form.fill(mergeSettings({ provider: 'compatible', connectionRoute, compatible: { preset, apiKey: 'fixture-key' } }));
+    const oauth = connectionRoute === 'openrouter-auth';
+    assert.equal(el('openrouterLogin').hidden, !oauth);
+    assert.equal(el('presetField').hidden, oauth || plan);
+    assert.equal(el('baseUrlField').hidden, oauth || plan);
+    assert.equal(el('apiKeyField').hidden, oauth);
+    assert.equal(el('planAccount').hidden, preset !== 'minimax-coding-plan');
+    assert.equal(el('zaiAccount').hidden, preset !== 'zai-coding');
+    assert.equal(form.read().compatible.apiKey, 'fixture-key', 'hidden fields retain the credential');
+  }
+});
+
+test('the custom route keeps the endpoint fields, even when a plan preset is still selected', () => {
+  const fields = [...MAIN_FIELDS, 'presetField', 'baseUrlField', 'apiKeyField', 'apiKeyLabel', 'openrouterLogin', 'openrouterStatus', 'planHelp', 'planAccount', 'zaiAccount'];
+  const { root, el } = fakeRoot(fields);
+  const form = formFor(root);
+  form.fill(mergeSettings({ provider: 'compatible', connectionRoute: 'minimax-plan', compatible: { preset: 'minimax-coding-plan', apiKey: 'fixture-key' } }));
+  assert.equal(el('presetField').hidden, true, 'a plan route has a fixed endpoint');
+  assert.equal(el('baseUrlField').hidden, true, 'and does not offer another one');
+
+  // The user goes back to the custom route to enter their own endpoint. The
+  // plan preset is still the one selected, and it must not keep the fields
+  // hidden: there would be no way to change the endpoint at all.
+  el('provider').value = 'compatible';
+  el('provider').dispatch('change');
+
+  assert.equal(el('presetField').hidden, false, 'the custom route shows the preset again');
+  assert.equal(el('baseUrlField').hidden, false, 'and the endpoint that can be changed');
+  assert.equal(el('apiKeyField').hidden, false);
 });
