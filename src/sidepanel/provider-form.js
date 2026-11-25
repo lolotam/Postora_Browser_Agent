@@ -265,6 +265,9 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       keyStore.show(f('apiKey'), preset);
       saved.compatible = { ...saved.compatible, ...compatibleFields(), model: defaults.model, effort: '' };
     }
+    // A plan route has a fixed endpoint that the form hides: a URL typed on a
+    // custom route must not stay behind it and receive the plan key.
+    if (['minimax-plan', 'zai-plan'].includes(route().id)) f('baseUrl').value = getPresets()[route().preset].baseUrl;
     f('modelInput').value = slotOf(saved).model;
     models = [];
     syncSections();

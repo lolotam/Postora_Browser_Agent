@@ -196,6 +196,7 @@ function fakeBrowser() {
     rename: async () => {},
     ownsTab: () => false,
     currentTab: async () => ({ id: 7, url: 'https://shop.test/checkout' }),
+    elementFrame: () => null,
     documentId: async () => 'doc-1',
     snapshot: async () => ({
       url: 'https://shop.test/checkout',

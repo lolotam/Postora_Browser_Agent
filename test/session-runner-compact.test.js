@@ -370,3 +370,12 @@ test('auto-compaction estimates tokens as chars/4 when provider usage is missing
   );
   assert.equal(calls.length, 1);
 });
+
+test('the threshold that settle applies is capped by the model window like the one before a turn', () => {
+  const runner = Object.create(SessionRunner.prototype);
+  runner.settings = mergeSettings({ autoCompact: { enabled: true, thresholdTokens: 900000 } });
+  const { config, windowTokens } = runner.autoCompactConfig('Provider · gpt-4o');
+  assert.ok(windowTokens > 0);
+  assert.equal(config.thresholdTokens, Math.floor(windowTokens * 0.8), 'a threshold past the window falls back to 80% of it');
+  assert.equal(runner.autoCompactConfig(() => 'gpt-4o').config.thresholdTokens, config.thresholdTokens, 'a model given as a function is read the same way');
+});

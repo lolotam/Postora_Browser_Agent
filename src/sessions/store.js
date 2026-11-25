@@ -80,6 +80,19 @@ export async function exportSessions() {
   });
 }
 
+/**
+ * A notebook that Notebook.from() can open: omitted, or entries of text with an
+ * optional source link. A null or text-less entry would make format() throw the
+ * moment the chat is opened.
+ */
+function validNotebook(notebook) {
+  if (notebook == null) return true;
+  if (typeof notebook !== 'object' || Array.isArray(notebook)) return false;
+  if (notebook.entries == null) return true;
+  return Array.isArray(notebook.entries)
+    && notebook.entries.every((e) => e && typeof e === 'object' && typeof e.text === 'string' && (e.url == null || typeof e.url === 'string'));
+}
+
 /** Validate the entire archive before any settings or session are changed. */
 export function validateSessions(archive) {
   if (!Array.isArray(archive)) throw new Error('This backup is damaged: its sessions cannot be read.');
@@ -92,6 +105,7 @@ export function validateSessions(archive) {
       || Object.prototype.hasOwnProperty.call(body, 'meta')
       || !Array.isArray(body.transcript) || body.transcript.some((e) => !e || typeof e.type !== 'string')
       || (body.log != null && (typeof body.log !== 'object' || Array.isArray(body.log)))
+      || !validNotebook(body.notebook)
       || (body.continuation != null && (typeof body.continuation.task !== 'string' || !body.continuation.task.trim()))) {
       throw new Error('This backup is damaged: a session cannot be read.');
     }
@@ -117,17 +131,24 @@ export function importSessions(archive) {
     const used = new Set(existing.map((meta) => meta.id));
     const writes = {};
     const added = [];
+    const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.continuation ? { ...value.continuation, tabId: null } : null];
+    // The bodies an imported session could already be stored as: its own ID, and
+    // the copies an earlier restore made of it. One read for all of them.
+    const stored = existing.filter((meta) => entries.some((e) => e.meta.id === meta.id || e.meta.id === meta.importedFrom));
+    const bodies = stored.length ? await chrome.storage.local.get(stored.map((meta) => bodyKey(meta.id))) : {};
     for (const { meta, body } of entries) {
       const { project: _droppedProject, meta: _droppedMeta, ...restBody } = body;
       const portable = { ...restBody, project: null, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
-      if (used.has(meta.id)) {
-        const current = await loadSession(meta.id);
-        const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.continuation ? { ...value.continuation, tabId: null } : null];
-        if (JSON.stringify(historyFields(current)) === JSON.stringify(historyFields(portable))) continue;
+      const collides = used.has(meta.id);
+      if (collides) {
+        const wanted = JSON.stringify(historyFields(portable));
+        // The same history already stored, as itself or as a copy an earlier
+        // restore made, is not added again.
+        if (stored.some((s) => (s.id === meta.id || s.importedFrom === meta.id) && JSON.stringify(historyFields(bodies[bodyKey(s.id)])) === wanted)) continue;
       }
-      const id = used.has(meta.id) ? crypto.randomUUID() : meta.id;
+      const id = collides ? crypto.randomUUID() : meta.id;
       used.add(id);
-      added.push({ ...meta, id, groupId: null });
+      added.push({ ...meta, id, groupId: null, ...(collides ? { importedFrom: meta.id } : {}) });
       writes[bodyKey(id)] = portable;
     }
     await chrome.storage.local.set(writes);

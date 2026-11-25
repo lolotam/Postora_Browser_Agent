@@ -110,7 +110,7 @@ test('older Moonshot models never receive K3-only reasoning effort parameters', 
   assert.equal(JSON.parse(calls.at(-1).options.body).reasoning_effort, undefined);
 });
 
-test('Kimi Code catalog and execution use separate account credentials and a fixed .com endpoint', async () => {
+test('Kimi Code catalog and execution use separate account credentials and a fixed .ai endpoint', async () => {
   store['accountAuth.kimi'] = { generation: 1, credential: credential() };
   handler = (url) => url.endsWith('/models') ? Response.json({ data: [{ id: 'kimi-for-coding' }] }) : stream({ content: 'account answer' });
   const config = { auth: 'account', apiKey: 'DO-NOT-SEND-MOONSHOT-KEY', model: 'kimi-for-coding' };

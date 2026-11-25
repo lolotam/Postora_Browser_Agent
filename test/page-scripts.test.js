@@ -84,7 +84,7 @@ test('activate clicks the element in its own frame', () => {
   const el = {
     isConnected: true, tagName: 'BUTTON', innerText: '', style: {},
     scrollIntoView() {},
-    dispatchEvent: (event) => { events.push(event.type); if (event.type === 'click') clicked += 1; },
+    dispatchEvent: (event) => { events.push(event.type); if (event.type === 'click') clicked += 1; return true; },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
     getAttribute: () => null,
   };
@@ -92,9 +92,45 @@ test('activate clicks the element in its own frame', () => {
     constructor(type, init = {}) { this.type = type; Object.assign(this, init); }
   }
   globalThis.window = { __agentElements: [el], MouseEvent: FakeEvent, PointerEvent: FakeEvent };
+  globalThis.document = { elementFromPoint: () => el };
   assert.deepEqual(elementAction(0, 'activate', null, true), { ok: true, tag: 'button' });
   assert.equal(clicked, 1);
   assert.deepEqual(events, ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']);
+});
+
+// An element for the activate tests: it can take the focus, and `hit` is what
+// the page returns for the point at its centre.
+function pressable(tagName, hit) {
+  const el = {
+    isConnected: true, tagName, innerText: '', style: {},
+    events: [], focused: 0,
+    scrollIntoView() {},
+    dispatchEvent(event) { el.events.push(event.type); return true; },
+    focus() { el.focused += 1; },
+    closest: () => el,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
+    getAttribute: () => null,
+  };
+  class FakeEvent {
+    constructor(type, init = {}) { this.type = type; Object.assign(this, init); }
+  }
+  globalThis.window = { __agentElements: [el], MouseEvent: FakeEvent, PointerEvent: FakeEvent };
+  globalThis.document = { elementFromPoint: () => hit(el) };
+  return el;
+}
+
+test('activate does not click an element that another element covers', () => {
+  const cover = { tagName: 'DIV', matches: () => true, parentElement: null };
+  const el = pressable('BUTTON', () => cover);
+  const result = elementAction(0, 'activate', null, true);
+  assert.match(result.error, /covered by another element/);
+  assert.deepEqual(el.events, [], 'no event reached the covered control');
+});
+
+test('activate moves the focus to the input it presses', () => {
+  const el = pressable('INPUT', (self) => self);
+  assert.deepEqual(elementAction(0, 'activate', null, true), { ok: true, tag: 'input' });
+  assert.equal(el.focused, 1, 'a synthetic press does the focus step of a real one');
 });
 
 test('focus-el puts the focus on the element of its own frame', () => {
@@ -121,10 +157,34 @@ test('scroll-el scrolls the element itself by about a screen', () => {
     getAttribute: () => null,
   };
   el.clientHeight = 400;
+  el.scrollHeight = 2000; // a real scrollable pane
   globalThis.window = { __agentElements: [el], innerHeight: 800 };
+  globalThis.document = { body: {}, documentElement: {} };
+  globalThis.getComputedStyle = () => ({ overflowY: 'auto' });
   const result = elementAction(0, 'scroll-el', { direction: 'down', screens: 1 }, true);
   assert.equal(result.ok, true);
   assert.equal(scrolled, 1 * 400 * 0.85);
+});
+
+test('scroll-el turns the document when the element has no scrollable pane', () => {
+  let scrolled;
+  const el = {
+    isConnected: true, tagName: 'BUTTON', innerText: '', style: {},
+    scrollIntoView() {},
+    scrollBy: () => assert.fail('a button has no overflow to scroll'),
+    clientHeight: 20, scrollHeight: 20,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 30, height: 20 }),
+    getAttribute: () => null,
+  };
+  const scroller = { scrollTop: 0 };
+  globalThis.window = { __agentElements: [el], innerHeight: 800, scrollBy: ({ top }) => { scrolled = top; scroller.scrollTop = top; } };
+  globalThis.document = { body: {}, documentElement: {}, scrollingElement: scroller };
+  globalThis.getComputedStyle = () => ({ overflowY: 'visible' });
+  const result = elementAction(0, 'scroll-el', { direction: 'down', screens: 1 }, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.pane, false);
+  assert.equal(scrolled, 800 * 0.85);
+  assert.equal(result.top, 800 * 0.85);
 });
 
 test('elementFrame answers null for the top document and its frame for a child frame', async () => {
@@ -248,4 +308,52 @@ test('BrowserController.snapshot enforces one total maxElements cap across frame
   const childById = await execute('get_text', { start: 0, length: 600, frame: 7 });
   assert.match(childById.output, /frame-7-text/);
   assert.equal(injectedCalls.at(-1).opts.frameId, 7);
+});
+
+test('a focus capture takes the frame that is in the focus chain, not a frame that held the focus before', async () => {
+  const { BrowserController } = await import('../src/browser/controller.js');
+  const controller = Object.create(BrowserController.prototype);
+  controller.currentGeneration = 1;
+  controller.currentTab = async () => ({ id: 1, url: 'https://example.test/' });
+  const field = (token) => ({ kind: 'focus', token, tag: 'input', body: false });
+  const answer = (frameId, token, hasFocus) => ({ frameId, result: { ok: true, documentId: `d${frameId}`, generation: 1, hasFocus, element: field(token) } });
+  // Frame 5 answers first, but the focus moved to frame 9 after it.
+  controller.injectFrames = async () => [
+    { frameId: 0, result: { ok: true, documentId: 'd0', generation: 1, hasFocus: true, element: { kind: 'focus', token: 'top', tag: 'iframe', body: false } } },
+    answer(5, 'old', false),
+    answer(9, 'now', true),
+  ];
+  const target = await controller.captureTarget({ kind: 'focus' });
+  assert.equal(target.frameId, 9);
+  assert.equal(target.element.token, 'now');
+
+  // The window itself has no focus: nothing tells the frames apart, and the
+  // first real field still wins as before.
+  controller.injectFrames = async () => [
+    { frameId: 0, result: { ok: true, documentId: 'd0', generation: 1, hasFocus: false, element: { kind: 'focus', token: 'top', tag: 'iframe', body: false } } },
+    answer(5, 'old', false),
+    answer(9, 'now', false),
+  ];
+  assert.equal((await controller.captureTarget({ kind: 'focus' })).frameId, 5);
+});
+
+test('typing in a frame needs the approved frame itself in the focus chain, not just any iframe', async () => {
+  const { BrowserController } = await import('../src/browser/controller.js');
+  const controller = Object.create(BrowserController.prototype);
+  const target = { tabId: 1, frameId: 5 };
+  const run = async ({ top, inApproved }) => {
+    const asked = [];
+    controller.inject = async (fn, _args, opts = {}) => {
+      asked.push(opts.frameId ?? 0);
+      return fn.name === 'focusInFrame' ? top : inApproved;
+    };
+    try { await controller.assertFocusChain(target); return { ok: true, asked }; } catch { return { ok: false, asked }; }
+  };
+  assert.equal((await run({ top: { iframe: true, focused: true }, inApproved: true })).ok, true);
+  const sibling = await run({ top: { iframe: true, focused: true }, inApproved: false });
+  assert.equal(sibling.ok, false, 'focus moved to a sibling frame after the approval');
+  assert.deepEqual(sibling.asked, [0, 5], 'the approved frame is the one asked');
+  assert.equal((await run({ top: { iframe: false, focused: true }, inApproved: true })).ok, false);
+  // Without window focus no frame can be told from another: the old check stands.
+  assert.equal((await run({ top: { iframe: true, focused: false }, inApproved: false })).ok, true);
 });

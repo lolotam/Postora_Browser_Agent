@@ -76,6 +76,18 @@ test('Z.ai separates OAuth identity from short-lived project inference tokens', 
   assert.equal(calls.length - before, 2, 'refresh reuses the project/key location');
 });
 
+test('Z.ai counts the flow lifetime from the server clock, not the local one', async (t) => {
+  let polled = false;
+  mockFetch(t, async (url) => {
+    // The local clock is ten minutes ahead of the server's: the flow has five minutes left.
+    if (url.endsWith('/init')) return reply({ code: 0, data: { flow_id: 'flow', authorize_url: 'https://zcode.z.ai/app/oauth/login', expires_at: Date.now() - 5 * 60000, server_time: Date.now() - 10 * 60000, poll_interval_sec: 1 } });
+    polled = true;
+    return reply({ code: 0, data: { status: 'denied' } });
+  });
+  await assert.rejects(zaiOAuth.login({ notify: () => {} }), /denied/);
+  assert.equal(polled, true, 'a skewed local clock does not end a live flow');
+});
+
 test('plan login refuses untrusted redirects and a substituted state', async (t) => {
   assert.equal(trustedPlanVerificationUrl('minimax', 'https://account.minimax.io/verify'), true);
   for (const url of ['http://account.minimax.io', 'https://account.minimax.io.evil.test', 'https://user@account.minimax.io', 'https://account.minimax.io:444']) {

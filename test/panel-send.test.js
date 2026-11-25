@@ -384,10 +384,11 @@ test('a question that was answered in the composer is cleared after the answer w
   assert.equal(app.$('sendBtn').hidden, false, 'the send button is visible again after answering');
 });
 
-test('closeMicWindow removes only the extension microphone tab URL and leaves unrelated mic.html pages alone', async () => {
-  const closeMicSource = source.slice(source.indexOf('function closeMicWindow('), source.indexOf('\n/** What the microphone window heard.'));
+test('closeMicWindow removes only the extension microphone tab and leaves unrelated or foreign ones alone', async () => {
+  const closeMicSource = source.slice(source.indexOf('function isMicTabOfEpoch('), source.indexOf('\n/** What the microphone window heard.'));
   const removed = [];
   const context = vm.createContext({
+    URL,
     micEpoch: 4,
     micWindowId: null,
     micCaptureOpen: true,
@@ -405,6 +406,8 @@ test('closeMicWindow removes only the extension microphone tab URL and leaves un
           { id: 10, url: 'chrome-extension://ext-id/src/sidepanel/mic.html?epoch=4' },
           { id: 11, url: 'https://example.com/docs/mic.html' },
           { id: 12, url: 'chrome-extension://other-id/src/sidepanel/mic.html' },
+          { id: 13, url: 'chrome-extension://ext-id/src/sidepanel/mic.html?epoch=9' }, // the microphone of another panel's capture
+          { id: 14, url: 'chrome-extension://ext-id/src/sidepanel/mic.html?epoch=4&tab=1' }, // this capture moved into a tab
         ]),
         remove: (id) => {
           removed.push(id);
@@ -416,7 +419,7 @@ test('closeMicWindow removes only the extension microphone tab URL and leaves un
   vm.runInContext(closeMicSource, context);
   context.closeMicWindow();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(removed, [10]);
+  assert.deepEqual(removed, [10, 14]);
 });
 
 test('showStartupError writes visible notices on the chat screen as well as settingsError', () => {

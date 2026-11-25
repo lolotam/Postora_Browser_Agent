@@ -6,6 +6,8 @@ const MAX_SILENCE_MS = 2000;
 const MAX_PHRASE_SAMPLES = 512000;
 const MAX_QUEUED_SAMPLES = 32000;
 const SPEECH_RMS = 0.012;
+// How long a stop waits for the model to close the phrase before it ends anyway.
+const STOP_FINAL_WAIT_MS = 5000;
 
 function clampSilence(ms) {
   const n = Number(ms);
@@ -47,6 +49,8 @@ export function createNemotronRecognition({
   let heardSpeech = false;
   let silenceTimer = null;
   let phraseLimitTimer = null;
+  let stopTimer = null;
+  let stopping = false;
   let finishing = false;
   let draining = false;
   let startPromise = null;
@@ -76,9 +80,14 @@ export function createNemotronRecognition({
     if (phraseLimitTimer != null) { clearTimer(phraseLimitTimer); phraseLimitTimer = null; }
   }
 
+  function clearStopTimer() {
+    if (stopTimer != null) { clearTimer(stopTimer); stopTimer = null; }
+  }
+
   async function teardown(closeStream = true) {
     clearSilenceTimer();
     clearPhraseLimitTimer();
+    clearStopTimer();
     captureRetired = true;
     const s = stream; stream = null;
     const ms = mediaStream; mediaStream = null;
@@ -211,7 +220,7 @@ export function createNemotronRecognition({
     phraseSamples = 0;
     inFlightSamples = 0;
     if (text) emitResult(text, true);
-    if (!api.continuous) {
+    if (!api.continuous || stopping) {
       retireEpoch();
       void teardown(true).then(() => { if (captureRetired) try { api.onend?.(); } catch {} });
       return;
@@ -258,7 +267,7 @@ export function createNemotronRecognition({
   }
 
   function handleChunkMessage(data) {
-    if (!active() || captureRetired) return;
+    if (!active() || captureRetired || stopping) return;
     if (!data || data.type !== 'pcm') return;
     const samples = data.samples instanceof Float32Array ? data.samples : (data.samples ? Float32Array.from(data.samples) : new Float32Array(0));
     const rms = Number.isFinite(data.rms) ? data.rms : 0;
@@ -266,7 +275,9 @@ export function createNemotronRecognition({
       heardSpeech = true;
       clearSilenceTimer();
       if (!phraseLimitTimer) schedulePhraseLimit();
-    } else if (heardSpeech) {
+    } else if (heardSpeech && silenceTimer == null) {
+      // The timeout runs from the last speech: a silent chunk that follows
+      // another silent chunk does not start it again.
       scheduleSilenceFinalize();
     }
     try { api.onprocessing?.(); } catch {}
@@ -276,6 +287,7 @@ export function createNemotronRecognition({
   api.start = () => {
     if (startPromise || (!captureRetired && stream)) return;
     captureRetired = false;
+    stopping = false;
     activeEpoch = epoch;
     const myEpoch = epoch;
     startPromise = (async () => {
@@ -323,9 +335,25 @@ export function createNemotronRecognition({
   };
 
   api.stop = () => {
-    if (captureRetired) return;
-    retireEpoch();
-    void teardown(true).then(() => { try { api.onend?.(); } catch {} });
+    if (captureRetired || stopping) return;
+    const pending = heardSpeech || finishing || Boolean(combinedText());
+    if (!pending) {
+      retireEpoch();
+      void teardown(true).then(() => { try { api.onend?.(); } catch {} });
+      return;
+    }
+    // What was said and is not closed yet is closed first: its final result
+    // is delivered, and only then the capture ends. A model that does not
+    // answer does not keep the microphone waiting.
+    stopping = true;
+    clearSilenceTimer();
+    stopTimer = setTimer(() => {
+      stopTimer = null;
+      if (captureRetired) return;
+      retireEpoch();
+      void teardown(true).then(() => { try { api.onend?.(); } catch {} });
+    }, STOP_FINAL_WAIT_MS);
+    if (!finishing) void finishPhrase();
   };
 
   api.abort = () => {

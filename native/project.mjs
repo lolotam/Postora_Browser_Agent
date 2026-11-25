@@ -58,13 +58,13 @@ async function assertRootPinned(canonicalRoot, allowedRoots) {
 }
 
 /** Bounded initial context: recursive inventory and text, with explicit limits. */
-async function projectContext(root) {
+async function projectContext(root, allowedRoots = null) {
   const paths = [], directories = ['.'], files = [], errors = [];
   let truncated = false, characters = 0, pathCharacters = 0;
   for (let index = 0; index < directories.length; index++) {
     const relative = directories[index];
     let entries;
-    try { entries = await fs.readdir(await projectPath(root, relative), { withFileTypes: true }); }
+    try { entries = await fs.readdir(await projectPath(root, relative, { allowedRoots }), { withFileTypes: true }); }
     catch { errors.push(relative); continue; }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
@@ -87,7 +87,7 @@ async function projectContext(root) {
     if (characters >= 48000) { truncated = true; break; }
     if (!/\.(md|txt|json|ya?ml|toml|ini|csv|ts|tsx|js|jsx|mjs|cjs|py|html|css|sql|sh|ps1|go|rs|java|cs|php|xml|vue|svelte)$/i.test(file)) continue;
     try {
-      const target = await projectPath(root, file);
+      const target = await projectPath(root, file, { allowedRoots });
       const stat = await fs.stat(target);
       if (!stat.isFile() || stat.size > 1024 * 1024) continue;
       const bytes = await fs.readFile(target);
@@ -156,7 +156,7 @@ export async function projectOperation(message, { signal = null, beforeCommit = 
   throwIfPreCommitAborted(signal);
   const project = await projectInfo(message.root, { allowedRoots });
   if (message.type === 'project-info') return { ...project };
-  if (message.type === 'project-context') return projectContext(project.root);
+  if (message.type === 'project-context') return projectContext(project.root, allowedRoots);
   const relative = message.path ?? '.';
   const isWrite = message.type === 'project-write';
   const target = await projectPath(project.root, relative, { create: isWrite, forWrite: isWrite, allowedRoots });

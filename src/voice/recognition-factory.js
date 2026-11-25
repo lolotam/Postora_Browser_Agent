@@ -28,7 +28,7 @@ export function createConfiguredRecognition(settings, dependencies = {}) {
   } = dependencies;
   const config = structuredClone(settings?.transcription ?? {});
   if (config.mode === 'browser') return createBrowserRecognition();
-  if (config.provider === 'local-nemotron') return createNemotron();
+  if (config.provider === 'local-nemotron') return createNemotron({ endSilenceMs: config.endSilenceMs });
   return createAudio({
     endSilenceMs: config.endSilenceMs,
     checkConfiguration: () => validate(config),

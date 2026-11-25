@@ -432,7 +432,18 @@ export function snapshotPage(maxElements, maxTextChars, rule, generation) {
 export function focusInFrame() {
   let el = document.activeElement;
   while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
-  return el?.tagName === 'IFRAME';
+  // `focused`: the window itself has the focus, so a child frame that does not
+  // hold the focus chain is a different frame than the one that has it.
+  return { iframe: el?.tagName === 'IFRAME', focused: typeof document.hasFocus === 'function' && document.hasFocus() };
+}
+
+/**
+ * Whether this frame's document is in the focus chain. A sibling frame that
+ * took the focus leaves this one with a retained activeElement, but not with
+ * the focus.
+ */
+export function frameHasFocus() {
+  return document.hasFocus();
 }
 
 /**
@@ -652,6 +663,42 @@ export function elementAction(index, action, value, quiet, rule, target, generat
     setTimeout(() => { el.style.outline = prev; }, 700);
   };
 
+  // The control must be what a real click would reach: another element that
+  // covers it, in this document or in a same-origin ancestor document, takes
+  // the click instead. A cross-origin ancestor cannot be asked from here.
+  const reachable = (node) => {
+    const box = node.getBoundingClientRect();
+    let px = box.left + box.width / 2;
+    let py = box.top + box.height / 2;
+    const deep = (doc, x, y) => {
+      let hit = doc.elementFromPoint(x, y);
+      while (hit?.shadowRoot?.elementFromPoint) {
+        const next = hit.shadowRoot.elementFromPoint(x, y);
+        if (!next || next === hit) break;
+        hit = next;
+      }
+      return hit;
+    };
+    const controls = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="option"],[role="textbox"],[contenteditable],[onclick],[tabindex]';
+    let reached = false;
+    for (let walk = deep(document, px, py); walk; walk = walk.parentElement ?? walk.getRootNode?.()?.host ?? null) {
+      if (walk === node) { reached = true; break; }
+      if (walk.matches?.(controls)) break;
+    }
+    if (!reached) return false;
+    try {
+      for (let win = window; win.frameElement; win = win.parent) {
+        const frame = win.frameElement;
+        const at = frame.getBoundingClientRect();
+        px += at.left + frame.clientLeft;
+        py += at.top + frame.clientTop;
+        const over = deep(frame.ownerDocument, px, py);
+        if (over !== frame && !frame.contains?.(over)) return false;
+      }
+    } catch { /* a cross-origin ancestor is not reachable */ }
+    return true;
+  };
+
   // A click and a focus done in the frame itself: the only way to reach an
   // element that lives inside an iframe, where CDP viewport coordinates of
   // the top document never land. The full pointer and mouse sequence is
@@ -660,6 +707,7 @@ export function elementAction(index, action, value, quiet, rule, target, generat
   if (action === 'activate') {
     el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
     flash();
+    if (!reachable(el)) return { error: `Element [${index}] is covered by another element, so the click would not reach it. Nothing was clicked.` };
     const box = el.getBoundingClientRect();
     const at = {
       bubbles: true, cancelable: true, composed: true, view: window,
@@ -671,7 +719,15 @@ export function elementAction(index, action, value, quiet, rule, target, generat
     const clicks = value?.double ? 2 : 1;
     for (let i = 1; i <= clicks; i += 1) {
       el.dispatchEvent(new Pointer('pointerdown', { ...at, pointerId: 1, isPrimary: true, detail: i }));
-      el.dispatchEvent(new Mouse('mousedown', { ...at, detail: i }));
+      const pressed = el.dispatchEvent(new Mouse('mousedown', { ...at, detail: i }));
+      // A synthetic press does not take the browser's focus step: the press
+      // moves the focus to the control (or off the old one) unless the page
+      // cancelled it.
+      if (pressed && i === 1) {
+        const focusable = el.closest?.('a[href],button,input,textarea,select,summary,[tabindex],[contenteditable]:not([contenteditable="false"])');
+        if (focusable && typeof focusable.focus === 'function') focusable.focus({ preventScroll: true });
+        else document.activeElement?.blur?.();
+      }
       el.dispatchEvent(new Pointer('pointerup', { ...at, pointerId: 1, isPrimary: true, detail: i }));
       el.dispatchEvent(new Mouse('mouseup', { ...at, detail: i }));
       el.dispatchEvent(new Mouse('click', { ...at, detail: i }));
@@ -719,10 +775,13 @@ export function elementAction(index, action, value, quiet, rule, target, generat
       const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null;
       if (node.scrollHeight > node.clientHeight + 8 && style && /(auto|scroll|overlay)/.test(style.overflowY)) pane = node;
     }
-    const target2 = pane ?? el;
-    const page = target2.clientHeight || window.innerHeight || 600;
-    target2.scrollBy({ top: sign * screens * page * 0.85, behavior: 'instant' });
-    return { ok: true, top: Math.round(target2.scrollTop), pane: Boolean(pane) };
+    // With no inner pane the document itself turns: a button has no overflow,
+    // and scrolling it would report success without any movement.
+    const scroller = pane ?? document.scrollingElement ?? document.documentElement;
+    const page = pane ? (pane.clientHeight || window.innerHeight || 600) : (window.innerHeight || scroller.clientHeight || 600);
+    if (pane) pane.scrollBy({ top: sign * screens * page * 0.85, behavior: 'instant' });
+    else window.scrollBy({ top: sign * screens * page * 0.85, behavior: 'instant' });
+    return { ok: true, top: Math.round(scroller.scrollTop), pane: Boolean(pane) };
   }
   if (action === 'locate') {
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -924,7 +983,44 @@ export function suggestionAction(index, wanted, mode, rule, target) {
     // top document never reach a child frame's viewport.
     if (matches.length !== 1) return { error: `The list changed: ${matches.length} options now read "${wanted}". Nothing was clicked.` };
     const option = matches[0];
+  // The control must be what a real click would reach: another element that
+  // covers it, in this document or in a same-origin ancestor document, takes
+  // the click instead. A cross-origin ancestor cannot be asked from here.
+  const reachable = (node) => {
+    const box = node.getBoundingClientRect();
+    let px = box.left + box.width / 2;
+    let py = box.top + box.height / 2;
+    const deep = (doc, x, y) => {
+      let hit = doc.elementFromPoint(x, y);
+      while (hit?.shadowRoot?.elementFromPoint) {
+        const next = hit.shadowRoot.elementFromPoint(x, y);
+        if (!next || next === hit) break;
+        hit = next;
+      }
+      return hit;
+    };
+    const controls = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="option"],[role="textbox"],[contenteditable],[onclick],[tabindex]';
+    let reached = false;
+    for (let walk = deep(document, px, py); walk; walk = walk.parentElement ?? walk.getRootNode?.()?.host ?? null) {
+      if (walk === node) { reached = true; break; }
+      if (walk.matches?.(controls)) break;
+    }
+    if (!reached) return false;
+    try {
+      for (let win = window; win.frameElement; win = win.parent) {
+        const frame = win.frameElement;
+        const at = frame.getBoundingClientRect();
+        px += at.left + frame.clientLeft;
+        py += at.top + frame.clientTop;
+        const over = deep(frame.ownerDocument, px, py);
+        if (over !== frame && !frame.contains?.(over)) return false;
+      }
+    } catch { /* a cross-origin ancestor is not reachable */ }
+    return true;
+  };
+
     option.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    if (!reachable(option)) return { error: `Option "${wanted}" is covered by another element, so the click would not reach it. Nothing was clicked.` };
     const r = option.getBoundingClientRect();
     const at = {
       bubbles: true, cancelable: true, composed: true, view: window,
@@ -1210,6 +1306,9 @@ export function permissionTarget(kind, arg, rule) {
       documentId: String(performance.timeOrigin),
       generation: window.__agentGeneration ?? null,
       element: shape(el, what, token, index, point),
+      // Whether this document is in the focus chain: a frame that held the
+      // focus before another one took it still has its own activeElement.
+      hasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : null,
     };
   }
 

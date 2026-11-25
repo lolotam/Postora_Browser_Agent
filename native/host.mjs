@@ -108,7 +108,14 @@ async function startStreamMode(firstMessage, { stdin = process.stdin, stdout = p
     }
   };
 
+  // Input can end while the model is still loading: the stream does not exist
+  // yet, so the end is recorded and acted on as soon as it does.
+  let inputEnded = false;
+  const onInputEnd = () => { inputEnded = true; void stream?.cancel?.(); };
+  stdin.on('end', onInputEnd);
+  stdin.on('error', onInputEnd);
   await runMessage(firstMessage);
+  if (inputEnded) await stream?.cancel?.();
   const parser = createFrameParser((message) => { void runMessage(message); }, { maxBuffered: MAX_STREAM_QUEUE, maxMessage: MAX_STREAM_MESSAGE });
   // The first chunk can carry more than the frame that opened the stream.
   if (rest.length) {
@@ -125,8 +132,6 @@ async function startStreamMode(firstMessage, { stdin = process.stdin, stdout = p
       void stream?.cancel?.();
     }
   });
-  stdin.on('end', () => { void stream?.cancel?.(); });
-  stdin.on('error', () => { void stream?.cancel?.(); });
 }
 
 function isAuthorizedOrigin(origin, configOrigin) {

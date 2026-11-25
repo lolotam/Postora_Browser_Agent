@@ -8,7 +8,9 @@ export const LOCAL_MODELS = Object.freeze({
 export function normalizeLocal(config) {
   if (!config) return config;
   if (config.provider === 'local') {
-    return { ...config, provider: 'local-nemotron', ...LOCAL_MODELS['local-nemotron'] };
+    // Before the two local models, `local` was Whisper: a user with it
+    // installed keeps it. Nemotron is an explicit choice.
+    return { ...config, provider: 'local-whisper', ...LOCAL_MODELS['local-whisper'] };
   }
   if (Object.hasOwn(LOCAL_MODELS, config.provider)) {
     return { ...config, endpoint: '', model: config.model || LOCAL_MODELS[config.provider].model };

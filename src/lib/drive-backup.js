@@ -193,7 +193,7 @@ export function afterGoogleSignIn({ getToken = googleAccessToken } = {}) {
     await saveState({}); // the state names a file in the previous account's Drive
     const file = await findBackupFile(await getToken());
     if (!file) return { backup: await upload(getToken) };
-    if (isFreshSetup(await exportBackup())) return { restored: await restore(getToken) };
+    if (isFreshSetup(await exportBackup({ includeSessions: false }))) return { restored: await restore(getToken) };
     return { available: file.modifiedTime };
   });
 }
