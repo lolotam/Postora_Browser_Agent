@@ -46,7 +46,7 @@ const resizeComposer = bindComposerSize($('input'));
 // question is answered once, and a second answer to it is refused.
 import { contextWindowFor } from '../lib/context-window.js';
 
-const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' }, liveStatus: { step: 0, tool: '', model: '' } };
+const ui = { thread: null, compacting: null, pending: [], running: false, stopping: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' }, liveStatus: { step: 0, tool: '', model: '' } };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -1295,22 +1295,41 @@ function releaseAnswer(questionId) {
 function setRunning(running) {
   ui.running = running;
   if (!running) {
+    ui.stopping = false;
     closeThread();
     $('chatLog')?.classList?.remove('live');
   }
   updateChatLogStatus();
   $('statusDot').classList.toggle('running', running);
   $('stopBtn').hidden = !running;
+  $('stopBtn').disabled = running && Boolean(ui.stopping);
   $('voiceToggle').hidden = running;
   $('workspaceStopBtn').hidden = !running || ($('settingsView').hidden && $('voiceView').hidden);
+  $('workspaceStopBtn').disabled = running && Boolean(ui.stopping);
   $('sendBtn').hidden = false; // while running, a message steers the task (see steerMode)
   if (!running) {
     ui.question = null;
     showPendingQuestion(null);
     $('hint').textContent = '';
+  } else if (ui.stopping) {
+    $('hint').textContent = t('status.stopping');
   } else if (!ui.question) {
     $('hint').textContent = t('status.running');
   }
+}
+
+function requestStopTask() {
+  if (!ui.running || ui.stopping) return;
+  ui.stopping = true;
+  $('stopBtn').disabled = true;
+  if ($('workspaceStopBtn')) $('workspaceStopBtn').disabled = true;
+  $('hint').textContent = t('status.stopping');
+  send({ type: 'stop' }).catch(() => {
+    ui.stopping = false;
+    $('stopBtn').disabled = false;
+    if ($('workspaceStopBtn')) $('workspaceStopBtn').disabled = false;
+    if (ui.running && !ui.question) $('hint').textContent = t('status.running');
+  });
 }
 
 const STICK_THRESHOLD_PX = 24;
@@ -2308,7 +2327,7 @@ $('input').addEventListener('keydown', (e) => {
     $('composer').requestSubmit();
   }
 });
-$('stopBtn').addEventListener('click', () => send({ type: 'stop' }));
+$('stopBtn').addEventListener('click', () => requestStopTask());
 $('resumeBtn').addEventListener('click', async () => {
   const expectedSessionId = sessionId;
   $('resumeBtn').disabled = true;
@@ -2559,7 +2578,7 @@ $('sessionSearch').addEventListener('input', renderSessionList);
 // browser owns it), then a menu, then a settings page. Nothing is skipped
 // past, and nothing is closed twice by one keypress.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
   if ($('modelDialog').open || $('accessWarning').open || $('projectDialog').open || $('projectFilesDialog').open) return;
   if (!$('sessionMenu').hidden) { closeSessionMenu(); $('sessionBtn').focus(); return; }
   if (!$('overflowMenu').hidden) { closeOverflowMenu(); $('overflowBtn').focus(); return; }
@@ -2568,6 +2587,11 @@ document.addEventListener('keydown', (e) => {
   if (!$('settingsView').hidden && settingsNav.section() !== null) {
     settingsNav.back();
     syncFooter();
+    return;
+  }
+  if ($('settingsView').hidden && $('voiceView').hidden && ui.running && !composerAutocomplete.isOpen()) {
+    e.preventDefault();
+    requestStopTask();
   }
 });
 document.addEventListener('click', (e) => {
