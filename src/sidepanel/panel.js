@@ -478,6 +478,7 @@ function onEvent(event) {
         event.events.forEach(onEvent);
         ui.replayed = true;
         replaying = false;
+        scrollDown({ force: true });
       }
       setRunning(event.running);
       $('resumeRow').hidden = event.running || !event.resumable;
@@ -599,25 +600,23 @@ function onEvent(event) {
       break;
     case 'reasoning-delta':
       ui.liveReasoning ??= threadPart('msg reasoning');
-      ui.liveReasoning.textContent += event.delta;
-      ui.liveReasoning.dir = contentDirection(ui.liveReasoning.textContent);
-      if (ui.thread) {
-        ui.thread.reasoning += event.delta;
-        ui.thread.title.textContent = threadTitle(ui.thread);
-      }
-      scrollDown();
+      pendingReasoningDelta += event.delta;
+      scheduleDeltaFlush();
       break;
     case 'text-delta':
       ui.liveText ??= threadPart('msg assistant');
-      ui.liveText.textContent += event.delta;
-      ui.liveText.dir = contentDirection(ui.liveText.textContent);
-      scrollDown();
+      pendingTextDelta += event.delta;
+      scheduleDeltaFlush();
       break;
     case 'text-reset':
+      pendingTextDelta = '';
+      flushPendingDeltas();
       ui.liveText?.remove();
       ui.liveText = null;
       break;
     case 'assistant-text':
+      pendingTextDelta = '';
+      flushPendingDeltas();
       {
         const node = ui.liveText ?? threadPart('msg assistant');
         node.textContent = '';
@@ -876,6 +875,7 @@ function openThread(step, model = '') {
     log.classList.add('live');
   }
   ui.trace = null;
+  collapseOldThreads();
   const box = Object.assign(document.createElement('details'), { className: 'thread', open: false });
   const summary = document.createElement('summary');
   const title = span('title', t('thread.thinking'));
@@ -889,9 +889,18 @@ function openThread(step, model = '') {
   box.append(summary, body);
   $('messages').append(box);
   const thread = { box, title, meta, modelTag, body, step, reasoning: '', text: '', tools: [], trace: null, userToggled: false };
-  summary.addEventListener('click', () => { thread.userToggled = true; });
+  summary.addEventListener('click', () => {
+    thread.userToggled = true;
+    box.dataset.userToggled = 'true';
+  });
   ui.thread = thread;
   scrollDown();
+}
+
+function collapseOldThreads() {
+  $('messages')?.querySelectorAll?.('.thread[open]')?.forEach?.((node) => {
+    if (!node.dataset?.userToggled) node.open = false;
+  });
 }
 
 /**
@@ -905,6 +914,7 @@ function showThreadModel(tag, model) {
 }
 
 function closeThread() {
+  flushPendingDeltas();
   const thread = ui.thread;
   if (!thread) return;
   if (!thread.userToggled) thread.box.open = false;
@@ -1243,9 +1253,82 @@ function setRunning(running) {
   }
 }
 
-function scrollDown() {
+const STICK_THRESHOLD_PX = 24;
+let stickToBottom = true;
+let pendingReasoningDelta = '';
+let pendingTextDelta = '';
+let deltaFrame = null;
+
+function isNearBottom(box) {
+  if (!box) return true;
+  const distance = (Number(box.scrollHeight) || 0) - (Number(box.scrollTop) || 0) - (Number(box.clientHeight) || 0);
+  return distance <= STICK_THRESHOLD_PX;
+}
+
+function updateJumpChip() {
+  const btn = $('jumpLatestBtn');
+  if (btn) btn.hidden = stickToBottom;
+}
+
+function scrollDown({ force = false } = {}) {
+  if (replaying && !force) return;
   const box = $('messages');
-  box.scrollTop = box.scrollHeight;
+  if (!box) return;
+  if (force) stickToBottom = true;
+  if (stickToBottom) {
+    box.scrollTop = box.scrollHeight;
+  }
+  updateJumpChip();
+}
+
+$('messages')?.addEventListener?.('scroll', () => {
+  stickToBottom = isNearBottom($('messages'));
+  updateJumpChip();
+});
+
+$('jumpLatestBtn')?.addEventListener?.('click', () => {
+  scrollDown({ force: true });
+});
+
+function flushPendingDeltas() {
+  if (deltaFrame !== null) {
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(deltaFrame);
+    deltaFrame = null;
+  }
+  let didFlush = false;
+  if (pendingReasoningDelta) {
+    const delta = pendingReasoningDelta;
+    pendingReasoningDelta = '';
+    ui.liveReasoning ??= threadPart('msg reasoning');
+    ui.liveReasoning.textContent += delta;
+    ui.liveReasoning.dir = contentDirection(ui.liveReasoning.textContent);
+    if (ui.thread) {
+      ui.thread.reasoning += delta;
+      ui.thread.title.textContent = threadTitle(ui.thread);
+    }
+    didFlush = true;
+  }
+  if (pendingTextDelta) {
+    const delta = pendingTextDelta;
+    pendingTextDelta = '';
+    ui.liveText ??= threadPart('msg assistant');
+    ui.liveText.textContent += delta;
+    ui.liveText.dir = contentDirection(ui.liveText.textContent);
+    didFlush = true;
+  }
+  if (didFlush) scrollDown();
+}
+
+function scheduleDeltaFlush() {
+  if (replaying || typeof requestAnimationFrame !== 'function') {
+    flushPendingDeltas();
+    return;
+  }
+  if (deltaFrame !== null) return;
+  deltaFrame = requestAnimationFrame(() => {
+    deltaFrame = null;
+    flushPendingDeltas();
+  });
 }
 
 let attachments = [];
