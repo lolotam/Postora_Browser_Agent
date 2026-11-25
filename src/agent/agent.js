@@ -194,7 +194,15 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
         if (observedFp) pageFingerprint = observedFp;
         let toolOutput = result.output;
         if (kindOf(call.name) !== 'bookkeeping') {
-          const actionHash = hashStallKey(call.name, call.args, pageFingerprint);
+          const imageFp = Array.isArray(result.images) && result.images.length
+            ? `img:${hashText(result.images.join('|'))}`
+            : '';
+          const stateFp = observedFp
+            ? pageFingerprint
+            : imageFp
+              ? `${pageFingerprint}|${imageFp}`
+              : (pageFingerprint === 'initial' ? hashText(String(result.output ?? '').trim()) : pageFingerprint);
+          const actionHash = hashStallKey(call.name, call.args, stateFp);
           const count = (actionCounts.get(actionHash) ?? 0) + 1;
           actionCounts.set(actionHash, count);
           if (count > STALL_STOP_REPEATS) {
@@ -300,7 +308,7 @@ function fingerprintOutput(output) {
   const text = String(output ?? '');
   const idx = text.indexOf('\nURL: ');
   const start = idx >= 0 ? idx + 1 : (text.startsWith('URL: ') ? 0 : -1);
-  if (start < 0) return hashText(text.trim());
+  if (start < 0) return null;
   const noteAt = text.indexOf('Your notes (', start);
   const slice = (noteAt >= 0 ? text.slice(start, noteAt) : text.slice(start))
     .replace(/^Generation:\s*\d+\r?\n/m, '')
