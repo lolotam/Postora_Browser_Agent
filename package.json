@@ -5,6 +5,7 @@
   "description": "Chrome extension: an AI agent that operates the browser using a ChatGPT subscription or an OpenAI-compatible API.",
   "type": "module",
   "scripts": {
+    "lint": "eslint .",
     "test": "node --test \"test/**/*.test.js\"",
     "build:vendor": "node scripts/build-vendor.mjs",
     "e2e": "node test/e2e/run-e2e.mjs",
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "1.1.0",
     "esbuild": "0.25.11",
+    "eslint": "^10.15.0",
     "playwright-core": "1.56.1"
   },
   "dependencies": {
