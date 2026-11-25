@@ -372,14 +372,94 @@ test('a newer question keeps the button and the hint of a question that waits', 
   assert.equal(app.$('sendBtn').hidden, false, 'the button of the newer question is kept');
 });
 
-test('a question that was answered in the composer is cleared after the answer went out', async () => {
+test('a question that was answered in the composer is cleared after the answer went out and restores the send button', async () => {
   const app = panel();
   app.ui.question = 'Which one do you mean?';
   app.ui.questionId = 3;
+  app.$('sendBtn').hidden = true;
 
   await app.submitComposer('the first one');
 
   assert.equal(app.ui.question, null, 'the question is cleared once the answer went out');
+  assert.equal(app.$('sendBtn').hidden, false, 'the send button is visible again after answering');
+});
+
+test('closeMicWindow removes only the extension microphone tab URL and leaves unrelated mic.html pages alone', async () => {
+  const closeMicSource = source.slice(source.indexOf('function closeMicWindow('), source.indexOf('\n/** What the microphone window heard.'));
+  const removed = [];
+  const context = vm.createContext({
+    micEpoch: 4,
+    micWindowId: null,
+    micCaptureOpen: true,
+    MIC_PANEL: 'postora-mic-panel',
+    chrome: {
+      runtime: {
+        getURL: (p) => `chrome-extension://ext-id/${p}`,
+        sendMessage: () => Promise.resolve(),
+      },
+      windows: {
+        remove: () => Promise.resolve(),
+      },
+      tabs: {
+        query: () => Promise.resolve([
+          { id: 10, url: 'chrome-extension://ext-id/src/sidepanel/mic.html?epoch=4' },
+          { id: 11, url: 'https://example.com/docs/mic.html' },
+          { id: 12, url: 'chrome-extension://other-id/src/sidepanel/mic.html' },
+        ]),
+        remove: (id) => {
+          removed.push(id);
+          return Promise.resolve();
+        },
+      },
+    },
+  });
+  vm.runInContext(closeMicSource, context);
+  context.closeMicWindow();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(removed, [10]);
+});
+
+test('showStartupError writes visible notices on the chat screen as well as settingsError', () => {
+  const noticesSource = source.slice(source.indexOf('const NOTICE_TEXT ='), source.indexOf('\nconst PENDING_CHIP ='));
+  const startupSource = source.slice(source.indexOf('function showSettingsError('), source.indexOf('\npick(startSessions)'));
+  const elements = new Map();
+  const context = vm.createContext({
+    MAX_NOTICES: 3,
+    ui: { notices: [] },
+    t: (k) => k,
+    send: () => {},
+    document: {
+      createElement: (tag) => ({
+        tag,
+        className: '',
+        title: '',
+        dir: '',
+        textContent: '',
+        children: [],
+        setAttribute() {},
+        addEventListener() {},
+        append(...nodes) { this.children.push(...nodes); },
+      }),
+    },
+    $: (id) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          hidden: true,
+          textContent: '',
+          children: [],
+          scrollIntoView() {},
+          replaceChildren(...nodes) { this.children = nodes; },
+        });
+      }
+      return elements.get(id);
+    },
+  });
+  vm.runInContext(`${noticesSource}\n${startupSource}`, context);
+  context.showStartupError('Worker failed to start');
+  assert.equal(context.$('settingsError').textContent, 'Worker failed to start');
+  assert.equal(context.$('settingsError').hidden, false);
+  assert.equal(context.$('notices').children.length, 1);
+  assert.equal(context.$('notices').children[0].children[0].textContent, '⚠ Worker failed to start');
 });
 
 test('a question is answered once: a second answer is refused and the draft is kept', async () => {
