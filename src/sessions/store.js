@@ -84,7 +84,9 @@ export function validateSessions(archive) {
     const { meta, body } = entry ?? {};
     if (!meta || typeof meta.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(meta.id) || ids.has(meta.id)
       || typeof meta.title !== 'string' || !Number.isFinite(meta.createdAt) || !Number.isFinite(meta.updatedAt)
-      || !body || !Array.isArray(body.transcript) || body.transcript.some((e) => !e || typeof e.type !== 'string')
+      || !body || typeof body !== 'object' || Array.isArray(body)
+      || Object.prototype.hasOwnProperty.call(body, 'meta')
+      || !Array.isArray(body.transcript) || body.transcript.some((e) => !e || typeof e.type !== 'string')
       || (body.log != null && (typeof body.log !== 'object' || Array.isArray(body.log)))
       || (body.continuation != null && (typeof body.continuation.task !== 'string' || !body.continuation.task.trim()))) {
       throw new Error('This backup is damaged: a session cannot be read.');
@@ -112,10 +114,11 @@ export function importSessions(archive) {
     const writes = {};
     const added = [];
     for (const { meta, body } of entries) {
-      const portable = { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
+      const { project: _droppedProject, meta: _droppedMeta, ...restBody } = body;
+      const portable = { ...restBody, project: null, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null };
       if (used.has(meta.id)) {
         const current = await loadSession(meta.id);
-        const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.project, value?.continuation ? { ...value.continuation, tabId: null } : null];
+        const historyFields = (value) => [value?.transcript, value?.log, value?.notebook, value?.pending, value?.continuation ? { ...value.continuation, tabId: null } : null];
         if (JSON.stringify(historyFields(current)) === JSON.stringify(historyFields(portable))) continue;
       }
       const id = used.has(meta.id) ? crypto.randomUUID() : meta.id;

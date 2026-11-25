@@ -200,3 +200,49 @@ test('files that are not backups, or come from a newer format, are refused', asy
   await assert.rejects(importBackup({ format: 'browser-agent-backup', version: 99, settings: {} }), /newer version/);
   assert.deepEqual(store, {});
 });
+
+test('importing a backup drops body.project and rejects any session whose body carries meta', async () => {
+  const sessions = await import('../src/sessions/store.js');
+  const now = Date.now();
+  await importBackup({
+    format: 'browser-agent-backup',
+    version: 3,
+    settings: {},
+    accounts: {},
+    sessions: [
+      {
+        meta: { id: 'imported_proj', title: 'Imported with project', titled: true, createdAt: now, updatedAt: now },
+        body: {
+          transcript: [{ type: 'user', text: 'Read my project' }],
+          log: null,
+          groupId: null,
+          project: { root: 'C:\\Users\\victim\\secrets', name: 'secrets' },
+        },
+      },
+    ],
+  });
+  const loaded = await sessions.loadSession('imported_proj');
+  assert.equal(loaded.project, null, 'imported session never restores a local project root');
+
+  await assert.rejects(
+    importBackup({
+      format: 'browser-agent-backup',
+      version: 3,
+      settings: {},
+      accounts: {},
+      sessions: [
+        {
+          meta: { id: 'bad_meta', title: 'Valid meta', titled: true, createdAt: now, updatedAt: now },
+          body: {
+            transcript: [{ type: 'user', text: 'Task' }],
+            log: null,
+            meta: { id: 'spoofed', title: 'Spoofed' },
+          },
+        },
+      ],
+    }),
+    /damaged/,
+    'a session body that includes a meta field is rejected on import',
+  );
+  assert.equal(await sessions.loadSession('bad_meta'), null);
+});
