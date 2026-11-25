@@ -528,7 +528,7 @@ test('BrowserController tracks CDP dialogs with an independent deadline, dismiss
     const controller = new BrowserController({ dialogDeadlineMs: 45 });
     await controller.startOn(7);
 
-    // 1. beforeunload is dismissed automatically and its message is recorded for the model.
+    // 1. beforeunload is dismissed automatically and its message is recorded for the model after confirmation.
     for (const fn of debuggerListeners) {
       fn({ tabId: 7 }, 'Page.javascriptDialogOpening', {
         type: 'beforeunload',
@@ -536,6 +536,8 @@ test('BrowserController tracks CDP dialogs with an independent deadline, dismiss
         url: 'https://shop.test/checkout',
       });
     }
+    await Promise.resolve();
+    await Promise.resolve();
     assert.equal(controller.pendingDialog(7), null, 'beforeunload does not stay open');
     assert.ok(sentCommands.some((c) => c.method === 'Page.handleJavaScriptDialog' && c.params.accept === true));
     assert.match(controller.takeBeforeUnloadNote(7), /Changes you made may not be saved/);

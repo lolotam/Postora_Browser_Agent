@@ -82,14 +82,27 @@ export async function projectPath(root, relative = '.', { create = false } = {})
   }
 }
 
+function throwIfPreCommitAborted(signal) {
+  if (!signal?.aborted) return;
+  let err;
+  try {
+    signal.throwIfAborted();
+  } catch (thrown) {
+    err = thrown instanceof Error ? thrown : new Error(String(thrown));
+  }
+  err ??= new Error('The project operation was aborted before committing.');
+  err.preCommitAbort = true;
+  throw err;
+}
+
 export async function projectOperation(message, { signal = null, beforeCommit = null } = {}) {
-  signal?.throwIfAborted?.();
+  throwIfPreCommitAborted(signal);
   const project = await projectInfo(message.root);
   if (message.type === 'project-info') return { ...project };
   if (message.type === 'project-context') return projectContext(project.root);
   const relative = message.path ?? '.';
   const target = await projectPath(project.root, relative, { create: message.type === 'project-write' });
-  signal?.throwIfAborted?.();
+  throwIfPreCommitAborted(signal);
   if (message.type === 'project-list') {
     const entries = await fs.readdir(target, { withFileTypes: true });
     return { path: relative, entries: entries.filter((entry) => !HIDDEN.has(entry.name) && !secret(entry.name) && !entry.isSymbolicLink())
@@ -112,6 +125,7 @@ export async function projectOperation(message, { signal = null, beforeCommit = 
     // those processes, including the final hash check and atomic replacement.
     const lockPath = `${target}.postora-write.lock`;
     let lock;
+    let committed = false;
     try { lock = await fs.open(lockPath, 'wx', 0o600); }
     catch (error) {
       if (error.code === 'EEXIST') throw new Error('File has an active or interrupted Postora write lock. Retry after the other write finishes; an interrupted lock requires user recovery.');
@@ -138,19 +152,33 @@ export async function projectOperation(message, { signal = null, beforeCommit = 
         }
         if (typeof beforeCommit === 'function') await beforeCommit();
         if (previous) {
-          signal?.throwIfAborted?.();
+          throwIfPreCommitAborted(signal);
           await fs.rename(temporary, target);
+          committed = true;
         } else {
           // Exclusive link creation is atomic and cannot overwrite a file that
           // appeared after the check for a new path.
-          signal?.throwIfAborted?.();
+          throwIfPreCommitAborted(signal);
           await fs.link(temporary, target);
+          committed = true;
         }
       } finally { await fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; }); }
       return { path: relative, hash: hash(Buffer.from(message.text)), bytes: Buffer.byteLength(message.text) };
+    } catch (error) {
+      if (committed && error && typeof error === 'object') {
+        error.committed = true;
+        error.preCommitAbort = false;
+      }
+      throw error;
     } finally {
-      await lock.close();
-      await fs.unlink(lockPath);
+      await lock.close().catch(() => {});
+      await fs.unlink(lockPath).catch((error) => {
+        if (committed && error && typeof error === 'object') {
+          error.committed = true;
+          error.preCommitAbort = false;
+        }
+        throw error;
+      });
     }
   }
   throw new Error('Unknown project operation.');

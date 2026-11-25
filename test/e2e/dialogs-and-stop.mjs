@@ -10,7 +10,7 @@ const DIALOG_PAGE = `<!doctype html><html><body>
 <button id="btn-confirm" onclick="setTimeout(() => { window.__confirmResult = confirm('Confirm order #42?'); document.getElementById('out').textContent = 'confirm=' + window.__confirmResult; }, 10)">Open confirm</button>
 <button id="btn-prompt" onclick="setTimeout(() => { window.__promptResult = prompt('Enter coupon code:', 'NONE'); document.getElementById('out').textContent += ' prompt=' + window.__promptResult; }, 10)">Open prompt</button>
 <button id="btn-alert" onclick="setTimeout(() => { alert('Order saved!'); document.getElementById('out').textContent += ' alert=closed'; }, 10)">Open alert</button>
-<button id="btn-hang" onclick="setTimeout(() => { confirm('Stuck confirm?'); }, 10)">Open stuck dialog</button>
+<button id="btn-hang" onclick="setTimeout(() => { window.__stuckConfirmOpened = true; window.__stuckConfirmResult = confirm('Stuck confirm?'); window.__stuckConfirmDismissed = (window.__stuckConfirmResult === false); }, 10)">Open stuck dialog</button>
 <div id="out">ready</div>
 </body></html>`;
 
@@ -149,19 +149,26 @@ export async function runDialogsAndStopScenario(context, extensionId) {
       failures.push(`dialog results mismatch on page: "${outText}" (report: "${report}")`);
     }
 
-    // Now test pressing Stop while a dialog-opening task is running: panel must return to idle within 2 s.
+    // Now test pressing Stop while a dialog-opening task is running: panel must return to idle within 2 s,
+    // and the open dialog on the page must be dismissed before cleanup.
     setMode('stop-test');
+    let resolveStuckDialog;
+    const stuckDialogOpened = new Promise((resolve) => { resolveStuckDialog = resolve; });
+    target.on('dialog', (dlg) => {
+      if (dlg.message() === 'Stuck confirm?') resolveStuckDialog();
+    });
     await target.bringToFront();
     await panel.fill('#input', 'Open stuck dialog and wait');
     await panel.evaluate(() => document.getElementById('sendBtn').click());
     await panel.waitForSelector('#stopBtn:not([hidden])', { timeout: 15000 });
-    await panel.waitForFunction(() => document.querySelectorAll('.step').length >= 4, { timeout: 15000 });
+    await stuckDialogOpened;
     const stopStarted = Date.now();
     await panel.evaluate(() => document.getElementById('stopBtn').click());
     await panel.waitForSelector('#stopBtn[hidden]', { state: 'attached', timeout: 2000 });
+    await target.waitForFunction(() => window.__stuckConfirmDismissed === true, { timeout: 2000 });
     const stopElapsed = Date.now() - stopStarted;
     if (stopElapsed > 2000) {
-      failures.push(`pressing Stop took ${stopElapsed}ms (> 2000ms) to return panel to idle`);
+      failures.push(`pressing Stop took ${stopElapsed}ms (> 2000ms) to return panel to idle and dismiss the dialog`);
     }
     return failures;
   } finally {

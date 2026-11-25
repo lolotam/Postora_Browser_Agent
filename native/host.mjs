@@ -42,7 +42,7 @@ export function killTree(pid) {
   });
 }
 
-export function createFrameParser(onMessage, { maxMessage = MAX_MESSAGE, maxBuffered = MAX_MESSAGE * 2 } = {}) {
+export function createFrameParser(onMessage, { maxMessage = MAX_MESSAGE, maxBuffered = MAX_MESSAGE * 2, sync = false } = {}) {
   let buffer = Buffer.alloc(0);
   let queued = Promise.resolve();
 
@@ -56,7 +56,11 @@ export function createFrameParser(onMessage, { maxMessage = MAX_MESSAGE, maxBuff
       const body = buffer.subarray(4, 4 + length).toString('utf8');
       buffer = buffer.subarray(4 + length);
       const message = JSON.parse(body);
-      queued = queued.then(() => onMessage(message), () => onMessage(message));
+      if (sync) {
+        onMessage(message);
+      } else {
+        queued = queued.then(() => onMessage(message), () => onMessage(message));
+      }
     }
   };
 }
@@ -172,6 +176,19 @@ export function startHost(origin, options = {}) {
     }
   };
 
+  const replyProjectCancellation = (err) => {
+    const confirmedPreCommit = err?.preCommitAbort === true && !err?.committed;
+    if (confirmedPreCommit) {
+      reply({ cancelled: true, outcome: 'stopped' });
+      return;
+    }
+    reply({
+      cancelled: true,
+      outcome: 'unknown',
+      ...(err?.message ? { error: err.message } : {}),
+    });
+  };
+
   const stopWork = async () => {
     if (cancelled) return;
     cancelled = true;
@@ -184,8 +201,8 @@ export function startHost(origin, options = {}) {
         const result = await projectTask;
         reply({ exitCode: 0, result });
         return;
-      } catch {
-        reply({ cancelled: true, outcome: 'stopped' });
+      } catch (err) {
+        replyProjectCancellation(err);
         return;
       }
     }
@@ -194,7 +211,7 @@ export function startHost(origin, options = {}) {
       reply({ cancelled: true, outcome: 'stopped' });
       return;
     }
-    if (!hadChild && currentType !== 'run') {
+    if (!hadChild) {
       reply({ cancelled: true, outcome: 'stopped' });
       return;
     }
@@ -255,7 +272,7 @@ export function startHost(origin, options = {}) {
         return;
       }
 
-      controlParser = createFrameParser(handleControlFrame, { maxBuffered: MAX_MESSAGE * 2, maxMessage: MAX_MESSAGE });
+      controlParser = createFrameParser(handleControlFrame, { maxBuffered: MAX_MESSAGE * 2, maxMessage: MAX_MESSAGE, sync: true });
       input = Buffer.alloc(0);
       if (rest.length) {
         try { controlParser(rest); } catch { /* Ignore malformed control bytes. */ }
@@ -305,7 +322,11 @@ export function startHost(origin, options = {}) {
       timer = setTimeout(() => { timedOut = true; void kill(); }, args.timeout);
     } catch (error) {
       if (cancelled) {
-        reply({ cancelled: true, outcome: 'stopped' });
+        if (currentType.startsWith('project-')) {
+          replyProjectCancellation(error);
+        } else {
+          reply({ cancelled: true, outcome: 'stopped' });
+        }
       } else {
         reply({ error: error.message });
       }

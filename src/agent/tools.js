@@ -117,8 +117,10 @@ export function createToolExecutor(rawBrowser, {
   const executionTimeoutFor = (name, args) => {
     if (toolTimeoutMs !== DEFAULT_TOOL_TIMEOUT_MS) return toolTimeoutMs;
     // @store-strip-start
-    if ((name === 'project_run' || name === 'run_terminal') && Number.isFinite(Number(args?.timeout_ms))) {
-      return Math.min(Math.max(Number(args.timeout_ms), 1000), 60000) + 5000;
+    if (name === 'project_run' || name === 'run_terminal') {
+      const raw = args?.timeout_ms == null ? 30000 : Number(args.timeout_ms);
+      const hostTimeout = Number.isFinite(raw) ? Math.min(Math.max(raw, 1000), 60000) : 30000;
+      return hostTimeout + 5000;
     }
     // @store-strip-end
     return toolTimeoutMs;
@@ -324,6 +326,7 @@ export function createToolExecutor(rawBrowser, {
       ctx.nativePending = true;
       try {
         const result = await runNativeCommand(args, { signal: ctx.signal });
+        ctx.nativeCompleted = true;
         return { output: JSON.stringify(result), ...(result.exitCode !== 0 ? { isError: true } : {}) };
       } finally {
         ctx.nativePending = false;
@@ -336,6 +339,7 @@ export function createToolExecutor(rawBrowser, {
       ctx.nativePending = true;
       try {
         const result = await runNativeCommand(args, { signal: ctx.signal });
+        ctx.nativeCompleted = true;
         return { output: JSON.stringify(result), ...(result.exitCode !== 0 ? { isError: true } : {}) };
       } finally {
         ctx.nativePending = false;
@@ -603,7 +607,9 @@ export function createToolExecutor(rawBrowser, {
           describe,
         }, ctx));
       } catch (err) {
-        await ctx.browser.dismissPendingDialog?.(target.tabId, 'approval-failed');
+        if (ctx.browser.pendingDialog?.(target.tabId)?.id === open.id) {
+          await ctx.browser.dismissPendingDialog?.(target.tabId, 'approval-failed', open.id);
+        }
         throw err;
       }
       const answered = await ctx.browser.handleDialog(
@@ -780,6 +786,7 @@ export function createToolExecutor(rawBrowser, {
       if (clean.length > NOTE_MAX_CHARS) throw new Error(`The note is ${clean.length} characters; the limit is ${NOTE_MAX_CHARS}. Split it into several notes.`);
       const url = (await currentTab(ctx))?.url ?? '';
       if (ctx.browser.workingTabLost?.()) throw new WorkingTabClosedError();
+      throwIfCallAborted(ctx);
       const count = notebook.add(clean, url);
       onNotebookChange();
       return `Saved (${count} note${count === 1 ? '' : 's'}).`;
@@ -805,6 +812,7 @@ export function createToolExecutor(rawBrowser, {
     ctx.nativePending = true;
     try {
       const result = await nativeRequest(operation, { signal: ctx.signal });
+      ctx.nativeCompleted = true;
       return JSON.stringify(result.result);
     } finally {
       ctx.nativePending = false;
@@ -839,6 +847,7 @@ export function createToolExecutor(rawBrowser, {
       timedOut: false,
       dispatched: false,
       nativePending: false,
+      nativeCompleted: false,
       browser: null,
       startTimer() {
         clearTimeout(this.timer);
@@ -852,6 +861,9 @@ export function createToolExecutor(rawBrowser, {
         clearTimeout(this.timer);
         this.timer = null;
       },
+    };
+    ctx.signal.onDispatch = () => {
+      ctx.dispatched = true;
     };
     ctx.browser = guardOnly(rawBrowser, ctx);
 
@@ -945,6 +957,10 @@ function raceHandlerWithAbort(run, ctx) {
       (value) => {
         clearTimeout(fallbackTimer);
         ctx.signal.removeEventListener('abort', onAbort);
+        if (ctx.signal.aborted && !ctx.nativeCompleted) {
+          reject(makeExecutionAbortError(ctx));
+          return;
+        }
         resolve(value);
       },
       (error) => {
@@ -1007,7 +1023,7 @@ function guardOnly(browser, ctx) {
           }
           const isReadOnlyElementCall = (prop === 'element' && args[1] === 'locate')
             || (prop === 'suggestions' && args[2] !== 'activate');
-          if (!NON_MUTATING_EFFECTS.has(prop) && !isReadOnlyElementCall) {
+          if (!NON_MUTATING_EFFECTS.has(prop) && !isReadOnlyElementCall && typeof target.cdp !== 'function') {
             const origGuard = options.guard;
             const wrappedGuard = async () => {
               const ok = await origGuard();

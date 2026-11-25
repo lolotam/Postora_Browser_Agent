@@ -72,6 +72,8 @@ export class BrowserController {
     this.disposable = new Set();
     this.justClosed = null;
     this.attached = new Set();
+    this.attaching = new Map();
+    this.attachEpoch = 0;
     this.pageEnabled = new Set();
     this.dialogDeadlineMs = dialogDeadlineMs;
     this.dialogs = new Map();
@@ -147,14 +149,21 @@ export class BrowserController {
     const url = String(params.url ?? '');
     const defaultPrompt = String(params.defaultPrompt ?? '');
     if (type === 'beforeunload') {
-      this.beforeUnloadNotes.set(tabId, message);
-      void chrome.debugger.sendCommand?.({ tabId }, 'Page.handleJavaScriptDialog', { accept: true })?.catch?.(() => {});
+      if (typeof chrome.debugger?.sendCommand === 'function') {
+        void Promise.resolve(chrome.debugger.sendCommand({ tabId }, 'Page.handleJavaScriptDialog', { accept: true }))
+          .then(
+            () => { this.beforeUnloadNotes.set(tabId, { handled: true, message }); },
+            () => { this.beforeUnloadNotes.set(tabId, { handled: false, message }); },
+          );
+      } else {
+        this.beforeUnloadNotes.set(tabId, { handled: false, message });
+      }
       return;
     }
     this.clearPendingDialog(tabId);
     const id = `dlg-${++this.dialogCounter}-${tabId}-${Date.now()}`;
     const timer = setTimeout(() => {
-      void this.dismissPendingDialog(tabId, 'deadline');
+      void this.dismissPendingDialog(tabId, 'deadline', id);
     }, this.dialogDeadlineMs);
     const dialog = Object.freeze({
       id,
@@ -165,7 +174,7 @@ export class BrowserController {
       defaultPrompt,
       openedAt: Date.now(),
     });
-    this.dialogs.set(tabId, { dialog, timer });
+    this.dialogs.set(tabId, { dialog, timer, retries: 0 });
     const watchers = this.dialogWatchers.get(tabId);
     if (watchers) {
       this.dialogWatchers.delete(tabId);
@@ -173,11 +182,13 @@ export class BrowserController {
     }
   }
 
-  clearPendingDialog(tabId) {
+  clearPendingDialog(tabId, dialogId = null) {
     const entry = this.dialogs.get(tabId);
-    if (!entry) return;
+    if (!entry) return false;
+    if (dialogId && entry.dialog.id !== dialogId) return false;
     clearTimeout(entry.timer);
     this.dialogs.delete(tabId);
+    return true;
   }
 
   pendingDialog(tabId = null) {
@@ -189,8 +200,15 @@ export class BrowserController {
   takeBeforeUnloadNote(tabId = null) {
     const id = tabId ?? this.tabId;
     if (id == null || !this.beforeUnloadNotes.has(id)) return '';
-    const message = this.beforeUnloadNotes.get(id);
+    const entry = this.beforeUnloadNotes.get(id);
     this.beforeUnloadNotes.delete(id);
+    const handled = typeof entry === 'object' ? entry.handled !== false : true;
+    const message = typeof entry === 'object' ? entry.message : entry;
+    if (!handled) {
+      return message
+        ? ` Failed to dismiss beforeunload dialog ("${message}").`
+        : ' Failed to dismiss beforeunload dialog.';
+    }
     return message
       ? ` Dismissed beforeunload dialog ("${message}").`
       : ' Dismissed beforeunload dialog.';
@@ -218,23 +236,36 @@ export class BrowserController {
     return { promise, cancel };
   }
 
-  async dismissPendingDialog(tabId = null, _reason = 'dismissed') {
+  async dismissPendingDialog(tabId = null, reason = 'dismissed', dialogId = null) {
     const id = tabId ?? this.tabId;
     if (id == null) return false;
     const entry = this.dialogs.get(id);
     if (!entry) return false;
-    this.clearPendingDialog(id);
+    if (dialogId && entry.dialog.id !== dialogId) return false;
+    const targetId = entry.dialog.id;
     try {
-      await chrome.debugger.sendCommand?.({ tabId: id }, 'Page.handleJavaScriptDialog', { accept: false });
+      if (typeof chrome.debugger?.sendCommand !== 'function') throw new Error('debugger unavailable');
+      await chrome.debugger.sendCommand({ tabId: id }, 'Page.handleJavaScriptDialog', { accept: false });
+      this.clearPendingDialog(id, targetId);
       return true;
     } catch {
+      const current = this.dialogs.get(id);
+      if (current && current.dialog.id === targetId) {
+        current.retries = (current.retries ?? 0) + 1;
+        if (current.retries <= 2) {
+          clearTimeout(current.timer);
+          current.timer = setTimeout(() => {
+            void this.dismissPendingDialog(id, reason, targetId);
+          }, Math.min(this.dialogDeadlineMs, 250));
+        }
+      }
       return false;
     }
   }
 
   async dismissAllDialogs(reason = 'dismissed') {
-    for (const tabId of [...this.dialogs.keys()]) {
-      await this.dismissPendingDialog(tabId, reason);
+    for (const [tabId, entry] of [...this.dialogs.entries()]) {
+      await this.dismissPendingDialog(tabId, reason, entry.dialog.id);
     }
   }
 
@@ -251,12 +282,9 @@ export class BrowserController {
       accept: Boolean(accept),
       ...(current.type === 'prompt' && promptText !== undefined ? { promptText: String(promptText) } : {}),
     };
-    try {
-      await this.cdp('Page.handleJavaScriptDialog', params, { guard, tabId: tab.id, signal });
-    } finally {
-      this.clearPendingDialog(tab.id);
-    }
-    await this.waitForLoad({ tabId: tab.id, signal });
+    await this.cdp('Page.handleJavaScriptDialog', params, { guard, tabId: tab.id, signal });
+    this.clearPendingDialog(tab.id, current.id);
+    await this.waitForLoad({ tabId: tab.id, signal, afterMutation: true });
     return current;
   }
 
@@ -515,6 +543,68 @@ export class BrowserController {
     await chrome.tabGroups.update(this.groupId, { title }).catch(() => {}); // the group may have closed
   }
 
+  async ensureDebuggerAttached(tabId, { signal = null, enablePage = true } = {}) {
+    if (!this.attached.has(tabId)) {
+      if (signal?.aborted) throw makeSignalError(signal, false);
+      const epoch = this.attachEpoch;
+      let inFlight = this.attaching.get(tabId);
+      if (!inFlight) {
+        const rawAttach = Promise.resolve().then(() => chrome.debugger.attach({ tabId }, CDP_VERSION));
+        const tracked = rawAttach.then(
+          () => {
+            this.attaching.delete(tabId);
+            if (this.attachEpoch !== epoch) {
+              if (!this.attached.has(tabId)) {
+                void Promise.resolve(chrome.debugger.detach?.({ tabId })).catch(() => {});
+              }
+              return;
+            }
+            this.attached.add(tabId);
+          },
+          (err) => {
+            this.attaching.delete(tabId);
+            if (String(err?.message ?? '').includes('already attached')) {
+              if (this.attachEpoch === epoch) this.attached.add(tabId);
+              return;
+            }
+            throw err;
+          },
+        );
+        inFlight = { promise: tracked, epoch };
+        this.attaching.set(tabId, inFlight);
+      }
+      try {
+        await raceWithSignal(inFlight.promise, signal, false);
+      } catch (err) {
+        if (signal?.aborted) {
+          void inFlight.promise.then(() => {
+            if (this.attachEpoch === epoch && !this.attached.has(tabId)) {
+              void Promise.resolve(chrome.debugger.detach?.({ tabId })).catch(() => {});
+            } else if (this.attachEpoch === epoch && signal?.aborted) {
+              this.attached.delete(tabId);
+              this.pageEnabled.delete(tabId);
+              void Promise.resolve(chrome.debugger.detach?.({ tabId })).catch(() => {});
+            }
+          }, () => {});
+        }
+        throw err;
+      }
+    }
+    if (enablePage && !this.pageEnabled.has(tabId) && typeof chrome.debugger?.onEvent?.addListener === 'function') {
+      if (signal?.aborted) throw makeSignalError(signal, false);
+      this.pageEnabled.add(tabId);
+      try {
+        await raceWithSignal(Promise.resolve(chrome.debugger.sendCommand?.({ tabId }, 'Page.enable', {})), signal, false);
+      } catch (err) {
+        if (err?.outcome) {
+          this.pageEnabled.delete(tabId);
+          throw err;
+        }
+        // Optional in unit-test mocks that do not implement Page.enable.
+      }
+    }
+  }
+
   /**
    * Sends one command to the debugger. A `guard` says whether the command may
    * still be sent: it is asked again after the debugger was attached, right
@@ -525,20 +615,12 @@ export class BrowserController {
    * `precheck` is asked once more, right before the command goes out, for the
    * checks that live in the page (the focus of an approved field, for example).
    */
-  async cdp(method, params = {}, { guard = null, tabId = null, precheck = null, signal = null } = {}) {
+  async cdp(method, params = {}, { guard = null, tabId = null, precheck = null, signal = null, onDispatch = null } = {}) {
     if (signal?.aborted) throw makeSignalError(signal, false);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const tab = await this.pinnedTab(tabId);
     assertControllable(tab.url);
-    if (!this.attached.has(tab.id)) {
-      if (signal?.aborted) throw makeSignalError(signal, false);
-      try {
-        await raceWithSignal(chrome.debugger.attach({ tabId: tab.id }, CDP_VERSION), signal, false);
-      } catch (err) {
-        if (!String(err.message).includes('already attached')) throw err;
-      }
-      this.attached.add(tab.id);
-    }
+    await this.ensureDebuggerAttached(tab.id, { signal, enablePage: method !== 'Page.enable' });
     if (signal?.aborted) throw makeSignalError(signal, false);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     if (precheck && !(await precheck())) throw new Error(INPUT_CANCELLED);
@@ -547,17 +629,14 @@ export class BrowserController {
     // prepared must not reach the page.
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     if (signal?.aborted) throw makeSignalError(signal, false);
-    if (!this.pageEnabled.has(tab.id) && method !== 'Page.enable' && typeof chrome.debugger?.onEvent?.addListener === 'function') {
-      this.pageEnabled.add(tab.id);
-      try {
-        await chrome.debugger.sendCommand?.({ tabId: tab.id }, 'Page.enable', {});
-      } catch {
-        // Optional in unit-test mocks that do not implement Page.enable.
-      }
+    if (method !== 'Page.handleJavaScriptDialog' && this.pendingDialog(tab.id)) {
+      throw makeDialogPendingError(this.pendingDialog(tab.id));
     }
     const readOnly = method === 'Page.getLayoutMetrics' || method === 'Page.captureScreenshot';
     const watcher = this.waitForDialog(tab.id);
     try {
+      if (!readOnly) signal?.onDispatch?.();
+      onDispatch?.();
       const commandPromise = Promise.resolve(chrome.debugger.sendCommand({ tabId: tab.id }, method, params));
       if (method === 'Page.handleJavaScriptDialog') {
         return await raceWithSignal(commandPromise, signal, !readOnly);
@@ -592,7 +671,14 @@ export class BrowserController {
   }
 
   async detachAll() {
+    this.attachEpoch += 1;
     await this.dismissAllDialogs('detach');
+    const pendingAttaches = [...this.attaching.entries()];
+    this.attaching.clear();
+    for (const [tabId, entry] of pendingAttaches) {
+      await entry.promise.catch(() => {});
+      this.attached.add(tabId);
+    }
     for (const tabId of [...this.attached]) {
       try {
         await chrome.debugger.detach({ tabId });
@@ -606,7 +692,14 @@ export class BrowserController {
 
   /** Detaches one tab, leaving the others alone. */
   async detachTab(tabId) {
+    this.attachEpoch += 1;
     await this.dismissPendingDialog(tabId, 'detach');
+    const pending = this.attaching.get(tabId);
+    if (pending) {
+      this.attaching.delete(tabId);
+      await pending.promise.catch(() => {});
+      this.attached.add(tabId);
+    }
     if (!this.attached.has(tabId)) return;
     try {
       await chrome.debugger.detach({ tabId });
@@ -630,9 +723,11 @@ export class BrowserController {
     assertControllable(tab.url);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     if (signal?.aborted) throw makeSignalError(signal, false);
+    if (this.pendingDialog(tab.id)) throw makeDialogPendingError(this.pendingDialog(tab.id));
     const target = frameId == null ? { tabId: tab.id } : { tabId: tab.id, frameIds: [frameId] };
     const watcher = this.waitForDialog(tab.id);
     try {
+      if (mutating) signal?.onDispatch?.();
       const execPromise = Promise.resolve(chrome.scripting.executeScript({ target, func, args }));
       const [result] = await Promise.race([
         raceWithSignal(execPromise, signal, mutating),
@@ -641,6 +736,7 @@ export class BrowserController {
           throw makeDialogPendingError(dialog);
         }),
       ]);
+      if (this.pendingDialog(tab.id)) throw makeDialogPendingError(this.pendingDialog(tab.id));
       return result?.result;
     } finally {
       watcher.cancel();
@@ -660,16 +756,19 @@ export class BrowserController {
     assertControllable(tab.url);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     if (signal?.aborted) throw makeSignalError(signal, false);
+    if (this.pendingDialog(tab.id)) throw makeDialogPendingError(this.pendingDialog(tab.id));
     const watcher = this.waitForDialog(tab.id);
     try {
       const execPromise = Promise.resolve(chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func, args }));
-      return await Promise.race([
+      const results = await Promise.race([
         raceWithSignal(execPromise, signal, false),
         watcher.promise.then((dialog) => {
           execPromise.catch(() => {});
           throw makeDialogPendingError(dialog);
         }),
       ]);
+      if (this.pendingDialog(tab.id)) throw makeDialogPendingError(this.pendingDialog(tab.id));
+      return results;
     } finally {
       watcher.cancel();
     }
@@ -1049,18 +1148,30 @@ export class BrowserController {
     const tab = await this.pinnedTab(tabId);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     if (signal?.aborted) throw makeSignalError(signal, false);
+    if (typeof chrome.debugger?.onEvent?.addListener === 'function' && !RESTRICTED.test(tab.url ?? '')) {
+      await this.ensureDebuggerAttached(tab.id, { signal, enablePage: true });
+      if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
+      if (signal?.aborted) throw makeSignalError(signal, false);
+    }
+    signal?.onDispatch?.();
     await raceWithSignal(chrome.tabs.update(tab.id, { url }), signal, true);
-    await this.waitForLoad({ expectNavigation: true, tabId: tab.id, signal });
+    await this.waitForLoad({ expectNavigation: true, tabId: tab.id, signal, afterMutation: true });
   }
 
   async history(direction, { guard = null, tabId = null, signal = null } = {}) {
     const tab = await this.pinnedTab(tabId);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     if (signal?.aborted) throw makeSignalError(signal, false);
+    if (typeof chrome.debugger?.onEvent?.addListener === 'function' && !RESTRICTED.test(tab.url ?? '')) {
+      await this.ensureDebuggerAttached(tab.id, { signal, enablePage: true });
+      if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
+      if (signal?.aborted) throw makeSignalError(signal, false);
+    }
+    signal?.onDispatch?.();
     if (direction === 'back') await raceWithSignal(chrome.tabs.goBack(tab.id), signal, true);
     else if (direction === 'forward') await raceWithSignal(chrome.tabs.goForward(tab.id), signal, true);
     else await raceWithSignal(chrome.tabs.reload(tab.id), signal, true);
-    await this.waitForLoad({ expectNavigation: true, tabId: tab.id, signal });
+    await this.waitForLoad({ expectNavigation: true, tabId: tab.id, signal, afterMutation: true });
   }
 
   async clickAt(x, y, { button = 'left', clickCount = 1, wait = true, guard = null, target = null, tabId = null, signal = null } = {}) {
@@ -1087,16 +1198,30 @@ export class BrowserController {
     await this.cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, { guard, tabId: tab.id, precheck, signal });
     await this.overlay.click(x, y);
     for (let i = 1; i <= clickCount; i += 1) {
-      // The move and the overlay took time: the guard is asked again right
-      // before the button goes down, so a click that was withdrawn never
-      // reaches the page.
-      await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i }, { guard, tabId: tab.id, precheck, signal });
-      // The button is always let go, or it stays down in the page. The guard
-      // is not asked again: a withdrawal after the press must not leave the
-      // mouse held down.
-      await this.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: i }, { tabId: tab.id, signal });
+      let pressed = false;
+      let releaseSent = false;
+      try {
+        await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i }, {
+          guard,
+          tabId: tab.id,
+          precheck,
+          signal,
+          onDispatch: () => { pressed = true; },
+        });
+        await this.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: i }, {
+          tabId: tab.id,
+          signal,
+          onDispatch: () => { releaseSent = true; },
+        });
+      } finally {
+        if (pressed && !releaseSent) {
+          await Promise.resolve(
+            chrome.debugger.sendCommand?.({ tabId: tab.id }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: i }),
+          ).catch(() => {});
+        }
+      }
     }
-    if (wait) await this.waitForLoad({ tabId: tab.id, signal });
+    if (wait) await this.waitForLoad({ tabId: tab.id, signal, afterMutation: true });
   }
 
   async hoverAt(x, y, { guard = null, target = null, tabId = null, signal = null } = {}) {
@@ -1152,10 +1277,31 @@ export class BrowserController {
       modifiers,
     };
     const precheck = target ? () => this.assertFocusTarget(target, { guard }) : null;
-    await this.cdp('Input.dispatchKeyEvent', { ...base, type: spec.text ? 'keyDown' : 'rawKeyDown', text: spec.text }, { guard, tabId, precheck, signal });
-    // The key is always let go, or it stays down in the page.
-    await this.cdp('Input.dispatchKeyEvent', { ...base, type: 'keyUp' }, { tabId, signal });
-    if (wait) await this.waitForLoad({ tabId, signal });
+    let pressed = false;
+    let releaseSent = false;
+    const targetTab = await this.pinnedTab(tabId);
+    try {
+      await this.cdp('Input.dispatchKeyEvent', { ...base, type: spec.text ? 'keyDown' : 'rawKeyDown', text: spec.text }, {
+        guard,
+        tabId: targetTab.id,
+        precheck,
+        signal,
+        onDispatch: () => { pressed = true; },
+      });
+      // The key is always let go, or it stays down in the page.
+      await this.cdp('Input.dispatchKeyEvent', { ...base, type: 'keyUp' }, {
+        tabId: targetTab.id,
+        signal,
+        onDispatch: () => { releaseSent = true; },
+      });
+    } finally {
+      if (pressed && !releaseSent) {
+        await Promise.resolve(
+          chrome.debugger.sendCommand?.({ tabId: targetTab.id }, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' }),
+        ).catch(() => {});
+      }
+    }
+    if (wait) await this.waitForLoad({ tabId: targetTab.id, signal, afterMutation: true });
   }
 
   /** Scrolls by a number of screens (negative = up) at a point, default viewport centre. */
@@ -1206,38 +1352,51 @@ export class BrowserController {
   // @store-strip-end
 
   /** Waits for any navigation the last action triggered to finish loading. */
-  async waitForLoad({ expectNavigation = false, timeoutMs = 12000, tabId = null, signal = null } = {}) {
+  async waitForLoad({ expectNavigation = false, timeoutMs = 12000, tabId = null, signal = null, afterMutation = true } = {}) {
     const resolvedTabId = tabId ?? this.tabId;
-    if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
-    await delay(expectNavigation ? 400 : 120, signal); // long enough for a click to start a navigation
-    if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (signal?.aborted) break;
+    const rethrowPostMutationAbort = (err) => {
+      if (afterMutation && (signal?.aborted || err?.outcome === 'cancelled')) {
+        throw makeSignalError(signal, true);
+      }
+      throw err;
+    };
+    try {
       if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
-      let tab;
-      try {
-        tab = await this.pinnedTab(tabId);
-      } catch {
-        break; // the tab this command acts on is gone.
-      }
-      if (this.pendingDialog(tab.id)) throw makeDialogPendingError(this.pendingDialog(tab.id));
-      if (tab.status === 'complete') {
-        if (RESTRICTED.test(tab.url ?? '')) return;
+      await delay(expectNavigation ? 400 : 120, signal); // long enough for a click to start a navigation
+      if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
+      if (signal?.aborted) throw makeSignalError(signal, afterMutation);
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (signal?.aborted) throw makeSignalError(signal, afterMutation);
+        if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
+        let tab;
         try {
-          const state = await this.inject(pageReadyState, [], { tabId: tab.id, signal });
-          if (state?.readyState === 'complete' || state?.readyState === 'interactive') break;
-        } catch (err) {
-          if (err?.dialogPending || err?.outcome) throw err;
-          // Page is mid-navigation; keep polling.
+          tab = await this.pinnedTab(tabId);
+        } catch {
+          break; // the tab this command acts on is gone.
         }
+        if (this.pendingDialog(tab.id)) throw makeDialogPendingError(this.pendingDialog(tab.id));
+        if (tab.status === 'complete') {
+          if (RESTRICTED.test(tab.url ?? '')) return;
+          try {
+            const state = await this.inject(pageReadyState, [], { tabId: tab.id, signal });
+            if (state?.readyState === 'complete' || state?.readyState === 'interactive') break;
+          } catch (err) {
+            if (err?.dialogPending || err?.outcome) throw err;
+            // Page is mid-navigation; keep polling.
+          }
+        }
+        await delay(250, signal);
       }
-      await delay(250, signal);
+      if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
+      if (signal?.aborted) throw makeSignalError(signal, afterMutation);
+      await this.settle({ tabId, signal });
+      if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
+      if (signal?.aborted) throw makeSignalError(signal, afterMutation);
+      await this.overlay.frame(); // a navigation wipes the overlay; bring it back
+    } catch (err) {
+      rethrowPostMutationAbort(err);
     }
-    if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
-    await this.settle({ tabId, signal });
-    if (this.pendingDialog(resolvedTabId)) throw makeDialogPendingError(this.pendingDialog(resolvedTabId));
-    await this.overlay.frame(); // a navigation wipes the overlay; bring it back
   }
 
   /** The current document's identity, or null when the page cannot be read. */
