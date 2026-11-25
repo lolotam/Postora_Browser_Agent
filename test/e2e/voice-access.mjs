@@ -166,6 +166,7 @@ async function openPanel(context, extensionId, base) {
   });
   await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
   await panel.evaluate((baseUrl) => chrome.storage.local.set({
+    voiceHandsfree: true,
     settings: {
         transcription: { mode: 'browser' },
       provider: 'compatible',

@@ -25,7 +25,7 @@ import { packFiles } from '../lib/read-file.js';
 import { FILE_LIMITS, readLocalFile } from './attach.js';
 import { createFastAsk } from '../fast/clients.js';
 import { approvalText as approvalMessage } from '../voice/voice-approval.js';
-import { createVoiceController } from '../voice/voice-controller.js';
+import { createVoiceController, decodeVoicePrefs } from '../voice/voice-controller.js';
 import { createConfiguredRecognition } from '../voice/recognition-factory.js';
 import { speechLocale } from '../voice/transcription.js';
 import { createTranscriptionForm } from './transcription-form.js';
@@ -1643,13 +1643,13 @@ function voiceLogEntry(command) {
   };
 }
 
-function setVoiceState(state) {
+function setVoiceState(state, { listening = Boolean(voiceController?.listening) } = {}) {
   voiceState = state;
   const stateEl = $('voiceState');
   if (!stateEl) return;
   stateEl.textContent = t(`voice.state${state.charAt(0).toUpperCase()}${state.slice(1)}`);
   stateEl.className = `pill voice-pill${state === 'idle' ? '' : ` ${state}`}`;
-  $('voiceMicBtn')?.classList.toggle('on', state === 'listening');
+  $('voiceMicBtn')?.classList.toggle('on', Boolean(listening));
 }
 
 /** What the microphone could not do, said in the panel's language. */
@@ -1685,7 +1685,7 @@ const VOICE_PREF_KEYS = ['voiceHandsfree', 'voiceSpeak'];
 
 async function loadVoicePrefs() {
   const saved = await chrome.storage.local.get(VOICE_PREF_KEYS).catch(() => ({}));
-  return { handsFree: saved.voiceHandsfree !== false, speakReplies: saved.voiceSpeak === true };
+  return decodeVoicePrefs(saved);
 }
 
 async function saveVoicePrefs(prefs) {
@@ -1717,9 +1717,9 @@ function createVoice() {
     stopSpeech: () => { speechGeneration += 1; try { window.speechSynthesis?.cancel(); } catch { /* no speech */ } },
     speaking: () => Boolean(window.speechSynthesis?.speaking),
     onState: setVoiceState,
-    onTranscript: (text, { final }) => {
+    onTranscript: (text, { final, dropped } = {}) => {
       const live = $('voiceLive');
-      live.textContent = text;
+      live.textContent = dropped ? `${text} — ${t('voice.heardNotRun')}` : text;
       live.classList.toggle('final', Boolean(final));
     },
     onCommand: (text, { signal, entry }) => runVoiceCommand(text, { signal, entry }),
@@ -1728,8 +1728,15 @@ function createVoice() {
     savePrefs: saveVoicePrefs,
     onFailure: voiceFailure,
     onMicBlocked: () => { panelMicBroken = true; },
+    isBusy: () => ui.running && !ui.question,
+    onStop: () => {
+      voiceApproval?.();
+      if (voiceTask) cancelVoiceTask(t('voice.cancelled'));
+      if (ui.running) send({ type: 'stop' }).catch(() => {});
+    },
     // A command that is dropped before it runs says so in the panel's language.
     cancelledText: () => t('voice.cancelled'),
+    heardNotRunText: () => t('voice.heardNotRun'),
   });
 }
 
