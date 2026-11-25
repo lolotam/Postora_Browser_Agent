@@ -49,6 +49,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
   let truncationRetries = 0; // the retries of a cut-off reply, in a row
   let pageFingerprint = 'initial';
   const actionCounts = new Map();
+  let lastToolFailed = false;
 
   for (let step = 1; step <= maxSteps; step += 1) {
     throwIfAborted(signal);
@@ -139,7 +140,12 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
     // A message arrived while the model wrote its answer: it reads that first.
     if (!turn.toolCalls.length && steering?.waiting()) continue;
     if (!turn.toolCalls.length) {
-      emit({ type: 'final', report: turn.text || '(The model ended without a report.)', success: true });
+      const reportText = String(turn.text ?? '').trim();
+      emit({
+        type: 'final',
+        report: reportText ? turn.text : '(The model ended without a report.)',
+        success: Boolean(reportText) && !lastToolFailed,
+      });
       return;
     }
 
@@ -188,6 +194,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
           throw err;
         }
         const secret = Boolean(result.secret);
+        lastToolFailed = Boolean(result.isError);
         const safeSummary = firstLine(redactSecretReadOutput(result.output));
         emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: !result.isError, summary: safeSummary, ...(secret ? { secret: true } : {}), ms: Date.now() - started });
         const observedFp = fingerprintOutput(result.output);

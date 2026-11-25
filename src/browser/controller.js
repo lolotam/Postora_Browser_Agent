@@ -51,10 +51,11 @@ export const DEFAULT_DIALOG_DEADLINE_MS = 60000;
  * never brought to the front; input and screenshots go through CDP.
  */
 export class BrowserController {
-  constructor({ title = 'Postora', color = 'cyan', isTakenByOther = () => null, reservation = null, onLost = null, dialogDeadlineMs = DEFAULT_DIALOG_DEADLINE_MS } = {}) {
+  constructor({ title = 'Postora', color = 'cyan', isTakenByOther = () => null, reservation = null, onLost = null, onCancel = null, dialogDeadlineMs = DEFAULT_DIALOG_DEADLINE_MS } = {}) {
     // Told once when the tab the task works on is gone, so the task is ended at
     // once: a model turn, an approval or a question it waits on does not go on.
     this.onLost = onLost;
+    this.onCancel = onCancel;
     this.title = title;
     this.color = color;
     this.isTakenByOther = isTakenByOther;
@@ -87,10 +88,13 @@ export class BrowserController {
     // not move on to another tab, which the user never chose for it.
     this.lost = false;
     this.overlay = new AgentOverlay(this);
-    chrome.debugger.onDetach?.addListener?.(({ tabId }) => {
-      this.attached.delete(tabId);
+    chrome.debugger.onDetach?.addListener?.(({ tabId } = {}, reason) => {
+      const wasAttached = this.attached.delete(tabId);
       this.pageEnabled.delete(tabId);
       this.clearPendingDialog(tabId);
+      if (reason === 'canceled_by_user' && (wasAttached || tabId === this.tabId)) {
+        this.onCancel?.(tabId);
+      }
     });
     chrome.debugger.onEvent?.addListener?.((source, method, params) => {
       this.onDebuggerEvent(source, method, params);

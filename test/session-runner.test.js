@@ -164,3 +164,47 @@ test('a provider error keeps the checkpoint so Resume is offered, while a non-pr
   assert.equal(statuses.at(-1)?.resumable, false);
   runner.dispose();
 });
+
+test('debugger onDetach with canceled_by_user stops the running task, ask_user times out, and emit is guarded against disposed runners and broken ports', async () => {
+  let detachListener = null;
+  const prevAddListener = globalThis.chrome.debugger.onDetach.addListener;
+  globalThis.chrome.debugger.onDetach.addListener = (fn) => { detachListener = fn; };
+  try {
+    const meta = await sessions.createStoredSession('DebuggerCancel');
+    const runner = new SessionRunner({
+      meta,
+      body: await sessions.loadSession(meta.id),
+      color: 'cyan',
+      isTakenByOther: () => null,
+      onSessionsChanged: () => {},
+      askUserTimeoutMs: 25,
+    });
+    assert.ok(detachListener, 'BrowserController registered debugger.onDetach listener');
+
+    // Guarded emit: broken port or disposed runner never throws
+    runner.ports.add({ postMessage() { throw new Error('port closed'); } });
+    assert.doesNotThrow(() => runner.emit({ type: 'notice', id: 'n1', kind: 'info', level: 'info' }));
+
+    // ask_user timeout
+    const askController = new AbortController();
+    await assert.rejects(
+      runner.askUser('What is the OTP?', askController.signal),
+      /Timed out waiting for the user’s answer/,
+    );
+    assert.equal(runner.pendingQuestion, null);
+
+    // canceled_by_user stops the task
+    runner.abort = new AbortController();
+    runner.browser.tabId = 42;
+    runner.browser.attached.add(42);
+    detachListener({ tabId: 42 }, 'canceled_by_user');
+    assert.equal(runner.abort.signal.aborted, true, 'debugger cancel stops the running task');
+
+    runner.dispose();
+    const lenBefore = runner.transcript.length;
+    assert.doesNotThrow(() => runner.emit({ type: 'user', text: 'after dispose' }));
+    assert.equal(runner.transcript.length, lenBefore, 'disposed runner ignores emitted events');
+  } finally {
+    globalThis.chrome.debugger.onDetach.addListener = prevAddListener;
+  }
+});
