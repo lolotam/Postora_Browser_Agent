@@ -139,7 +139,7 @@ test('a second task in the same session resets the handoff log to the current ta
     result: `step-${i}`,
   }));
   const cappedText = handoffMessage({ currentTask: 'Cap test', notes: [], steps: manySteps, last: null }, 'quota');
-  assert.doesNotMatch(cappedText, /1\. type_text/, 'only the latest 40 steps are included');
-  assert.match(cappedText, /11\. type_text/, 'starts at step 11 of 50');
+  assert.doesNotMatch(cappedText, /(?:^|\n)1\. type_text/, 'only the latest 40 steps are included');
+  assert.match(cappedText, /(?:^|\n)11\. type_text/, 'starts at step 11 of 50');
   assert.doesNotMatch(cappedText, new RegExp(hugeArg), 'huge step arguments are truncated');
 });
