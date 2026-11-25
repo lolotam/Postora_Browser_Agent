@@ -371,7 +371,7 @@ export function createToolExecutor(rawBrowser, {
     // @store-strip-start
     project_context: async (args, ctx) => projectContextBlock(await projectCall('project-context', args, ctx)),
     project_list: async (args, ctx) => projectCall('project-list', args, ctx),
-    project_read: async (args, ctx) => projectCall('project-read', args, ctx),
+    project_read: async (args, ctx) => projectContextBlock(await projectCall('project-read', args, ctx)),
     project_write: async (args, ctx) => projectCall('project-write', args, ctx),
     project_run: async ({ command, timeout_ms }, ctx) => {
       const root = projectRoot();
