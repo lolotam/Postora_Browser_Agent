@@ -262,6 +262,7 @@ export function createToolExecutor(rawBrowser, {
       }
       return true;
     };
+    if (target?.element?.secret) ctx.secret = true;
     return { permit, operation, guard, granted };
   };
 
@@ -417,6 +418,7 @@ export function createToolExecutor(rawBrowser, {
       }, ctx);
       const field = await ctx.browser.readField(target, { guard });
       const value = field?.value ?? '';
+      if (field?.secret) ctx.secret = true;
       return `The value of element [${at}]${field?.secret ? ' (a field that holds a secret)' : ''}: ${value === '' ? '(empty)' : value}`;
     },
     navigate: async ({ url }, ctx) => {
@@ -931,7 +933,12 @@ export function createToolExecutor(rawBrowser, {
       const out = typeof result === 'string' ? { output: result } : result;
       const notes = ctx.notes ? notebook?.format() : '';
       const output = [quoteNotebookHeader(out.output ?? ''), notes].filter(Boolean).join('\n\n');
-      return { ...out, output, ...(ctx.pageChanged ? { pageChanged: true } : {}) };
+      return {
+        ...out,
+        output,
+        ...(ctx.pageChanged ? { pageChanged: true } : {}),
+        ...(ctx.secret ? { secret: true } : {}),
+      };
     } catch (err) {
       if (isWorkingTabClosed(err)) throw err;
       if (err?.dialogPending && err.dialog) {
@@ -952,6 +959,7 @@ export function createToolExecutor(rawBrowser, {
         output: `Error: ${err.message}`,
         isError: true,
         ...(err?.staleGeneration ? { staleGeneration: true, pageChanged: true } : {}),
+        ...(ctx.secret ? { secret: true } : {}),
         ...(outcome ? { outcome } : {}),
       };
     } finally {

@@ -6,6 +6,7 @@
 import { askJev } from './jev-client.js';
 import { formatSnapshot } from '../agent/tools.js';
 import { untrustedDataBlock } from '../agent/prompt.js';
+import { projectToolArgs } from '../agent/redaction.js';
 import { isFastAccessFailure } from './errors.js';
 import { isWorkingTabClosed } from '../browser/working-tab.js';
 
@@ -184,10 +185,13 @@ export function createFastLayer({ config, browser, execute, task, ask = askJev }
 
   return {
     /** Records a step the LLM took so Jev sees it in LAST_ACTIONS next time. */
-    recordLlmAction(name, args, url) {
+    recordLlmAction(name, args, url, { secret = false } = {}) {
       streak = 0;
-      recent.push(`${name} ${JSON.stringify(args)}${url ? ` on ${url}` : ''}`);
-      if (name === 'type_text' && args?.text && !textCandidates.includes(args.text)) textCandidates.push(args.text);
+      const safeArgs = projectToolArgs(name, args, { secret });
+      recent.push(`${name} ${JSON.stringify(safeArgs)}${url ? ` on ${url}` : ''}`);
+      if (!secret && name === 'type_text' && args?.text && !textCandidates.includes(args.text)) {
+        textCandidates.push(args.text);
+      }
     },
 
     async step({ signal } = {}) {

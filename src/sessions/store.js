@@ -2,6 +2,8 @@
 // unlimitedStorage). The index holds titles, times and tab groups; each session's
 // body is its own key so listing never loads transcripts.
 
+import { sanitizeSessionBody } from '../agent/redaction.js';
+
 const INDEX = 'sessions';
 const bodyKey = (id) => `session:${id}`;
 const TITLE_WORDS = 6;
@@ -43,7 +45,8 @@ export async function loadSession(id) {
 }
 
 export async function saveSession(id, { transcript, log, groupId, notebook = null, pending = [], project = null, continuation = null }) {
-  await chrome.storage.local.set({ [bodyKey(id)]: { transcript, log, groupId, notebook, pending, project, continuation } });
+  const clean = sanitizeSessionBody({ transcript, log, groupId, notebook, pending, project, continuation });
+  await chrome.storage.local.set({ [bodyKey(id)]: clean });
   await updateIndex((index) => index.map((s) => (s.id === id ? { ...s, groupId, updatedAt: Date.now() } : s)));
 }
 
@@ -72,7 +75,8 @@ export async function exportSessions() {
   return index.map((meta) => {
     const body = bodies[bodyKey(meta.id)];
     if (!body) throw new Error('A session is missing its history. Backup was not created.');
-    return { meta: { ...meta, groupId: null }, body: { ...body, groupId: null, continuation: body.continuation ? { ...body.continuation, tabId: null } : null } };
+    const clean = sanitizeSessionBody(body);
+    return { meta: { ...meta, groupId: null }, body: { ...clean, groupId: null, continuation: clean.continuation ? { ...clean.continuation, tabId: null } : null } };
   });
 }
 

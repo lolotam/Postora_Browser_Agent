@@ -5,6 +5,7 @@
 
 import { escalationMessage } from '../fast/fast-layer.js';
 import { kindOf } from './tool-kinds.js';
+import { projectToolArgs, redactSecretReadOutput } from './redaction.js';
 import { normalizeUsage } from '../lib/usage.js';
 import { isWorkingTabClosed } from '../browser/working-tab.js';
 
@@ -78,9 +79,12 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
       } else if (outcome.kind === 'acted') {
         // The fast layer decides and acts in one go: its step covers both.
         const callId = `fast-${step}`;
-        emit({ type: 'tool-start', step, callId, name: outcome.tool, args: outcome.args, fast: true });
-        emit({ type: 'tool-end', step, callId, name: outcome.tool, ok: !outcome.result.isError, summary: firstLine(outcome.result.output), ms: Date.now() - started });
-        fastActions.push(`${outcome.label} → ${firstLine(outcome.result.output)}`);
+        const secret = Boolean(outcome.result?.secret);
+        const safeArgs = projectToolArgs(outcome.tool, outcome.args, { secret });
+        const safeSummary = firstLine(redactSecretReadOutput(outcome.result.output));
+        emit({ type: 'tool-start', step, callId, name: outcome.tool, args: safeArgs, ...(secret ? { secret: true } : {}), fast: true });
+        emit({ type: 'tool-end', step, callId, name: outcome.tool, ok: !outcome.result.isError, summary: safeSummary, ms: Date.now() - started });
+        fastActions.push(`${outcome.label} → ${safeSummary}`);
         continue;
       } else {
         if (outcome.reason) emit({ type: 'fast-handoff', reason: outcome.reason });
@@ -175,10 +179,12 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
           }
           throw err;
         }
-        emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: !result.isError, summary: firstLine(result.output), ms: Date.now() - started });
-        session.addToolResult(call.id, result.output, result.images ?? []);
+        const secret = Boolean(result.secret);
+        const safeSummary = firstLine(redactSecretReadOutput(result.output));
+        emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: !result.isError, summary: safeSummary, ...(secret ? { secret: true } : {}), ms: Date.now() - started });
+        session.addToolResult(call.id, result.output, result.images ?? [], { secret });
         if (result.staleGeneration) skipFastNextStep = true;
-        fast?.recordLlmAction(call.name, call.args);
+        fast?.recordLlmAction(call.name, call.args, undefined, { secret });
         llmHasSeenPage = true;
         // The rest of the turn waits for the model to look again when an action
         // failed (a pending done must not report success), when the user was asked

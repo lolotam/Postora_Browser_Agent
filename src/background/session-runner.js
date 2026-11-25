@@ -10,6 +10,7 @@ import { BrowserController } from '../browser/controller.js';
 import { Notebook } from '../agent/notebook.js';
 import { createFastLayer } from '../fast/fast-layer.js';
 import { AccessAuthority, ALLOW, ASK_FIRST, DENY, FULL_ACCESS } from '../permissions/policy.js';
+import { projectToolArgs, redactSecretReadOutput, sanitizeSessionBody } from '../agent/redaction.js';
 import { isSidePanelSender } from '../permissions/panel-sender.js';
 import { autoCompactDue, compactPrompt, lastInputTokens, parseCompactCommand } from '../sessions/compaction.js';
 import { checkpointFor, conversationHistory } from '../sessions/continuation.js';
@@ -655,6 +656,18 @@ export class SessionRunner {
   emit(event) {
     if (event.type === 'final') this.continuation = null;
     if (event.type === 'status') event.resumable = Boolean(this.continuation) && !event.running;
+    if (event.type === 'tool-end' && event.secret && event.callId) {
+      for (let i = this.transcript.length - 1; i >= 0; i -= 1) {
+        const prev = this.transcript[i];
+        if (prev?.type === 'tool-start' && prev.callId === event.callId) {
+          this.transcript[i] = { ...prev, args: projectToolArgs(prev.name, prev.args, { secret: true }) };
+          break;
+        }
+      }
+    }
+    if (event.type === 'tool-end' && typeof event.summary === 'string') {
+      event.summary = redactSecretReadOutput(event.summary);
+    }
     if (!STREAMING.has(event.type)) {
       event.at ??= Date.now(); // the panel shows durations from these
       this.transcript.push(event);
@@ -1168,7 +1181,16 @@ export class SessionRunner {
   async save() {
     clearTimeout(this.saveTimer);
     if (this.disposed) return;
-    await store.saveSession(this.id, { transcript: this.transcript, log: this.session?.log ?? this.storedLog, groupId: this.browser.groupId, notebook: this.notebook.toJSON(), pending: this.inbox, project: this.project, continuation: this.continuation });
+    const body = sanitizeSessionBody({
+      transcript: this.transcript,
+      log: this.session?.log ?? this.storedLog,
+      groupId: this.browser.groupId,
+      notebook: this.notebook.toJSON(),
+      pending: this.inbox,
+      project: this.project,
+      continuation: this.continuation,
+    });
+    await store.saveSession(this.id, body);
   }
 }
 
