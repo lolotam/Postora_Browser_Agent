@@ -24,7 +24,7 @@ window.insertDeleteBeforeSave = () => {
 </script>
 </body></html>`;
 
-function startGenerationServer({ onBeforeSecondFastStep }) {
+function startGenerationServer({ onAfterFirstFastSnapshot }) {
   let llmTurn = 0;
   let jevTurn = 0;
   const seenToolOutputs = [];
@@ -43,6 +43,11 @@ function startGenerationServer({ onBeforeSecondFastStep }) {
         }
         if (req.url === '/v1/systemone') {
           jevTurn += 1;
+          if (jevTurn === 1) {
+            // Snapshot #1 (generation 1) has already been captured by fast.step();
+            // mutate the DOM deterministically now so Snapshot #2 (generation 2) re-indexes [0] to "Delete" and [1] to "Save".
+            await onAfterFirstFastSnapshot?.();
+          }
           const choice = (picked) => ({ type: 'choice', choice: picked, confidence: 0.95, probabilities: { [picked]: 0.95 } });
           const answers = {
             operation: choice('think'),
@@ -63,12 +68,11 @@ function startGenerationServer({ onBeforeSecondFastStep }) {
           let scripted;
           if (llmTurn === 0) {
             // Turn 0: the initial fast-layer escalation showed generation 1 where [0] is "Save".
-            // Save a note, then mutate the DOM before Turn 1's fast-layer step so [0] becomes "Delete" and [1] becomes "Save".
             scripted = ['note', { text: 'Save was at index 0' }];
           } else if (llmTurn === 1) {
             // Turn 1: the fast layer just re-indexed the page (generation 2), and escalated with fastActions=[].
             // Attempt to click the old index 0 (which is now "Delete"!). It must be refused with the fresh state.
-            scripted = ['click', { index: 0, generation: 1 }];
+            scripted = ['click', { index: 0 }];
           } else if (llmTurn === 2) {
             // Turn 2: now that the refusal returned the fresh page state, click the updated index 1 ("Save").
             const m = lastTool.match(/\[(\d+)\]\s+button "Save"/);
@@ -78,10 +82,6 @@ function startGenerationServer({ onBeforeSecondFastStep }) {
             scripted = ['done', { success: true, report: '## Generation Verified\n- stale click refused, fresh Save clicked' }];
           }
           llmTurn += 1;
-          if (llmTurn === 1) {
-            // Schedule DOM mutation right after the note tool finishes, before the second fast-layer snapshot.
-            setTimeout(() => { void onBeforeSecondFastStep?.(); }, 30);
-          }
           const [name, args] = scripted;
           const id = `call_gen_${llmTurn}`;
           const chunks = [
@@ -121,7 +121,7 @@ export async function runSnapshotGenerationScenario(context, extensionId) {
   const failures = [];
   let target = null;
   const { server, base, seenToolOutputs } = await startGenerationServer({
-    onBeforeSecondFastStep: async () => {
+    onAfterFirstFastSnapshot: async () => {
       await target?.evaluate(() => window.insertDeleteBeforeSave?.());
     },
   });
