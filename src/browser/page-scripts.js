@@ -371,9 +371,46 @@ export function snapshotPage(maxElements, maxTextChars, rule, generation) {
     }
     return lines;
   };
-  const text = clean(safeText(document.body, hidden), maxTextChars * 2)
-    .slice(0, maxTextChars);
   const scrollHeight = document.documentElement.scrollHeight;
+  const viewportText = () => {
+    const full = clean(safeText(document.body, hidden), Math.max(maxTextChars * 8, 30000));
+    if (!full) return '';
+    if (!(window.scrollY > 0)) return full.slice(0, maxTextChars);
+    let skippedAbove = 0;
+    const parts = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === 3) {
+        parts.push(node.nodeValue);
+        return;
+      }
+      if (node !== document.body && node.nodeType !== 1) return;
+      if (hidden.includes(node)) return;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      const rect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+      if (rect && rect.height > 0 && rect.bottom <= 0) {
+        skippedAbove += 1;
+        return;
+      }
+      const block = /^(block|flex|grid|list-item|table|flow-root)/.test(style.display);
+      if (block) parts.push('\n');
+      for (const child of node.childNodes ?? []) walk(child);
+      if (node.shadowRoot) walk(node.shadowRoot);
+      if (block) parts.push('\n');
+    };
+    if (document.body?.childNodes?.length) {
+      walk(document.body);
+      const anchored = clean(parts.join(''), maxTextChars * 2).slice(0, maxTextChars);
+      if (skippedAbove > 0 && anchored) return anchored;
+    }
+    const maxScroll = Math.max(1, scrollHeight - vh);
+    const ratio = Math.min(1, Math.max(0, window.scrollY / maxScroll));
+    const maxStart = Math.max(0, full.length - maxTextChars);
+    const startOffset = Math.floor(ratio * maxStart);
+    return full.slice(startOffset, startOffset + maxTextChars);
+  };
+  const text = viewportText();
   return {
     url: location.href,
     title: document.title,
