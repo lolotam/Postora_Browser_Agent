@@ -4,12 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MESSAGES } from '../src/sidepanel/messages.js';
+import { STAMPED_PROVIDER_SLOT_IDS } from '../src/sidepanel/provider-slot-template.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = fs.readFileSync(path.join(root, 'src/sidepanel/index.html'), 'utf8');
 const panel = fs.readFileSync(path.join(root, 'src/sidepanel/panel.js'), 'utf8');
 
-const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+const ids = [
+  ...[...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]),
+  ...STAMPED_PROVIDER_SLOT_IDS,
+];
 
 test('no id is used twice on the panel', () => {
   const counts = new Map();

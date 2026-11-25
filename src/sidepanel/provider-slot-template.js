@@ -1,7 +1,7 @@
 // Stamps the shared provider-slot template into #mainProvider and #fallbackProvider
 // before panel.js wires their forms and event listeners.
 
-const MAIN_SLOT_IDS = [
+export const MAIN_SLOT_IDS = [
   ['[data-field="provider"]', 'provider'],
   ['[data-field="chatgptSection"]', 'chatgptSection'],
   ['[data-field="authJson"]', 'authJson'],
@@ -19,12 +19,17 @@ const MAIN_SLOT_IDS = [
   ['[data-field="effort"]', 'effort'],
 ];
 
-const BACKUP_SLOT_IDS = [
+export const BACKUP_SLOT_IDS = [
   ['[data-field="authJson"]', 'backupAuthJson'],
   ['[data-field="importBtn"]', 'backupImportBtn'],
   ['[data-field="modelBtn"]', 'modelBtnBackup'],
   ['[data-field="modelLabel"]', 'modelBackupLabel'],
   ['[data-field="modelInfo"]', 'modelBackupInfo'],
+];
+
+export const STAMPED_PROVIDER_SLOT_IDS = [
+  ...MAIN_SLOT_IDS.map(([, id]) => id),
+  ...BACKUP_SLOT_IDS.map(([, id]) => id),
 ];
 
 export function stampProviderSlots(root = document) {
