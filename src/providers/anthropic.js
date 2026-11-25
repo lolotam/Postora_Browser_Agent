@@ -499,13 +499,12 @@ function compactMessages(messages) {
   }
   // Only the newest screenshot is kept; the older ones become a note, so a long
   // task does not carry every picture it ever took. The pictures of a tool
-  // result sit inside its content.
+  // result sit inside its content; user-attached images in user messages stay intact.
   const images = [];
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
-    for (const [index, block] of message.content.entries()) {
-      if (block.type === 'image') images.push({ holder: message.content, index });
-      else if (block.type === 'tool_result' && Array.isArray(block.content)) {
+    for (const block of message.content) {
+      if (block.type === 'tool_result' && Array.isArray(block.content)) {
         for (const [inner, part] of block.content.entries()) {
           if (part.type === 'image') images.push({ holder: block.content, index: inner });
         }

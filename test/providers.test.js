@@ -44,21 +44,27 @@ test('parseOutput extracts text and function calls from Responses items', () => 
   assert.equal(withoutId(items[0]).encrypted_content, 'x');
 });
 
-test('compactInput trims all but the latest observations and screenshots', () => {
+test('compactInput trims all but the latest observations and screenshots, while keeping user attachments', () => {
   const long = 'x'.repeat(2000);
   const input = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Look at this image' }, { type: 'input_image', image_url: 'data:user1' }] },
     { type: 'function_call_output', call_id: '1', output: long },
-    { type: 'message', role: 'user', content: [{ type: 'input_image', image_url: 'data:a' }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Screenshot returned by the last tool call:' }, { type: 'input_image', image_url: 'data:a' }] },
     { type: 'function_call_output', call_id: '2', output: long },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Message from the user while you work:\nCheck this too' }, { type: 'input_image', image_url: 'data:user2' }] },
     { type: 'function_call_output', call_id: '3', output: long },
-    { type: 'message', role: 'user', content: [{ type: 'input_image', image_url: 'data:b' }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Screenshot returned by the last tool call:' }, { type: 'input_image', image_url: 'data:b' }] },
   ];
   compactInput(input);
-  assert.ok(input[0].output.endsWith('[older page state trimmed]'));
-  assert.equal(input[2].output, long);
+  assert.ok(input[1].output.endsWith('[older page state trimmed]'));
   assert.equal(input[3].output, long);
-  assert.equal(input[1].content[0].type, 'input_text');
-  assert.equal(input[4].content[0].type, 'input_image');
+  assert.equal(input[5].output, long);
+  assert.equal(input[0].content[1].type, 'input_image', 'initial user attachment is kept');
+  assert.equal(input[0].content[1].image_url, 'data:user1');
+  assert.equal(input[4].content[1].type, 'input_image', 'steer user attachment is kept');
+  assert.equal(input[4].content[1].image_url, 'data:user2');
+  assert.equal(input[2].content[1].type, 'input_text', 'older tool screenshot is pruned');
+  assert.equal(input[6].content[1].type, 'input_image', 'newest tool screenshot is kept');
 });
 
 test('createAccumulator reassembles tool-call arguments split across chunks', () => {
@@ -72,12 +78,24 @@ test('createAccumulator reassembles tool-call arguments split across chunks', ()
   assert.equal(result.rawToolCalls[0].function.arguments, '{"url":"https://x.y"}');
 });
 
-test('compactMessages trims old tool observations only', () => {
+test('compactMessages trims old tool observations and tool screenshots only, keeping user attachments', () => {
   const long = 'y'.repeat(1000);
-  const messages = [1, 2, 3].map((n) => ({ role: 'tool', tool_call_id: String(n), content: long }));
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'My attached screenshot' }, { type: 'image_url', image_url: { url: 'data:user-attach-1' } }] },
+    ...[1, 2, 3].map((n) => ({ role: 'tool', tool_call_id: String(n), content: long })),
+    { role: 'user', content: [{ type: 'text', text: 'Screenshot returned by the last tool call:' }, { type: 'image_url', image_url: { url: 'data:shot-1' } }] },
+    { role: 'user', content: [{ type: 'text', text: 'Another user image' }, { type: 'image_url', image_url: { url: 'data:user-attach-2' } }] },
+    { role: 'user', content: [{ type: 'text', text: 'Screenshot returned by the last tool call:' }, { type: 'image_url', image_url: { url: 'data:shot-2' } }] },
+  ];
   compactMessages(messages);
-  assert.ok(messages[0].content.length < 500);
-  assert.equal(messages[2].content, long);
+  assert.ok(messages[1].content.length < 500);
+  assert.equal(messages[3].content, long);
+  assert.equal(messages[0].content[1].type, 'image_url', 'first user attachment kept');
+  assert.equal(messages[0].content[1].image_url.url, 'data:user-attach-1');
+  assert.equal(messages[5].content[1].type, 'image_url', 'second user attachment kept');
+  assert.equal(messages[5].content[1].image_url.url, 'data:user-attach-2');
+  assert.equal(messages[4].content[1].type, 'text', 'older tool screenshot pruned');
+  assert.equal(messages[6].content[1].type, 'image_url', 'latest tool screenshot kept');
 });
 
 test('CompatibleSession maps effort to GLM thinking or reasoning_effort', () => {

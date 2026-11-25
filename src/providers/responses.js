@@ -12,6 +12,7 @@ import { getValidCredential } from './account-auth.js';
 import { kindOf } from '../agent/tool-kinds.js';
 import { NOTEBOOK_HEADER, NOTE_SAVED_ARGS, trimKeepingNotebook, withoutNotebook } from '../agent/notebook.js';
 
+const SCREENSHOT_MESSAGE_PREFIX = 'Screenshot returned by the last tool call:';
 const KEEP_FULL_OBSERVATIONS = 2;
 const TRIMMED_OBSERVATION_CHARS = 400;
 // xAI's API, where a signed-in Grok account sends its requests.
@@ -69,7 +70,7 @@ export class ResponsesSession {
 
   async next({ signal, onEvent = () => {}, toolChoice = 'auto' }) {
     if (this.pendingImages.length) {
-      this.input.push(userMessage('Screenshot returned by the last tool call:', this.pendingImages));
+      this.input.push(userMessage(SCREENSHOT_MESSAGE_PREFIX, this.pendingImages));
       this.pendingImages = [];
     }
     compactInput(this.input);
@@ -308,8 +309,15 @@ export function compactInput(input) {
   for (const item of input) {
     if (item.type === 'function_call' && item.name === 'note' && resultAt.get(item.call_id) < lastNotebook) item.arguments = NOTE_SAVED_ARGS;
   }
-  const withImages = input.filter((i) => i.type === 'message' && i.content?.some((c) => c.type === 'input_image'));
+  const withImages = input.filter((i) => isToolScreenshotItem(i));
   for (const message of withImages.slice(0, -1)) {
     message.content = message.content.map((c) => (c.type === 'input_image' ? { type: 'input_text', text: '[older screenshot removed]' } : c));
   }
+}
+
+function isToolScreenshotItem(item) {
+  if (!item || item.type !== 'message' || !Array.isArray(item.content)) return false;
+  if (!item.content.some((c) => c.type === 'input_image')) return false;
+  const textParts = item.content.filter((c) => c.type === 'input_text');
+  return textParts.length === 0 || textParts.some((c) => String(c.text ?? '').startsWith(SCREENSHOT_MESSAGE_PREFIX));
 }
