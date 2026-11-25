@@ -142,7 +142,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     hide('baseUrlField', Boolean(oauth || planRoute || account));
     hide('apiKeyField', Boolean(oauth || account));
     for (const name of ['minimax', 'zai']) hide(`${name}OAuthAccount`, account !== name);
-    if (f('apiKeyLabel')) f('apiKeyLabel').textContent = plan ? t('connection.planKey') : 'API Key';
+    if (f('apiKeyLabel')) f('apiKeyLabel').textContent = plan ? t('connection.planKey') : t('compat.apiKey');
     if (f('openrouterStatus')) f('openrouterStatus').textContent = f('apiKey').value.trim() ? t('connection.connected') : t('auth.disconnected');
     hide('planHelp', !plan || Boolean(account));
     hide('planAccount', f('preset').value !== 'minimax-coding-plan' || Boolean(account));
@@ -372,6 +372,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     rerender() {
       renderRoutes(f('provider').value);
       renderEfforts(f('effort').value);
+      syncSections();
     },
   };
 }

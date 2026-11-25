@@ -13,6 +13,7 @@ import { CompatibleSession } from '../providers/openai-compatible.js';
 import { GrokAccountSession } from '../providers/responses.js';
 import { KimiSession } from '../providers/kimi.js';
 import { planAccountProvider, PlanAccountSession } from '../providers/plan-account.js';
+import { resolveLanguage, translateFor } from '../sidepanel/i18n.js';
 
 export { createFastAsk };
 
@@ -33,32 +34,37 @@ const accessOf = (state) => (typeof state === 'function' ? state() : state);
  * passed to the prompt of every slot, so the main model and the backup both
  * describe the same mode the worker enforces. It is never read from settings.
  */
+function msgFor(settings, key, vars) {
+  const lang = resolveLanguage(settings?.uiLanguage, globalThis.chrome?.i18n?.getUILanguage?.());
+  return translateFor(lang, key, vars);
+}
+
 function createProviderSession(slot, settings, conversationId, notify = null, accessState = null) {
   const tools = toolDefinitions(effectiveSettings(settings));
   const systemPrompt = buildSystemPrompt(effectiveSettings(settings), { accessState });
   if (slot.provider === 'chatgpt') {
-    if (!slot.chatgpt.model) throw new Error('Choose a ChatGPT model in settings first.');
+    if (!slot.chatgpt.model) throw new Error(msgFor(settings, 'err.chooseChatgptModel'));
     return new ChatgptSession({ ...slot.chatgpt, systemPrompt, tools, notify });
   }
   if (slot.provider === 'claude') {
-    if (!slot.claude.model) throw new Error('Choose a Claude model in settings first.');
+    if (!slot.claude.model) throw new Error(msgFor(settings, 'err.chooseClaudeModel'));
     return new AnthropicSession({ ...slot.claude, systemPrompt, tools, notify });
   }
   if (slot.provider === 'grok') {
-    if (!slot.grok.model) throw new Error('Choose a Grok model in settings first.');
+    if (!slot.grok.model) throw new Error(msgFor(settings, 'err.chooseGrokModel'));
     return new GrokAccountSession({ ...slot.grok, systemPrompt, tools, notify });
   }
   if (slot.provider === 'gemini') {
-    if (!slot.gemini.model || !slot.gemini.apiKey?.trim()) throw new Error('Choose a Gemini model and API key in settings first.');
+    if (!slot.gemini.model || !slot.gemini.apiKey?.trim()) throw new Error(msgFor(settings, 'err.chooseGeminiModel'));
     return new CompatibleSession({ ...slot.gemini, baseUrl: GEMINI_API_URL, thinkingStyle: 'gemini',
       systemPrompt, tools, sessionId: conversationId, notify, usage: false, strictRedirects: true });
   }
   if (slot.provider === 'kimi') {
-    if (!slot.kimi.model) throw new Error('Choose a Kimi model in settings first.');
+    if (!slot.kimi.model) throw new Error(msgFor(settings, 'err.chooseKimiModel'));
     return new KimiSession({ ...slot.kimi, systemPrompt, tools, sessionId: conversationId, notify });
   }
   const c = slot.compatible;
-  if (!c.model) throw new Error('Choose a model in settings first.');
+  if (!c.model) throw new Error(msgFor(settings, 'err.chooseModelInSettings'));
   const preset = COMPATIBLE_PRESETS[c.preset] ?? COMPATIBLE_PRESETS.custom;
   const accountProvider = planAccountProvider(slot);
   // The account route uses the preset of the route, so it keeps the preset's
@@ -85,11 +91,11 @@ export async function testProviderSlot(slot, settings, { timeoutMs = TEST_TIMEOU
     // task. No tool is executed and a blank/tool-only answer is not success.
     turn = await session.next({ signal, toolChoice: 'none' });
   } catch (error) {
-    if (signal.aborted) throw new Error(`Connection test for ${slotLabel(slot)} timed out after ${Math.round(timeoutMs / 1000)} s. Try a faster chat model or lower reasoning effort.`, { cause: error });
+    if (signal.aborted) throw new Error(msgFor(settings, 'err.testTimeout', { label: slotLabel(slot), seconds: Math.round(timeoutMs / 1000) }), { cause: error });
     throw error;
   }
   const reply = (turn.text || '').trim();
-  if (!reply) throw new Error('Connection test returned no text. Choose a chat model with tool support.');
+  if (!reply) throw new Error(msgFor(settings, 'err.testEmptyReply'));
   return { ms: Date.now() - started, model: slotLabel(slot), reply: reply.slice(0, 60) };
 }
 

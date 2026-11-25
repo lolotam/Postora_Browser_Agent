@@ -491,11 +491,11 @@
             <select id="preset" data-field="preset"></select>
           </label>
           <label class="field" data-field="baseUrlField">
-            <span>Base URL</span>
+            <span data-i18n="compat.baseUrl"></span>
             <input id="baseUrl" data-field="baseUrl" dir="ltr" />
           </label>
           <label class="field" data-field="apiKeyField">
-            <span data-field="apiKeyLabel">API Key</span>
+            <span data-field="apiKeyLabel" data-i18n="compat.apiKey"></span>
             <input id="apiKey" data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
         </div>
@@ -651,11 +651,11 @@
             <select data-field="preset"></select>
           </label>
           <label class="field" data-field="baseUrlField">
-            <span>Base URL</span>
+            <span data-i18n="compat.baseUrl"></span>
             <input data-field="baseUrl" dir="ltr" />
           </label>
           <label class="field" data-field="apiKeyField">
-            <span data-field="apiKeyLabel">API Key</span>
+            <span data-field="apiKeyLabel" data-i18n="compat.apiKey"></span>
             <input data-field="apiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
         </div>
@@ -695,7 +695,7 @@
             </select>
           </label>
           <label class="field">
-            <span>API Key</span>
+            <span data-i18n="compat.apiKey"></span>
             <input id="fastApiKey" type="password" dir="ltr" autocomplete="off" />
           </label>
           <div class="field model-field">
@@ -706,7 +706,7 @@
             </button>
             <input id="fastModel" type="text" dir="ltr" hidden />
           </div>
-          <label class="field" data-field="baseUrlField"><span>Base URL</span><input id="fastBaseUrl" dir="ltr" /></label>
+          <label class="field" data-field="baseUrlField"><span data-i18n="compat.baseUrl"></span><input id="fastBaseUrl" dir="ltr" /></label>
           <div class="row">
             <label class="field grow"><span data-i18n="fast.minProb"></span><input id="fastMinProb" type="number" min="0.3" max="0.99" step="0.05" /></label>
             <label class="field grow"><span data-i18n="fast.riskyMax"></span><input id="fastRiskyMax" type="number" min="0.05" max="0.9" step="0.05" /></label>
@@ -722,7 +722,7 @@
         <label class="check switch"><input type="checkbox" id="fastFallbackEnabled" role="switch" /> <span data-i18n="fast.fallbackEnable"></span></label>
         <div id="fastFallbackFields" class="fields">
           <label class="field"><span data-i18n="fast.provider"></span><select id="fastFallbackProvider"></select></label>
-          <label class="field"><span>API Key</span><input id="fastFallbackApiKey" type="password" dir="ltr" autocomplete="off" /></label>
+          <label class="field"><span data-i18n="compat.apiKey"></span><input id="fastFallbackApiKey" type="password" dir="ltr" autocomplete="off" /></label>
           <div class="field model-field">
             <span data-i18n="model.label"></span>
             <button type="button" class="model-button" id="modelBtnFastBackup">
