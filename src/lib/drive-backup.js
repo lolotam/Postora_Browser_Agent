@@ -4,7 +4,7 @@
 // a Google sign-in. It is a backup, not sync: each change uploads this computer's
 // settings, and a restore is automatic only on a fresh install.
 
-import { accountsIn, exportBackup, importBackup, normaliseAccounts } from './backup.js';
+import { accountsIn, exportBackup, importBackup, normaliseAccounts, stripSettingsCredentials } from './backup.js';
 import { googleAccessToken } from './google-account.js';
 import { mergeSettings } from './settings.js';
 
@@ -12,6 +12,21 @@ const FILE_NAME = 'browser-agent-backup.json';
 const FILES = 'https://www.googleapis.com/drive/v3/files';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 const STATE_KEY = 'driveBackup'; // { fileId, at, hash, error }
+export const DRIVE_CREDENTIALS_CONSENT_KEY = 'driveBackupIncludeCredentials';
+
+export async function getDriveCredentialsConsent() {
+  const stored = await chrome.storage.local.get(DRIVE_CREDENTIALS_CONSENT_KEY);
+  return stored?.[DRIVE_CREDENTIALS_CONSENT_KEY] === true;
+}
+
+export async function setDriveCredentialsConsent(include, { getToken = null } = {}) {
+  const next = include === true;
+  await chrome.storage.local.set({ [DRIVE_CREDENTIALS_CONSENT_KEY]: next });
+  if (!next && typeof getToken === 'function') {
+    await backUpToDrive({ getToken, force: true });
+  }
+  return next;
+}
 
 async function drive(token, url, init = {}) {
   const res = await fetch(url, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } });
@@ -105,9 +120,10 @@ export function backUpToDrive({ getToken = googleAccessToken, force = false } = 
 }
 
 async function upload(getToken, force = false) {
-  const stored = await chrome.storage.local.get('settings');
+  const stored = await chrome.storage.local.get(['settings', DRIVE_CREDENTIALS_CONSENT_KEY]);
   const includeSessions = mergeSettings(stored.settings).backupChats === true;
-  const data = await exportBackup({ includeSessions });
+  const includeCredentials = stored[DRIVE_CREDENTIALS_CONSENT_KEY] === true;
+  const data = await exportBackup({ includeSessions, includeCredentials });
   const hash = await backupHash(data);
   const state = await driveBackupState();
   if (!force && state.hash === hash && !state.error) return state;
@@ -152,10 +168,17 @@ async function restore(getToken) {
   const file = await findBackupFile(token);
   if (!file) throw new Error('There is no backup in Google Drive yet.');
   const data = await readBackupFile(token, file.id);
-  const settings = await importBackup(data);
-  // Records what Drive holds, so restoring does not upload it straight back; a local
-  // sign-in the file lacks (and the import keeps) still gets uploaded.
-  const held = { settings: mergeSettings(data.settings ?? {}), accounts: accountsIn(data), sessions: data.sessions ?? [] };
+  const settings = await importBackup(data, { preserveLocalCredentials: true });
+  const includeCredentials = await getDriveCredentialsConsent();
+  // Records what Drive holds under this profile's credential-inclusion rule, so
+  // restoring does not upload it straight back; a local sign-in or key the file
+  // lacks (and the import keeps) still gets uploaded when credential consent is on.
+  const mergedRemote = mergeSettings(data.settings ?? {});
+  const held = {
+    settings: includeCredentials ? mergedRemote : stripSettingsCredentials(mergedRemote),
+    accounts: includeCredentials ? accountsIn(data) : {},
+    sessions: data.sessions ?? [],
+  };
   await saveState({ fileId: file.id, at: Date.parse(file.modifiedTime) || Date.now(), hash: await backupHash(held), error: null });
   return settings;
 }

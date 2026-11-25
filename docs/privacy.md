@@ -16,7 +16,7 @@ The extension has no server of its own. The developer does not receive your task
 | Settings | When you save them | Stored on your computer |
 | Speech and its transcript | Only after voice listening is enabled | Chrome's Web Speech recognition service processes speech; the resulting command is sent to your selected execution provider |
 | Google account name, email address and profile picture | Only if you sign in with Google (optional) | Stored on your computer; the picture is shown in the header |
-| A backup of your settings, keys and account sign-in tokens | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
+| A backup of your settings (and, only if you turn on "Include keys and sign-ins in the Drive backup", your API keys and account sign-in tokens) | Only while signed in with Google | Your own Google Drive, in a hidden app folder only this extension can read |
 | Your conversations (the tasks and the replies) in that backup | Only if you turn on "My conversations in the Drive backup" in Settings → Account (it is off by default) | Your own Google Drive, in the same hidden app folder |
 | Feedback message, star rating, and an email address (one you type, or your Google email if signed in) | Only when you press Send in the feedback box, or give a task five stars | Sent to the developer by email through Formspree |
 
@@ -38,7 +38,7 @@ Signing in uses Google's standard sign-in page and asks for your basic profile (
 
 The backup is stored without extra encryption and is protected by your Google account. To delete it, open Google Drive → Settings → Manage apps → Postora Browser Agent → Delete hidden app data. To stop backups, sign out from the account menu.
 
-The backup holds your settings, your keys and your account sign-in tokens. Your conversations are in it only when you turn on "My conversations in the Drive backup" in Settings → Account; that switch is off by default, and the file you download yourself always holds the conversations. Turning the switch off does not delete what an earlier backup already uploaded: the conversations stay in Drive until the next backup replaces that file without them.
+The backup holds your settings. API keys and account sign-in tokens are omitted by default and are uploaded only when you turn on "Include keys and sign-ins in the Drive backup" in Settings → Account. Turning that switch off replaces the current Drive file with a credential-free one at once; older revisions that Google Drive keeps are outside the extension's control. Your conversations are in the Drive backup only when you turn on "My conversations in the Drive backup" in Settings → Account; that switch is also off by default, and the file you download yourself always holds the conversations. Turning the conversations switch off does not delete what an earlier backup already uploaded: the conversations stay in Drive until the next backup replaces that file without them.
 
 ## Notifications (optional)
 

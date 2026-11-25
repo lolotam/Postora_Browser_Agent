@@ -12,7 +12,16 @@ globalThis.chrome = {
   },
 };
 
-const { afterGoogleSignIn, backUpToDrive, driveBackupState, findBackupFile, isFreshSetup, restoreFromDrive } = await import('../src/lib/drive-backup.js');
+const {
+  DRIVE_CREDENTIALS_CONSENT_KEY,
+  afterGoogleSignIn,
+  backUpToDrive,
+  driveBackupState,
+  findBackupFile,
+  isFreshSetup,
+  restoreFromDrive,
+  setDriveCredentialsConsent,
+} = await import('../src/lib/drive-backup.js');
 const { mergeSettings } = await import('../src/lib/settings.js');
 
 const getToken = async () => 'ya29.token';
@@ -49,10 +58,11 @@ beforeEach(() => {
   stubDrive();
 });
 
-test('the first backup creates the file, later changes update it, unchanged settings upload nothing', async () => {
+test('the first backup creates the file (without credentials by default), later changes update it, unchanged settings upload nothing', async () => {
   local.settings = setUp;
   await backUpToDrive({ getToken });
-  assert.equal(drive.content.settings.compatible.apiKey, 'or-key');
+  assert.equal(drive.content.settings.compatible.apiKey, '');
+  assert.deepEqual(drive.content.settings.keys, {});
 
   calls = [];
   await backUpToDrive({ getToken });
@@ -93,7 +103,8 @@ test('overlapping backups make one file and leave the newest settings in Drive',
   assert.equal(drive.content.settings.maxSteps, 25);
 });
 
-test('a local sign-in that the restored file lacks is still uploaded afterwards', async () => {
+test('a local sign-in that the restored file lacks is still uploaded afterwards when credential consent is on', async () => {
+  local[DRIVE_CREDENTIALS_CONSENT_KEY] = true;
   drive = { id: 'file1', content: { format: 'browser-agent-backup', version: 1, settings: setUp, chatgptAuth: null } };
   local['accountAuth.chatgpt'] = { generation: 1, credential: credential('local') };
   await restoreFromDrive({ getToken });
@@ -101,7 +112,8 @@ test('a local sign-in that the restored file lacks is still uploaded afterwards'
   assert.equal(drive.content.accounts.chatgpt.access, 'local');
 });
 
-test('a refreshed token is uploaded again, and the generation on its own is not', async () => {
+test('a refreshed token is uploaded again when credential consent is on, and the generation on its own is not', async () => {
+  local[DRIVE_CREDENTIALS_CONSENT_KEY] = true;
   local.settings = setUp;
   local['accountAuth.chatgpt'] = { generation: 1, credential: { type: 'oauth', access: 'first', refresh: 'r1', expires: 1 } };
   await backUpToDrive({ getToken });
@@ -298,4 +310,74 @@ test('a stored value that is not a switch is no switch', async () => {
   await backUpToDrive({ getToken });
   assert.deepEqual(drive.content.sessions, [], 'the conversations stay out');
   assert.equal(mergeSettings(local.settings).backupChats, false, 'a malformed value is not a switch');
+});
+
+test('credential inclusion in Drive backup is off by default, stored outside settings, replaces Drive file immediately when turned off, and preserves local keys only for the same endpoint on restore', async () => {
+  const { exportBackup } = await import('../src/lib/backup.js');
+  local.settings = {
+    provider: 'compatible',
+    compatible: { preset: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'or-local-key', model: 'openai/gpt-5' },
+    gemini: { apiKey: 'gemini-local-key', model: 'gemini-3.8-flash' },
+  };
+  local['accountAuth.chatgpt'] = { generation: 1, credential: credential('local-chatgpt') };
+
+  // 1. Default off: Drive upload omits keys and accounts, while local exportBackup includes them.
+  await backUpToDrive({ getToken });
+  assert.equal(drive.content.settings.compatible.apiKey, '');
+  assert.equal(drive.content.settings.gemini.apiKey, '');
+  assert.deepEqual(drive.content.settings.keys, {});
+  assert.deepEqual(drive.content.accounts, {});
+
+  const localExport = await exportBackup();
+  assert.equal(localExport.settings.compatible.apiKey, 'or-local-key');
+  assert.equal('driveBackupIncludeCredentials' in localExport.settings, false, 'consent is never part of settings or exported backup');
+
+  // 2. Turning consent on uploads keys and sign-ins.
+  await setDriveCredentialsConsent(true, { getToken });
+  await backUpToDrive({ getToken });
+  assert.equal(drive.content.settings.compatible.apiKey, 'or-local-key');
+  assert.equal(drive.content.settings.gemini.apiKey, 'gemini-local-key');
+  assert.equal(drive.content.accounts.chatgpt.access, 'local-chatgpt');
+
+  // 3. Turning consent off uploads a credential-free file at once.
+  calls = [];
+  await setDriveCredentialsConsent(false, { getToken });
+  assert.deepEqual(calls, ['PATCH /upload/drive/v3/files/file1'], 'turning consent off uploads credential-free file immediately');
+  assert.equal(drive.content.settings.compatible.apiKey, '');
+  assert.deepEqual(drive.content.accounts, {});
+
+  // 4. Restoring a credential-free Drive backup keeps local keys when the endpoint matches,
+  //    but drops the key if the restored slot points at a different base URL.
+  drive.content = {
+    format: 'browser-agent-backup',
+    version: 3,
+    settings: {
+      provider: 'compatible',
+      maxSteps: 55,
+      compatible: { preset: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', model: 'openai/gpt-5' },
+      gemini: { apiKey: '', model: 'gemini-3.8-flash' },
+    },
+    accounts: {},
+    sessions: [],
+  };
+  const restoredSame = await restoreFromDrive({ getToken });
+  assert.equal(restoredSame.maxSteps, 55);
+  assert.equal(restoredSame.compatible.apiKey, 'or-local-key', 'same provider endpoint keeps local key');
+  assert.equal(restoredSame.gemini.apiKey, 'gemini-local-key', 'fixed-endpoint Gemini keeps local key');
+  assert.equal(local['accountAuth.chatgpt'].credential.access, 'local-chatgpt', 'omitted account sign-in is kept');
+
+  // Now Drive restores a slot pointing at a different base URL: the local key must NOT be paired with it.
+  drive.content = {
+    format: 'browser-agent-backup',
+    version: 3,
+    settings: {
+      provider: 'compatible',
+      compatible: { preset: 'openrouter', baseUrl: 'https://evil-proxy.example.com/v1', apiKey: '', model: 'openai/gpt-5' },
+    },
+    accounts: {},
+    sessions: [],
+  };
+  const restoredDifferentUrl = await restoreFromDrive({ getToken });
+  assert.equal(restoredDifferentUrl.compatible.apiKey, '', 'different baseUrl does not inherit local key');
+  assert.equal(restoredDifferentUrl.keys.openrouter, undefined, 'mismatched endpoint key is not re-shared from local.keys');
 });
