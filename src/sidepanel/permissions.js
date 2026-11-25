@@ -147,6 +147,8 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
         expression: typeof detail.expression === 'string' ? detail.expression : '',
         path: typeof detail.path === 'string' ? detail.path : '',
         size: Number.isInteger(detail.size) ? detail.size : null,
+        text: typeof detail.text === 'string' ? detail.text : '',
+        secret: detail.secret === true,
       } : null,
     };
   }
@@ -241,7 +243,7 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     // One decision for the whole card, so the note at the top is true of
     // every field on it. A line break inside a one-line field counts too,
     // since it is written as \n there.
-    const escape = [detail.command, detail.expression].some(needsEscape)
+    const escape = [detail.command, detail.expression, detail.secret ? '' : detail.text].some(needsEscape)
       || [detail.cwd, detail.path].some((value) => needsEscape(value) || /[\r\n]/.test(value ?? ''));
     const lines = [];
     if (escape) lines.push(translator('access.approval.exec.escaped'));
@@ -252,6 +254,11 @@ export function createPermissionUi({ container, t, getSessionId, getConnection, 
     }
     if (detail.path) lines.push(translator('access.approval.exec.target', { path: oneLine(detail.path, escape) }));
     if (detail.size !== null) lines.push(translator('access.approval.exec.size', { size: detail.size }));
+    if (detail.secret) {
+      lines.push(translator('access.approval.exec.secretText'));
+    } else if (detail.text) {
+      lines.push(translator('access.approval.exec.text'), gutter(detail.text, escape));
+    }
     if (detail.command) lines.push(translator('access.approval.exec.command'), gutter(detail.command, escape));
     if (detail.expression) lines.push(translator('access.approval.exec.expression'), gutter(detail.expression, escape));
     return lines.join('\n');
