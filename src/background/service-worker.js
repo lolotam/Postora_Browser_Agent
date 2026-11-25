@@ -64,7 +64,35 @@ const panelPorts = new Map();
 const reserved = new Set();
 const RESERVATION_MS = 10000;
 const DRIVE_BACKUP_DELAY_MS = 3000; // one upload for a burst of changes (a save writes several keys)
+export const IDLE_RUNNER_TTL_MS = 5 * 60_000;
 let driveBackupTimer = null;
+let idleEvictTimer = null;
+
+export function evictIdleRunners({ now = Date.now(), maxIdleMs = IDLE_RUNNER_TTL_MS } = {}) {
+  let evicted = 0;
+  for (const [id, runner] of [...runners.entries()]) {
+    if (
+      runner.running
+      || runner.ports.size > 0
+      || runner.pendingQuestion
+      || runner.saveTimer
+      || runner.access?.mode === FULL_ACCESS
+    ) continue;
+    const idleFor = now - (runner.lastActiveAt ?? 0);
+    if (idleFor >= maxIdleMs) {
+      runners.delete(id);
+      evicted += 1;
+    }
+  }
+  return evicted;
+}
+
+function scheduleIdleEviction(delayMs = IDLE_RUNNER_TTL_MS) {
+  clearTimeout(idleEvictTimer);
+  idleEvictTimer = setTimeout(() => {
+    evictIdleRunners();
+  }, delayMs);
+}
 
 // The browser the voice path borrows tabs with. One controller: the input of
 // two voice commands never runs at the same time, so they cannot fight over
@@ -240,7 +268,13 @@ function sessionWorkingIn(sessionId, tab) {
 }
 
 function broadcastSessions() {
-  for (const port of panels) port.postMessage({ type: 'sessions-changed' });
+  for (const port of panels) {
+    try {
+      port.postMessage({ type: 'sessions-changed' });
+    } catch {
+      panels.delete(port);
+    }
+  }
 }
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -264,6 +298,7 @@ chrome.runtime.onConnect.addListener((port) => {
     // every one of them is withdrawn at once, and each tab is given back when
     // its own cleanup is over.
     if (panelId) void releaseVoiceClaims(panelId);
+    scheduleIdleEviction();
   });
   // A panel whose port closed when the worker stopped reconnects as it sends, so
   // its task arrives while the session is still loading; it waits for the runner

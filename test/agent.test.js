@@ -367,3 +367,28 @@ test('stall detector does not trigger when the page fingerprint changes between 
     'generation differences and key order do not change the stall hash',
   );
 });
+
+test('a text-only turn with empty text or after an unresolved tool error is not an automatic success', async () => {
+  const emptyEvents = [];
+  await runAgent({
+    session: scriptedSession([{ text: '', toolCalls: [] }]),
+    task: 't',
+    maxSteps: 3,
+    emit: (e) => emptyEvents.push(e),
+    execute: async () => ({ output: 'ok' }),
+  });
+  assert.equal(emptyEvents.find((e) => e.type === 'final')?.success, false);
+
+  const afterFailureEvents = [];
+  await runAgent({
+    session: scriptedSession([
+      { text: '', toolCalls: [call('1', 'click', { index: 0 })] },
+      { text: 'I could not click the element because it failed.', toolCalls: [] },
+    ]),
+    task: 't',
+    maxSteps: 3,
+    emit: (e) => afterFailureEvents.push(e),
+    execute: async () => ({ output: 'Error: no element', isError: true }),
+  });
+  assert.equal(afterFailureEvents.find((e) => e.type === 'final')?.success, false);
+});

@@ -27,6 +27,7 @@ import { nativeRequest } from '../native/client.js';
 
 const SAVE_DELAY_MS = 500;
 const KEEP_ALIVE_MS = 20000;
+export const ASK_USER_TIMEOUT_MS = 5 * 60_000;
 // How far past the automatic threshold a conversation may grow while "queue" postpones the compaction.
 const POSTPONE_LIMIT = 1.5;
 const STREAMING = new Set(['text-delta', 'reasoning-delta', 'text-reset', 'compacting']);
@@ -224,8 +225,10 @@ export class SessionRunner {
    * is the standalone one: it starts at Ask first, changes its mode by itself
    * and says nothing about a profile.
    */
-  constructor({ meta, body, color, isTakenByOther, onSessionsChanged, initialAccessMode = ASK_FIRST, onAccessModeChange = null, getProfileAccess = null }) {
+  constructor({ meta, body, color, isTakenByOther, onSessionsChanged, initialAccessMode = ASK_FIRST, onAccessModeChange = null, getProfileAccess = null, askUserTimeoutMs = ASK_USER_TIMEOUT_MS }) {
     this.id = meta.id;
+    this.askUserTimeoutMs = askUserTimeoutMs;
+    this.lastActiveAt = Date.now();
     this.continuation = checkpointFor(body);
     this.title = meta.title;
     this.project = body.project ?? null;
@@ -292,6 +295,7 @@ export class SessionRunner {
       isTakenByOther: (tab) => voiceClaims.tabHolder(isTakenByOther, tab, { sessionId: this.id }),
       reservation: voiceClaims.tabReservation({ sessionId: this.id, controllerId: this.id, owner: meta.title || 'this session' }),
       onLost: () => this.endForLostTab(),
+      onCancel: () => this.stop(),
     });
     this.browser.groupId = body.groupId ?? null;
   }
@@ -344,6 +348,7 @@ export class SessionRunner {
       }
     }
     if (!this.trustedPorts.size) this.access.cancel('panel-lost');
+    this.lastActiveAt = Date.now();
   }
 
   /**
@@ -654,6 +659,8 @@ export class SessionRunner {
   }
 
   emit(event) {
+    if (this.disposed || !event || typeof event !== 'object') return;
+    this.lastActiveAt = Date.now();
     if (event.type === 'final') this.continuation = null;
     if (event.type === 'status') event.resumable = Boolean(this.continuation) && !event.running;
     if (event.type === 'tool-end' && event.secret && event.callId) {
@@ -672,10 +679,18 @@ export class SessionRunner {
       event.at ??= Date.now(); // the panel shows durations from these
       this.transcript.push(event);
       this.scheduleSave();
-      if (event.type === 'final') this.transition('finished');
-      else if (event.type === 'ask') this.transition('ask', `ask-${(this.asks += 1)}`);
+      try {
+        if (event.type === 'final') void Promise.resolve(this.transition('finished')).catch(() => {});
+        else if (event.type === 'ask') void Promise.resolve(this.transition('ask', `ask-${(this.asks += 1)}`)).catch(() => {});
+      } catch {
+        // Notification errors never stop event emission.
+      }
     }
-    this.broadcast(event);
+    try {
+      this.broadcast(event);
+    } catch {
+      // Closed or dead ports are ignored so emit is as safe as broadcast.
+    }
   }
 
   /** Shows a notice and returns its id; `{ dismiss: id }` withdraws one (a retry that ended). */
@@ -1141,9 +1156,38 @@ export class SessionRunner {
 
   askUser(question, signal) {
     return new Promise((resolve, reject) => {
-      this.pendingQuestion = { question, resolve };
+      let settled = false;
+      const finish = (fn) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener?.('abort', onAbort);
+        fn();
+      };
+      const onResolve = (text) => finish(() => resolve(text));
+      const onAbort = () => finish(() => {
+        if (this.pendingQuestion?.resolve === onResolve) {
+          this.pendingQuestion = null;
+          this.clearAskNotices();
+        }
+        reject(new DOMException('Stopped by user', 'AbortError'));
+      });
+      const timeoutMs = Number.isFinite(this.askUserTimeoutMs) && this.askUserTimeoutMs > 0
+        ? this.askUserTimeoutMs
+        : ASK_USER_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        finish(() => {
+          if (this.pendingQuestion?.resolve === onResolve) {
+            this.pendingQuestion = null;
+            this.clearAskNotices();
+            this.emit({ type: 'ask-expired' });
+          }
+          reject(new Error('Timed out waiting for the user’s answer.'));
+        });
+      }, timeoutMs);
+      this.pendingQuestion = { question, resolve: onResolve };
       this.emit({ type: 'ask', question });
-      signal.addEventListener('abort', () => reject(new DOMException('Stopped by user', 'AbortError')), { once: true });
+      signal?.addEventListener?.('abort', onAbort, { once: true });
     });
   }
 
