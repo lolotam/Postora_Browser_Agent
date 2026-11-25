@@ -1115,7 +1115,7 @@ function clearMessages() {
   }
   ui.steps.clear();
   ui.trace = null;
-  ui.notices = [];
+  ui.notices = ui.notices.filter((n) => n.local);
   renderNotices();
 }
 
@@ -1130,13 +1130,21 @@ function renderNotices() {
     row.title = notice.detail ?? '';
     row.dir = 'auto';
     const text = document.createElement('span');
-    text.textContent = `⚠ ${t(NOTICE_TEXT[notice.kind] ?? 'notice.switched', { from: notice.from ?? '', to: notice.to ?? '', reason })}`;
+    const message = notice.message || t(NOTICE_TEXT[notice.kind] ?? 'notice.switched', { from: notice.from ?? '', to: notice.to ?? '', reason });
+    text.textContent = `⚠ ${message}`;
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'ghost icon';
     close.textContent = '×';
     close.setAttribute('aria-label', t('notice.dismiss'));
-    close.addEventListener('click', () => send({ type: 'dismiss-notice', id: notice.id }));
+    close.addEventListener('click', () => {
+      if (notice.local) {
+        ui.notices = ui.notices.filter((n) => n.id !== notice.id);
+        renderNotices();
+      } else {
+        send({ type: 'dismiss-notice', id: notice.id });
+      }
+    });
     row.append(text, close);
     return row;
   }));
@@ -1196,16 +1204,16 @@ function showPendingQuestion(question) {
 
 /**
  * The question that was answered is gone: the card is hidden, the panel waits
- * for the task again and the send button goes away with it. A question that
- * arrived while the answer was on its way is a different one: it keeps its
- * card, its hint and its button.
+ * for the task again and the send button stays available for steering or
+ * follow-up. A question that arrived while the answer was on its way is a
+ * different one: it keeps its card, its hint and its button.
  */
 function clearAnsweredQuestion(questionId) {
   if (ui.questionId !== questionId) return false;
   ui.question = null;
   showPendingQuestion(null);
   $('hint').textContent = t('status.running');
-  $('sendBtn').hidden = true;
+  $('sendBtn').hidden = false;
   return true;
 }
 
@@ -1546,9 +1554,13 @@ function closeMicWindow() {
   // The window handle can be lost (a stale id after a panel reload, a
   // windows.remove that failed), so the microphone's own tabs are removed by
   // address as well: the window closes either way.
+  const micBase = chrome.runtime.getURL('src/sidepanel/mic.html');
   chrome.tabs.query({}).then((tabs) => {
     for (const tab of tabs) {
-      if ((tab.url ?? '').includes('mic.html')) chrome.tabs.remove(tab.id).catch(() => {});
+      const tabUrl = tab.url ?? '';
+      if (tabUrl === micBase || tabUrl.startsWith(`${micBase}?`) || tabUrl.startsWith(`${micBase}#`)) {
+        chrome.tabs.remove(tab.id).catch(() => {});
+      }
     }
   }).catch(() => {});
 }
@@ -4131,8 +4143,19 @@ function showSettingsError(message) {
   $('settingsError').scrollIntoView({ block: 'nearest' });
 }
 
-pick(startSessions).catch((err) => showSettingsError(err.message));
-init().catch((err) => showSettingsError(err.message));
+let startupNoticeSeq = 0;
+
+function showStartupError(message) {
+  const text = String(message || '');
+  showSettingsError(text);
+  if (!text) return;
+  startupNoticeSeq += 1;
+  ui.notices.push({ id: `startup-${startupNoticeSeq}`, kind: 'startup', level: 'error', message: text, detail: text, local: true });
+  renderNotices();
+}
+
+pick(startSessions).catch((err) => showStartupError(err?.message ?? String(err)));
+init().catch((err) => showStartupError(err?.message ?? String(err)));
 // The chat is the first screen: its docks are wired before anything arrives.
 placeApprovals('chat');
 syncHeaderContext();
