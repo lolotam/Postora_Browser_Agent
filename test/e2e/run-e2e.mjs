@@ -35,6 +35,7 @@ import { runResumeSessionScenario } from './resume-session.mjs';
 import { runOverlayScenario } from './overlay.mjs';
 import { runVoiceCleanupScenario } from './voice-cleanup.mjs';
 import { runNemotronVoiceScenario } from './nemotron-voice.mjs';
+import { runDialogsAndStopScenario } from './dialogs-and-stop.mjs';
 
 // The sign-in scenario mocks OpenAI for the service worker's own requests,
 // which Playwright routes only with this switch on.
@@ -1948,6 +1949,7 @@ async function main() {
       ...(await verify(runAccessRuntimeScenario)),
       ...(await verify(runAccessRememberedScenario)),
       ...(await verify(runVoiceAccessScenario)),
+      ...(await verify(runDialogsAndStopScenario)),
       ...(await runScenario(context, extensionId, {
         name: 'fast-access-disabled',
         task: 'Fill the form and report the result',

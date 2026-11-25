@@ -44,6 +44,7 @@ export const LOCAL_EXECUTION = 'local-execution';
 export const OBSERVE = 'observe';
 export const INTERACT = 'interact';
 export const SENSITIVE = 'sensitive';
+export const DIALOG = 'dialog';
 
 /** The two answers a question can get. */
 export const ALLOW = 'allow';
@@ -63,6 +64,9 @@ const OBSERVATIONS = new Set([
 // An explicit read of one field's value, secret or not.
 const SENSITIVE_READS = new Set(['read_field']);
 
+// Answering a page dialog (accepting a confirm or answering a prompt).
+const DIALOG_ACTIONS = new Set(['dialog']);
+
 // Running code or writing files is never part of Full access. It needs its own
 // approval card in every mode, even when nothing else on the page does.
 const LOCAL_EXECUTION_ACTIONS = new Set(['project_write', 'project_run', 'run_terminal']);
@@ -80,6 +84,7 @@ export function classifyAction(tool) {
   if (LOCAL_EXECUTION_ACTIONS.has(tool)) return LOCAL_EXECUTION;
   if (OBSERVATIONS.has(tool)) return OBSERVE;
   if (SENSITIVE_READS.has(tool)) return SENSITIVE;
+  if (DIALOG_ACTIONS.has(tool)) return DIALOG;
   return INTERACT;
 }
 
@@ -94,6 +99,7 @@ export function requiresApproval(mode, action) {
 function kindRank(kind) {
   if (kind === OBSERVE) return 0;
   if (kind === INTERACT) return 1;
+  if (kind === DIALOG) return 1;
   if (kind === SENSITIVE) return 2;
   if (kind === LOCAL_EXECUTION) return 3;
   return -1;
@@ -104,9 +110,18 @@ function kindRank(kind) {
  *
  * The authority classifies the action itself. A caller may only ask for
  * more, never for less: nothing may call a click an observation, and
- * nothing may call a field read a harmless one.
+ * nothing may call a field read a harmless one. Dismissing a page dialog
+ * (`action: 'dialog', args: { accept: false }`) is an observation so it never
+ * blocks on user approval when backing out of a dialog.
  */
-function effectiveKind(action, supplied) {
+function effectiveKind(action, supplied, args = null, target = null) {
+  if (action === 'dialog') {
+    const dismiss = args && typeof args === 'object' && args.accept === false;
+    const alertDialog = target && typeof target === 'object' && target.dialogType === 'alert';
+    if (dismiss || alertDialog) {
+      return kindRank(supplied) > kindRank(OBSERVE) ? supplied : OBSERVE;
+    }
+  }
   const derived = classifyAction(action);
   return kindRank(supplied) > kindRank(derived) ? supplied : derived;
 }
@@ -404,16 +419,18 @@ export class AccessAuthority {
     signal = null,
   } = {}) {
     const id = newId('req');
+    const copiedArgs = cloneJson(args);
+    const copiedTarget = cloneJson(target);
     const request = Object.freeze({
       id,
       sessionId: this.#sessionId,
       revision: this.#revision,
       mode: this.#mode,
       action: typeof action === 'string' ? action : '',
-      kind: effectiveKind(action, kind),
-      args: deepFreeze(cloneJson(args)),
+      kind: effectiveKind(action, kind, copiedArgs, copiedTarget),
+      args: deepFreeze(copiedArgs),
       tabId: tabId ?? null,
-      target: deepFreeze(cloneJson(target)),
+      target: deepFreeze(copiedTarget),
       describe: typeof describe === 'string' ? describe : null,
     });
     let settle = () => {};
@@ -612,12 +629,14 @@ export class AccessAuthority {
     if (tabId !== null && typeof tabId !== 'number' && typeof tabId !== 'string') {
       throw new TypeError('the tab of an operation must be a number or a string');
     }
+    const args = cloneJson(operation?.args ?? null);
+    const target = cloneJson(operation?.target ?? null);
     return {
       action,
-      kind: effectiveKind(action, operation?.kind),
-      args: cloneJson(operation?.args ?? null),
+      kind: effectiveKind(action, operation?.kind, args, target),
+      args,
       tabId,
-      target: cloneJson(operation?.target ?? null),
+      target,
       describe: typeof operation?.describe === 'string' ? operation.describe : null,
     };
   }

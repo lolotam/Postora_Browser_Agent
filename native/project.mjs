@@ -82,12 +82,14 @@ export async function projectPath(root, relative = '.', { create = false } = {})
   }
 }
 
-export async function projectOperation(message) {
+export async function projectOperation(message, { signal = null, beforeCommit = null } = {}) {
+  signal?.throwIfAborted?.();
   const project = await projectInfo(message.root);
   if (message.type === 'project-info') return { ...project };
   if (message.type === 'project-context') return projectContext(project.root);
   const relative = message.path ?? '.';
   const target = await projectPath(project.root, relative, { create: message.type === 'project-write' });
+  signal?.throwIfAborted?.();
   if (message.type === 'project-list') {
     const entries = await fs.readdir(target, { withFileTypes: true });
     return { path: relative, entries: entries.filter((entry) => !HIDDEN.has(entry.name) && !secret(entry.name) && !entry.isSymbolicLink())
@@ -134,10 +136,14 @@ export async function projectOperation(message) {
         if (previous ? !actual || hash(actual) !== message.expected_hash : actual !== undefined) {
           throw new Error('File changed before writing. Read it again.');
         }
-        if (previous) await fs.rename(temporary, target);
-        else {
+        if (typeof beforeCommit === 'function') await beforeCommit();
+        if (previous) {
+          signal?.throwIfAborted?.();
+          await fs.rename(temporary, target);
+        } else {
           // Exclusive link creation is atomic and cannot overwrite a file that
           // appeared after the check for a new path.
+          signal?.throwIfAborted?.();
           await fs.link(temporary, target);
         }
       } finally { await fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; }); }

@@ -524,6 +524,7 @@ export const MESSAGES = {
     'access.approval.actionName.media_play_pause': 'تشغيل الوسائط أو إيقافها مؤقتًا',
     'access.approval.actionName.media_mute': 'كتم صوت الوسائط أو إعادته',
     'access.approval.actionName.find_on_page': 'البحث داخل الصفحة',
+    'access.approval.actionName.dialog': 'الرد على حوار الصفحة',
     // @store-strip-start
     'access.approval.actionName.run_javascript': 'تشغيل جافاسكريبت في الصفحة',
     // @store-strip-end
@@ -1049,6 +1050,7 @@ export const MESSAGES = {
     'access.approval.actionName.media_play_pause': 'Play or pause media',
     'access.approval.actionName.media_mute': 'Mute or unmute media',
     'access.approval.actionName.find_on_page': 'Find text on the page',
+    'access.approval.actionName.dialog': 'Answer a page dialog',
     // The store build has no run-JavaScript capability, so it has no approval
     // of one either.
     // @store-strip-start

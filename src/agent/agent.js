@@ -13,6 +13,7 @@ const SKIPPED_AFTER_ERROR = 'Not executed: an earlier action in this turn failed
 const SKIPPED_AFTER_ASK = 'Not executed: you asked the user a question in this turn. Read the answer, then decide again.';
 const SKIPPED_AFTER_BOUNDARY = 'Not executed: an earlier action in this turn needs you to look at its result first. Decide again.';
 const SKIPPED_FOR_MESSAGE = 'Not executed: the user sent you a message. Read it, then decide again.';
+const SKIPPED_FOR_DIALOG = 'Not executed: a dialog is open.';
 const STEER_PREFIX = 'Message from the user while you work (it may change or add to the task):';
 const SUMMARY_PROMPT = 'You have reached the step limit. Stop using tools and write the final report now: what was done, all information collected with sources, and what remains.';
 // A reply that was cut off is not an answer: the model is told and asked again,
@@ -174,7 +175,8 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
         // failed (a pending done must not report success), when the user was asked
         // something (an approval must be read before anything it governs runs), or
         // when the page changed under an earlier action.
-        const reason = result.isError ? SKIPPED_AFTER_ERROR
+        const reason = result.dialogPending ? SKIPPED_FOR_DIALOG
+          : result.isError ? SKIPPED_AFTER_ERROR
           : call.name === 'ask_user' ? SKIPPED_AFTER_ASK
             : boundary ? SKIPPED_AFTER_BOUNDARY
             : result.pageChanged ? SKIPPED_PAGE_CHANGED : null;

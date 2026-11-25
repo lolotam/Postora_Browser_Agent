@@ -103,3 +103,48 @@ test('project files stay under the root and writes detect changed files', async 
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('project_write aborted before rename or link leaves the target file unchanged', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'postora-project-abort-'));
+  try {
+    const existingPath = path.join(root, 'existing.txt');
+    await fs.writeFile(existingPath, 'original content');
+    const { hash } = await projectOperation({ type: 'project-read', root, path: 'existing.txt' });
+
+    // Pause an existing-file write right before fs.rename and abort the signal.
+    const abortExisting = new AbortController();
+    await assert.rejects(
+      projectOperation(
+        { type: 'project-write', root, path: 'existing.txt', text: 'replaced content', expected_hash: hash },
+        {
+          signal: abortExisting.signal,
+          beforeCommit: async () => {
+            abortExisting.abort();
+          },
+        },
+      ),
+      /AbortError|aborted/i,
+    );
+    assert.equal(await fs.readFile(existingPath, 'utf8'), 'original content', 'existing file is untouched');
+    assert.deepEqual(await fs.readdir(root), ['existing.txt'], 'temporary file was cleaned up');
+
+    // Pause a new-file write right before fs.link and abort the signal.
+    const abortNew = new AbortController();
+    await assert.rejects(
+      projectOperation(
+        { type: 'project-write', root, path: 'created.txt', text: 'new content', expected_hash: 'new' },
+        {
+          signal: abortNew.signal,
+          beforeCommit: async () => {
+            abortNew.abort();
+          },
+        },
+      ),
+      /AbortError|aborted/i,
+    );
+    assert.deepEqual(await fs.readdir(root), ['existing.txt'], 'new file was not linked and temp file was cleaned up');
+  } finally {
+    assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

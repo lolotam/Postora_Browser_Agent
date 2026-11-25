@@ -43,6 +43,7 @@ export const TOOL_KINDS = {
   // @store-strip-end
   ask_user: 'boundary',
   choose_suggestion: 'boundary',
+  dialog: 'boundary',
   note: 'bookkeeping',
   read_notes: 'notes',
   done: 'done',

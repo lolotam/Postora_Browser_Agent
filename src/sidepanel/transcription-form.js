@@ -107,6 +107,7 @@ export function createTranscriptionForm(root = document) {
     try {
       const { result } = await nativeRequest({ type: 'speech-install', modelId }, {
         signal: controller.signal,
+        confirmWaitMs: 0,
         onProgress: (event) => {
           if (record.generation !== mine) return;
           record.percent = event.percent;

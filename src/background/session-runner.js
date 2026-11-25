@@ -1007,6 +1007,7 @@ export class SessionRunner {
     if (!this.abort || this.tabLost) return;
     this.tabLost = true;
     this.access.cancel('tab-closed');
+    void this.browser.dismissAllDialogs?.('tab-closed');
     this.abort.abort();
     this.browser.overlay.end();
   }
@@ -1016,6 +1017,7 @@ export class SessionRunner {
     // nothing that was allowed may run any more. The mode itself stays: the
     // session may go on with the mode the user chose.
     this.access.cancel('stopped');
+    void this.browser.dismissAllDialogs?.('stopped');
     if (!this.abort) return;
     this.abort.abort();
     this.browser.overlay.end(); // feedback now, not after the current step returns
