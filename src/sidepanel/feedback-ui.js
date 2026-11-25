@@ -45,7 +45,7 @@ export function createFeedbackUi({
       star.setAttribute('aria-label', t('rate.star', { n }));
       star.addEventListener('click', () => {
         row.querySelectorAll('.star').forEach((s, i) => s.classList.toggle('on', i < n));
-        onPick(n);
+        return onPick(n);
       });
       row.append(star);
     }
