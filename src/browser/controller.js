@@ -376,6 +376,7 @@ export class BrowserController {
   }
 
   async openTab(url, { guard = null } = {}) {
+    assertHttpUrl(url);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const created = await chrome.tabs.create({ url, active: false });
     this.disposable.add(created.id);
@@ -1173,6 +1174,7 @@ export class BrowserController {
   }
 
   async navigate(url, { guard = null, tabId = null, signal = null } = {}) {
+    assertHttpUrl(url);
     const tab = await this.pinnedTab(tabId);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     if (signal?.aborted) throw makeSignalError(signal, false);
@@ -1485,6 +1487,18 @@ function raceWithSignal(promise, signal, dispatched) {
       },
     );
   });
+}
+
+function assertHttpUrl(url = '') {
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch {
+    throw new Error(`Invalid URL "${url}". Only http and https URLs are allowed.`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Navigation to "${parsed.protocol}" URLs is not allowed; only http and https URLs are permitted.`);
+  }
 }
 
 function assertControllable(url = '') {

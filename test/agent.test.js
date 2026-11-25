@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAgent } from '../src/agent/agent.js';
-import { formatSnapshot, normalizeUrl, toolDefinitions } from '../src/agent/tools.js';
+import { createToolExecutor, formatSnapshot, normalizeUrl, toolDefinitions } from '../src/agent/tools.js';
+import { BrowserController } from '../src/browser/controller.js';
+import { AccessAuthority, FULL_ACCESS } from '../src/permissions/policy.js';
 import { renderMarkdown, reportFileName } from '../src/sidepanel/markdown.js';
 
 /** Scripted provider session: returns the queued turns in order and records results. */
@@ -123,6 +125,35 @@ test('formatSnapshot and normalizeUrl produce model-readable output', () => {
   assert.match(text, /3 more further down/);
   assert.equal(normalizeUrl('example.com'), 'https://example.com');
   assert.equal(normalizeUrl('http://x.y'), 'http://x.y');
+});
+
+test('navigate and open_tab allow only http and https URLs', async () => {
+  for (const forbidden of ['javascript:alert(1)', 'data:text/html,<h1>x</h1>', 'file:///C:/Windows/win.ini', 'chrome://settings', 'about:blank', 'ftp://files.example.com']) {
+    assert.throws(() => normalizeUrl(forbidden), /only http and https/i, `normalizeUrl must reject ${forbidden}`);
+  }
+
+  const access = new AccessAuthority({ sessionId: 'b6-nav' });
+  access.setMode(FULL_ACCESS, { trusted: true, acknowledged: true, expectedRevision: access.revision });
+  const fakeBrowser = {
+    overlay: {},
+    currentTab: async () => ({ id: 1, url: 'https://example.com' }),
+    captureTarget: async () => ({ scope: 'tab', kind: 'tab', tabId: 1, url: 'https://example.com' }),
+    validateTarget: async () => ({ ok: true }),
+    navigate: async () => { throw new Error('browser.navigate should not be called'); },
+    openTab: async () => { throw new Error('browser.openTab should not be called'); },
+  };
+  const execute = createToolExecutor(fakeBrowser, { access });
+  for (const tool of ['navigate', 'open_tab']) {
+    for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,hi', 'chrome://extensions']) {
+      const res = await execute(tool, { url });
+      assert.equal(res.isError, true, `${tool} should fail for ${url}`);
+      assert.match(res.output, /only http and https/i);
+    }
+  }
+
+  const controller = Object.create(BrowserController.prototype);
+  await assert.rejects(() => controller.navigate('javascript:alert(1)'), /only http and https/i);
+  await assert.rejects(() => controller.openTab('file:///C:/test.txt'), /only http and https/i);
 });
 
 test('renderMarkdown escapes HTML and only links http(s) URLs', () => {

@@ -1145,7 +1145,17 @@ function preview(text) {
 }
 
 export function normalizeUrl(url) {
-  const trimmed = String(url).trim();
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
+  const trimmed = String(url ?? '').trim();
+  if (!trimmed) throw new Error('A navigation URL is required.');
+  const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  let parsed;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    throw new Error(`Invalid URL "${trimmed}". Only http and https URLs are allowed.`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Navigation to "${parsed.protocol}" URLs is not allowed; only http and https URLs are permitted.`);
+  }
+  return withScheme;
 }
