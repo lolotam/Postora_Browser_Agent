@@ -364,13 +364,15 @@ export function createVoiceController({
    * so nothing of it may keep working, and the log has to say that it was
    * cancelled instead of waiting for ever.
    */
-  function cancelRunning() {
+  function cancelRunning({ markCancelled = true } = {}) {
     const run = running;
     if (!run) return;
     running = null;
     busy = false;
     run.abort.abort();
-    run.entry?.setErr?.(cancelledText());
+    if (markCancelled && !run.entry?.isTerminal?.()) {
+      run.entry?.setErr?.(cancelledText());
+    }
     setState();
   }
 

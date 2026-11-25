@@ -96,6 +96,9 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
       logs.push(record);
       return {
         command,
+        isTerminal() {
+          return record.status?.state === 'err' || record.status?.state === 'ok' || record.status?.state === 'thinking';
+        },
         setStatus(text, state) { record.status = { text, state }; },
         setOk(text) { record.status = { text, state: 'ok' }; },
         setErr(text) { record.status = { text, state: 'err' }; },
@@ -590,4 +593,16 @@ test('a microphone window that does not open does not leave the panel claiming i
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(app.controller.listening, false, 'the panel is not listening');
   assert.deepEqual(app.failures, ['mic-failed']);
+});
+
+test('closing the voice screen preserves an existing waiting or error status on the running entry instead of overwriting it with Cancelled', async () => {
+  const app = setup({ handsFree: true });
+  await app.controller.open();
+  app.created[0].hear('first');
+  assert.equal(app.logs.length, 1);
+
+  // Entry settles to waiting for answer ('thinking') or a specific error before close():
+  app.logs[0].status = { text: 'The agent is waiting for your reply…', state: 'thinking' };
+  app.controller.close();
+  assert.deepEqual(app.logs[0].status, { text: 'The agent is waiting for your reply…', state: 'thinking' });
 });

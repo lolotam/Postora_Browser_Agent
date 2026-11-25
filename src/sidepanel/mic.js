@@ -121,7 +121,7 @@ function start() {
   text = '';
   postedUpTo = 0;
   lastFinal = '';
-  rec.lang = speechLang(language);
+  rec.lang = speechLang(language, settings?.transcription?.language);
   rec.interimResults = true;
   rec.continuous = continuous;
   rec.onprocessing = () => {
