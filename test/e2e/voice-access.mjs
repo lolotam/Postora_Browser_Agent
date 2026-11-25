@@ -246,6 +246,16 @@ async function askFirstRefuses(panel, target, failures) {
   if (!/Go/.test(card.text)) failures.push(`the card does not name the element: ${card.text}`);
   if (await oldApprovalShown(panel)) failures.push('the old box of the voice screen was shown');
 
+  // Space and Enter typed into the command box while the approval card is open must never approve.
+  await panel.bringToFront();
+  await panel.focus('#voiceTypedInput');
+  await panel.keyboard.type(' ');
+  await panel.press('#voiceTypedInput', 'Enter');
+  await panel.waitForTimeout(150);
+  await target.bringToFront();
+  if ((await target.textContent('#out')) !== '') failures.push('Space or Enter in the command box approved the action');
+  if ((await panel.locator('#approvals .permission-request').count()) !== 1) failures.push('Space or Enter in the command box settled the approval card');
+
   await panel.click('#approvals .permission-request .permission-deny');
   await panel.waitForFunction(() => document.querySelectorAll('#approvals .permission-request').length === 0, { timeout: 15000 }).catch(() => {});
   await target.waitForTimeout(400);
