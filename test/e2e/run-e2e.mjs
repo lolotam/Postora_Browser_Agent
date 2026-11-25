@@ -993,8 +993,16 @@ async function runVoiceScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     const asked = await panel.textContent('#approvals');
     if (!/Go/.test(asked)) failures.push(`the approval does not name the element: ${asked}`);
-    const focusedAllow = await panel.evaluate(() => document.activeElement?.classList.contains('permission-allow'));
+    const focusedAllow = await panel.evaluate(() => document.activeElement?.classList.contains('permission-allow')
+      || Boolean(document.activeElement?.closest('#voiceApproval')));
     if (focusedAllow) failures.push('a new approval stole keyboard focus onto Allow');
+    // Space and Enter typed into the voice command box while a card is open must never approve it.
+    await panel.focus('#voiceTypedInput');
+    await panel.keyboard.type(' ');
+    await panel.press('#voiceTypedInput', 'Enter');
+    await panel.waitForTimeout(150);
+    if ((await target.textContent('#out')) !== '') failures.push('Space or Enter in the voice command box approved the waiting card');
+    if (!(await panel.locator('#approvals .permission-request').count())) failures.push('Space or Enter in the voice command box settled the waiting card');
     await panel.click('#approvals .permission-deny');
     await panel.waitForSelector('#approvals .permission-request', { state: 'hidden', timeout: 10000 });
     if ((await target.textContent('#out')) !== '') failures.push('the page was clicked although the answer was no');

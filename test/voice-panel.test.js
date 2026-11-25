@@ -61,3 +61,14 @@ test('the voice screen shows a question that is waiting for an answer', () => {
   assert.ok(panel.includes('function showPendingQuestion('), 'the question is shown by the panel');
   assert.ok(panel.includes("$('voicePendingBtn').addEventListener('click', () => showChat())"), 'the user can answer it in the chat');
 });
+
+test('voice approval does not move focus to the Approve button and announces through a polite live region', () => {
+  const fnStart = panel.indexOf('function askVoiceApproval(');
+  assert.ok(fnStart >= 0, 'askVoiceApproval exists in panel.js');
+  const fnEnd = panel.indexOf('\nfunction approvalText(', fnStart);
+  const fnBody = panel.slice(fnStart, fnEnd);
+  assert.doesNotMatch(fnBody, /\.focus\s*\(/, 'askVoiceApproval must never steal focus onto the Approve button');
+  assert.match(fnBody, /setAttribute\(['"]role['"],\s*['"]status['"]\)/, 'announces through a status live region');
+  assert.match(fnBody, /setAttribute\(['"]aria-live['"],\s*['"]polite['"]\)/, 'announces politely');
+  assert.match(html, /id="voiceApproval"[^>]*aria-live="polite"/, 'voiceApproval container uses aria-live="polite"');
+});

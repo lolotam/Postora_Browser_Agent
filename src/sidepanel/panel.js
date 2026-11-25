@@ -2041,11 +2041,14 @@ function askVoiceApproval(what) {
   return new Promise((resolve) => {
     const box = $('voiceApproval');
     box.hidden = false;
+    box.setAttribute('aria-live', 'polite');
     box.replaceChildren();
     const title = document.createElement('strong');
     title.textContent = t('voice.approveTitle');
     const detail = document.createElement('div');
     detail.className = 'voice-approve-detail';
+    detail.setAttribute('role', 'status');
+    detail.setAttribute('aria-live', 'polite');
     detail.dir = 'auto';
     detail.textContent = approvalText(what);
     const actions = document.createElement('div');
@@ -2064,7 +2067,6 @@ function askVoiceApproval(what) {
     actions.append(yes, no);
     box.append(title, detail, actions);
     if ($('voiceView').hidden) openVoice();
-    yes.focus();
   });
 }
 
