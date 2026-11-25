@@ -38,13 +38,70 @@ const TRANSIENT_EVENTS = new Set(['access-state', 'access-request', 'access-requ
 // The one page of this extension that may ask for the access mode. The check
 // is exact: the side panel of this extension, and nothing else.
 
+const MASK = '•••';
+const SECRET_PREVIEW = '••••••••';
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX_TOKEN_SEGMENT = /^[0-9a-f]{16,}$/i;
+const DIGIT_TOKEN_SEGMENT = /^\d{12,}$/;
+
 /**
- * The site a target is on, without its path, its query or its fragment.
- *
- * A preview names the site and nothing more: a URL that carries a search or
- * a token in its query does not belong in a panel that may be on screen.
+ * True when a URL path segment looks like an opaque token or credential rather
+ * than a readable route name.
  */
-function safeOrigin(url) {
+function isTokenLikeSegment(rawSegment) {
+  let segment = rawSegment;
+  try {
+    segment = decodeURIComponent(rawSegment);
+  } catch {
+    // Keep the raw segment if percent-encoding is malformed.
+  }
+  if (!segment || segment.length < 16) return false;
+  if (UUID_SEGMENT.test(segment) || HEX_TOKEN_SEGMENT.test(segment) || DIGIT_TOKEN_SEGMENT.test(segment)) {
+    return true;
+  }
+  if (!/^[A-Za-z0-9._~+-]+=*$/.test(segment)) return false;
+  const hasLower = /[a-z]/.test(segment);
+  const hasUpper = /[A-Z]/.test(segment);
+  const hasDigit = /\d/.test(segment);
+  if (hasDigit && (hasLower || hasUpper)) {
+    // Readable slug words separated by hyphens (e.g. "account-settings-2026")
+    // have short alphabetic words; opaque tokens have long unbroken runs or
+    // mixed case + digits inside a single run.
+    const parts = segment.split(/[-_]/);
+    if (parts.some((part) => part.length >= 12 && /\d/.test(part) && /[A-Za-z]/.test(part))) return true;
+    if (parts.length === 1) return true;
+  }
+  if (hasLower && hasUpper && segment.length >= 20 && !segment.includes('-')) return true;
+  return false;
+}
+
+function maskUrlQuery(search) {
+  if (!search || search === '?') return '';
+  const raw = search.startsWith('?') ? search.slice(1) : search;
+  if (!raw) return '';
+  const parts = raw.split('&').filter(Boolean).map((part) => {
+    const eq = part.indexOf('=');
+    const rawKey = eq === -1 ? part : part.slice(0, eq);
+    let key = rawKey;
+    try {
+      key = decodeURIComponent(rawKey.replace(/\+/g, ' '));
+    } catch {
+      // Keep the raw key if malformed.
+    }
+    const cleanKey = key.replace(/[^\w.-]/g, '_').slice(0, 40) || 'param';
+    return `${cleanKey}=${MASK}`;
+  });
+  return parts.length ? `?${parts.join('&')}` : '';
+}
+
+/**
+ * The destination or site a target is on: origin and path, with URL
+ * credentials, query values and token-like path segments masked.
+ *
+ * When the URL is at the root path (`/`) with no credentials and no query,
+ * only the origin is returned so simple site previews stay compact.
+ */
+function safeUrlPreview(url) {
   if (typeof url !== 'string' || !url) return null;
   let parsed;
   try {
@@ -53,7 +110,16 @@ function safeOrigin(url) {
     return null;
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-  return parsed.origin;
+  const hasCredentials = Boolean(parsed.username || parsed.password);
+  const host = `${parsed.protocol}//${hasCredentials ? `${MASK}@` : ''}${parsed.host}`;
+  const rawSegments = parsed.pathname.split('/');
+  const maskedSegments = rawSegments.map((seg, idx) => (idx > 0 && isTokenLikeSegment(seg) ? MASK : seg));
+  const pathname = maskedSegments.join('/') || '/';
+  const search = maskUrlQuery(parsed.search);
+  if (!hasCredentials && (pathname === '/' || pathname === '') && !search) {
+    return parsed.origin;
+  }
+  return `${host}${pathname}${search}`;
 }
 
 /**
@@ -71,13 +137,15 @@ function safeLabel(label) {
 }
 
 /**
- * The exact local action a card approves.
+ * The exact action detail a card approves.
  *
  * A command or an expression must be shown whole, however long it is: a cut
  * preview would approve one thing and run another. A write only names its
  * target and how much text would be written; the text itself stays private.
+ * Typing actions show the text to be typed, or a fixed mask when the target
+ * field holds a secret.
  */
-function publicExecDetail(action, args) {
+function publicExecDetail(action, args, target = null) {
   if (action === 'run_terminal' || action === 'project_run') {
     return Object.freeze({
       command: typeof args?.command === 'string' ? args.command : '',
@@ -94,6 +162,28 @@ function publicExecDetail(action, args) {
       path: typeof args?.path === 'string' ? args.path : '',
       size: typeof args?.text === 'string' ? args.text.length : 0,
     });
+  }
+  if (action === 'type_text' || action === 'insert_text') {
+    if (target?.element?.secret) {
+      return Object.freeze({ text: SECRET_PREVIEW, secret: true });
+    }
+    if (typeof args?.text === 'string') {
+      return Object.freeze({ text: args.text });
+    }
+  }
+  if (action === 'choose_suggestion') {
+    if (target?.element?.secret) {
+      return Object.freeze({ text: SECRET_PREVIEW, secret: true });
+    }
+    const picked = typeof args?.option === 'string' && args.option ? args.option : args?.text;
+    if (typeof picked === 'string') {
+      return Object.freeze({ text: picked });
+    }
+  }
+  if (action === 'select_option') {
+    if (typeof args?.option === 'string') {
+      return Object.freeze({ text: args.option });
+    }
   }
   return null;
 }
@@ -436,17 +526,21 @@ export class SessionRunner {
    * itself gave the target.
    */
   publicRequest(request) {
-    const destination = request.action === 'navigate' || request.action === 'open_tab'
+    const isNavigation = request.action === 'navigate' || request.action === 'open_tab';
+    const destination = isNavigation
       ? request.args?.url
       : request.action === 'web_search' ? 'https://www.google.com' : null;
-    const execDetail = publicExecDetail(request.action, request.args);
+    const origin = isNavigation
+      ? safeUrlPreview(destination)
+      : (safeUrlPreview(destination) ?? safeUrlPreview(request.target?.url));
+    const execDetail = publicExecDetail(request.action, request.args, request.target);
     return Object.freeze({
       id: request.id,
       sessionId: request.sessionId,
       revision: request.revision,
       action: request.action,
       kind: request.kind,
-      origin: safeOrigin(destination) ?? safeOrigin(request.target?.url),
+      origin,
       label: safeLabel(request.target?.element?.label) ?? (request.action.startsWith('project_') ? safeLabel(request.args?.path || this.project?.name) : null),
       ...(execDetail ? { execDetail } : {}),
       ...(['project_run', 'run_terminal'].includes(request.action) ? {

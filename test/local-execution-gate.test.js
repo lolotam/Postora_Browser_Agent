@@ -331,3 +331,105 @@ test('a line inside a command cannot pass for the card\'s working-directory labe
   assert.ok(lines.includes('│ access.approval.exec.workingDirectory:C:\\\\safe'), 'the command\'s own line is marked as command text');
   assert.ok(lines.indexOf('│ del *') > lines.indexOf(labelLines[0]), 'the command comes after the labelled fields');
 });
+
+test('approval cards show origin and path, mask credentials, query values and token segments, and never fall back to current origin on navigation', async () => {
+  const call = SessionRunner.prototype.publicRequest;
+
+  // Navigation shows origin + path, masks credentials, query values and high-entropy token segments.
+  const navShown = call.call({}, {
+    id: 'req-nav-token',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'navigate',
+    kind: 'interact',
+    args: {
+      url: 'https://alice:hunter2@app.example.com/reset/550e8400-e29b-41d4-a716-446655440000/a9f4c2e8b1d073654120fedcba987654/confirm?token=secret-jwt&next=/home#frag',
+    },
+    target: { url: 'https://current-origin.example.org/dashboard' },
+  });
+  assert.equal(navShown.origin, 'https://•••@app.example.com/reset/•••/•••/confirm?token=•••&next=•••');
+  assert.ok(!navShown.origin.includes('alice'));
+  assert.ok(!navShown.origin.includes('hunter2'));
+  assert.ok(!navShown.origin.includes('secret-jwt'));
+  assert.ok(!navShown.origin.includes('550e8400'));
+  assert.ok(!navShown.origin.includes('a9f4c2e8b1d073654120fedcba987654'));
+
+  // Never fall back to current tab origin when a navigation destination is invalid or non-http(s).
+  const invalidNavShown = call.call({}, {
+    id: 'req-nav-bad',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'navigate',
+    kind: 'interact',
+    args: { url: 'javascript:alert(1)' },
+    target: { url: 'https://current-origin.example.org/dashboard' },
+  });
+  assert.equal(invalidNavShown.origin, null);
+
+  const openTabBadShown = call.call({}, {
+    id: 'req-open-bad',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'open_tab',
+    kind: 'interact',
+    args: { url: 'not a valid url' },
+    target: { url: 'https://current-origin.example.org/dashboard' },
+  });
+  assert.equal(openTabBadShown.origin, null);
+
+  // Underlying approval in AccessAuthority stays bound to the exact unmasked destination URL.
+  const { authority, asked } = makeAuthority();
+  const unmaskedUrl = 'https://app.example.com/reset/550e8400-e29b-41d4-a716-446655440000?token=secret-1';
+  const pending = authority.authorize({
+    action: 'navigate',
+    args: { url: unmaskedUrl },
+    tabId: 1,
+  });
+  await tick();
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].args.url, unmaskedUrl);
+  authority.respondApproval({
+    id: asked[0].id,
+    sessionId: SESSION,
+    revision: asked[0].revision,
+    decision: 'allow',
+  });
+  const { permit } = await pending;
+  assert.ok(permit);
+  assert.equal(authority.grantValid(permit, { action: 'navigate', args: { url: unmaskedUrl }, tabId: 1 }), true);
+  assert.equal(authority.grantValid(permit, { action: 'navigate', args: { url: 'https://app.example.com/reset/•••?token=•••' }, tabId: 1 }), false);
+});
+
+test('approval cards show typed text for ordinary fields and mask secret fields', () => {
+  const call = SessionRunner.prototype.publicRequest;
+
+  const plainType = call.call({}, {
+    id: 'req-type-plain',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'type_text',
+    kind: 'interact',
+    args: { index: 1, text: 'hello world' },
+    target: { url: 'https://example.com/search', element: { label: 'Search', secret: false } },
+  });
+  assert.equal(plainType.origin, 'https://example.com/search');
+  assert.deepEqual(plainType.execDetail, { text: 'hello world' });
+  const plainCardText = cardFor(plainType).find((node) => node.className === 'permission-exec-detail').textContent;
+  assert.ok(plainCardText.includes('access.approval.exec.text'));
+  assert.ok(plainCardText.includes('│ hello world'));
+
+  const secretType = call.call({}, {
+    id: 'req-type-secret',
+    sessionId: SESSION,
+    revision: 1,
+    action: 'type_text',
+    kind: 'interact',
+    args: { index: 2, text: 'super-secret-password-123' },
+    target: { url: 'https://example.com/login', element: { label: 'Password', secret: true } },
+  });
+  assert.deepEqual(secretType.execDetail, { text: '••••••••', secret: true });
+  assert.ok(!JSON.stringify(secretType).includes('super-secret-password-123'));
+  const secretCardText = cardFor(secretType).find((node) => node.className === 'permission-exec-detail').textContent;
+  assert.ok(secretCardText.includes('access.approval.exec.secretText'));
+  assert.ok(!secretCardText.includes('super-secret-password-123'));
+});
