@@ -82,31 +82,40 @@ export async function runVoiceCleanupScenario(context, extensionId) {
       })]);
     } finally { clearTimeout(firstTimer); }
     console.log('Voice cleanup: first model started');
-    await panel.fill('#voiceTypedInput', 'Voice command two');
+    await panel.fill('#voiceTypedInput', 'Voice command while busy');
     await panel.press('#voiceTypedInput', 'Enter');
-    console.log('Voice cleanup: second submitted');
+    console.log('Voice cleanup: busy command submitted');
     assert.equal(await panel.locator('#voiceLog .voice-entry').count(), 2);
+    assert.equal(await panel.locator('#voiceLog .voice-entry.dropped').count(), 1, 'a command submitted while busy is dropped as heard, not run');
     releaseFirst();
     console.log('Voice cleanup: first released');
     await panel.waitForFunction(() => document.querySelector('.msg.final')?.textContent.includes('First voice command finished'));
     console.log('Voice cleanup: first final visible');
     await panel.waitForTimeout(200);
+    // While post-final worker cleanup (`status: { running: false }`) is still held,
+    // the session is still busy: an utterance during cleanup is also dropped.
+    await panel.fill('#voiceTypedInput', 'Voice command during cleanup');
+    await panel.press('#voiceTypedInput', 'Enter');
     const held = await panel.evaluate(() => ({
       errors: [...document.querySelectorAll('#voiceLog .voice-entry.err')].map((node) => node.textContent),
+      dropped: document.querySelectorAll('#voiceLog .voice-entry.dropped').length,
       succeeded: document.querySelectorAll('#voiceLog .voice-entry.ok').length,
     }));
-    assert.deepEqual(tasks, ['one'], 'the second command waits for the worker idle event');
-    assert.deepEqual(held.errors, [], 'the queued command is not rejected during cleanup');
+    assert.deepEqual(tasks, ['one'], 'no command starts while the task or its cleanup is still running');
+    assert.deepEqual(held.errors, [], 'dropped commands are not marked as errors');
+    assert.equal(held.dropped, 2);
     assert.equal(held.succeeded, 1);
     await panel.evaluate(() => {
       const held = window.__voiceCleanupHeld;
       held.listener(held.event);
       window.__voiceCleanupHeld = null;
     });
+    await panel.fill('#voiceTypedInput', 'Voice command two');
+    await panel.press('#voiceTypedInput', 'Enter');
     await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length === 2, { timeout: 15000 });
     assert.deepEqual(tasks, ['one', 'two']);
     assert.equal(await panel.locator('#voiceLog .voice-entry.err').count(), 0);
-    console.log('VOICE CLEANUP PASSED: the queued command waits for worker idle, then runs once.');
+    console.log('VOICE CLEANUP PASSED: phrases while busy or cleaning up are dropped; a command after idle runs once.');
     return [];
   } catch (error) {
     const state = await panel.evaluate(() => ({

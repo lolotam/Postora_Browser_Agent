@@ -1233,6 +1233,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 1, { timeout: 15000 }).catch(() => {});
     const clicked = await target.evaluate(() => ({
       text: document.getElementById('out')?.textContent ?? '',
       trusted: document.getElementById('out')?.dataset.trusted ?? '',
@@ -1245,6 +1246,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('field')?.value === 'hello', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 2, { timeout: 15000 }).catch(() => {});
     const typed = await target.evaluate(() => ({
       value: document.getElementById('field')?.value ?? '',
       trusted: document.getElementById('out')?.dataset.trusted ?? '',
@@ -1257,6 +1259,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'entered', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 3, { timeout: 15000 }).catch(() => {});
     const entered = await target.evaluate(() => document.getElementById('out')?.textContent ?? '');
     if (entered !== 'entered') failures.push(`Enter did not reach the page ("${entered}")`);
 
