@@ -7,12 +7,9 @@ import { requestJson } from '../lib/json.js';
 import { MODEL_IDLE_MS, fetchModel, readSse } from '../lib/sse.js';
 import { ProviderHttpError, readError, withRetry } from '../lib/retry.js';
 import { providerErrorMessage } from '../lib/failure.js';
-import { kindOf } from '../agent/tool-kinds.js';
-import { NOTEBOOK_HEADER, NOTE_SAVED_ARGS, trimKeepingNotebook, withoutNotebook } from '../agent/notebook.js';
+import { compactAnthropicMessages } from '../agent/trimming.js';
 
 const BASE_URL = 'https://api.anthropic.com/v1';
-const KEEP_FULL_OBSERVATIONS = 2;
-const TRIMMED_OBSERVATION_CHARS = 400;
 // Anthropic caches the prompt prefix; the last block of the system prompt and
 // the last tool carry the breakpoint.
 const CACHE_CONTROL = { type: 'ephemeral' };
@@ -436,22 +433,6 @@ function finalBlock(entry) {
   return block;
 }
 
-/** The text of a tool result, wherever it sits in the content. */
-function resultText(block) {
-  if (typeof block.content === 'string') return block.content;
-  return (block.content ?? []).find((b) => b.type === 'text')?.text ?? '';
-}
-
-/** Replaces the text of a tool result, keeping its images. */
-function setResultText(block, text) {
-  if (typeof block.content === 'string') {
-    block.content = text;
-    return;
-  }
-  const index = (block.content ?? []).findIndex((b) => b.type === 'text');
-  if (index >= 0) block.content[index] = { ...block.content[index], text };
-}
-
 /** A screenshot as an image block. */
 function imageBlock(dataUrl) {
   const match = /^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i.exec(String(dataUrl ?? ''));
@@ -465,53 +446,5 @@ function imageBlock(dataUrl) {
  * observations out.
  */
 function compactMessages(messages) {
-  const names = new Map();
-  for (const message of messages) {
-    for (const block of message.content ?? []) {
-      if (block.type === 'tool_use') names.set(block.id, block.name);
-    }
-  }
-  const results = [];
-  for (const message of messages) {
-    for (const block of message.content ?? []) {
-      if (block.type === 'tool_result') results.push({ block, name: names.get(block.tool_use_id) });
-    }
-  }
-  const kindOfResult = (r) => kindOf(r.name);
-  const observations = results.filter((r) => !['bookkeeping', 'notes'].includes(kindOfResult(r)));
-  const notebookReads = results.filter((r) => kindOfResult(r) === 'notes');
-  // Only the agent adds the notebook header, so it marks a notebook copy; one
-  // copy is enough, the latest.
-  const lastNotebook = results.findLastIndex((r) => resultText(r.block).includes(NOTEBOOK_HEADER));
-  results.forEach((r, n) => {
-    if (n < lastNotebook) setResultText(r.block, withoutNotebook(resultText(r.block)));
-  });
-  for (const r of [...observations.slice(0, -KEEP_FULL_OBSERVATIONS), ...notebookReads.slice(0, -1)]) {
-    setResultText(r.block, trimKeepingNotebook(resultText(r.block), TRIMMED_OBSERVATION_CHARS));
-  }
-  // A note's text is in the latest notebook copy, so once one follows, the call
-  // keeps only a marker and old notes no longer grow the context.
-  const resultAt = new Map(results.map((r, n) => [r.block.tool_use_id, n]));
-  for (const message of messages) {
-    for (const block of message.content ?? []) {
-      if (block.type === 'tool_use' && block.name === 'note' && resultAt.get(block.id) < lastNotebook) block.input = JSON.parse(NOTE_SAVED_ARGS);
-    }
-  }
-  // Only the newest screenshot is kept; the older ones become a note, so a long
-  // task does not carry every picture it ever took. The pictures of a tool
-  // result sit inside its content; user-attached images in user messages stay intact.
-  const images = [];
-  for (const message of messages) {
-    if (!Array.isArray(message.content)) continue;
-    for (const block of message.content) {
-      if (block.type === 'tool_result' && Array.isArray(block.content)) {
-        for (const [inner, part] of block.content.entries()) {
-          if (part.type === 'image') images.push({ holder: block.content, index: inner });
-        }
-      }
-    }
-  }
-  for (const image of images.slice(0, -1)) {
-    image.holder[image.index] = { type: 'text', text: '[older screenshot removed]' };
-  }
+  compactAnthropicMessages(messages);
 }

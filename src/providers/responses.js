@@ -9,12 +9,8 @@ import { MODEL_IDLE_MS, fetchModel, readSse } from '../lib/sse.js';
 import { ProviderHttpError, readError, withRetry } from '../lib/retry.js';
 import { providerErrorMessage } from '../lib/failure.js';
 import { getValidCredential } from './account-auth.js';
-import { kindOf } from '../agent/tool-kinds.js';
-import { NOTEBOOK_HEADER, NOTE_SAVED_ARGS, trimKeepingNotebook, withoutNotebook } from '../agent/notebook.js';
+import { compactResponsesInput, SCREENSHOT_MESSAGE_PREFIX } from '../agent/trimming.js';
 
-const SCREENSHOT_MESSAGE_PREFIX = 'Screenshot returned by the last tool call:';
-const KEEP_FULL_OBSERVATIONS = 2;
-const TRIMMED_OBSERVATION_CHARS = 400;
 // xAI's API, where a signed-in Grok account sends its requests.
 const XAI_BASE_URL = 'https://api.x.ai/v1';
 
@@ -291,33 +287,5 @@ function toolArguments(text) {
 
 /** Shrinks old page observations and screenshots so long tasks stay within context. */
 export function compactInput(input) {
-  const names = new Map(input.filter((i) => i.type === 'function_call').map((i) => [i.call_id, i.name]));
-  const outputs = input.filter((i) => i.type === 'function_call_output');
-  const kindOfResult = (i) => kindOf(names.get(i.call_id));
-  const observations = outputs.filter((i) => !['bookkeeping', 'notes'].includes(kindOfResult(i)));
-  const notebookReads = outputs.filter((i) => kindOfResult(i) === 'notes');
-  // One notebook copy, the latest (see compactMessages).
-  const lastNotebook = input.findLastIndex((i) => i.type === 'function_call_output' && typeof i.output === 'string' && i.output.includes(NOTEBOOK_HEADER));
-  input.forEach((item, n) => {
-    if (item.type === 'function_call_output' && n < lastNotebook && typeof item.output === 'string') item.output = withoutNotebook(item.output);
-  });
-  for (const item of [...observations.slice(0, -KEEP_FULL_OBSERVATIONS), ...notebookReads.slice(0, -1)]) {
-    if (typeof item.output === 'string') item.output = trimKeepingNotebook(item.output, TRIMMED_OBSERVATION_CHARS);
-  }
-  // Notes already shown in a later notebook copy keep only a marker (see compactMessages).
-  const resultAt = new Map(input.map((i, n) => [i.type === 'function_call_output' ? i.call_id : null, n]));
-  for (const item of input) {
-    if (item.type === 'function_call' && item.name === 'note' && resultAt.get(item.call_id) < lastNotebook) item.arguments = NOTE_SAVED_ARGS;
-  }
-  const withImages = input.filter((i) => isToolScreenshotItem(i));
-  for (const message of withImages.slice(0, -1)) {
-    message.content = message.content.map((c) => (c.type === 'input_image' ? { type: 'input_text', text: '[older screenshot removed]' } : c));
-  }
-}
-
-function isToolScreenshotItem(item) {
-  if (!item || item.type !== 'message' || !Array.isArray(item.content)) return false;
-  if (!item.content.some((c) => c.type === 'input_image')) return false;
-  const textParts = item.content.filter((c) => c.type === 'input_text');
-  return textParts.length === 0 || textParts.some((c) => String(c.text ?? '').startsWith(SCREENSHOT_MESSAGE_PREFIX));
+  compactResponsesInput(input);
 }

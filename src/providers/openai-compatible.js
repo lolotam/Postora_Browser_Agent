@@ -6,12 +6,8 @@ import { MODEL_IDLE_MS, fetchModel, readSse } from '../lib/sse.js';
 import { requestJson } from '../lib/json.js';
 import { ProviderHttpError, readError, withRetry } from '../lib/retry.js';
 import { parseTextToolCalls } from './text-tool-calls.js';
-import { kindOf } from '../agent/tool-kinds.js';
-import { NOTEBOOK_HEADER, NOTE_SAVED_ARGS, trimKeepingNotebook, withoutNotebook } from '../agent/notebook.js';
+import { compactChatMessages, SCREENSHOT_MESSAGE_PREFIX } from '../agent/trimming.js';
 
-const SCREENSHOT_MESSAGE_PREFIX = 'Screenshot returned by the last tool call:';
-const KEEP_FULL_OBSERVATIONS = 2;
-const TRIMMED_OBSERVATION_CHARS = 400;
 // Gateways such as Vercel's list image, video and embedding models next to chat
 // models. "evaluation" models (typesafe-ai/jev) are kept, flagged as decision models.
 const NON_CHAT_TYPES = new Set(['embedding', 'image', 'video', 'reranking', 'speech', 'transcription', 'realtime']);
@@ -393,40 +389,7 @@ function mergeableDetail(last, entry) {
  * ones are cut. Notes are short and never cut, and do not push observations out.
  */
 export function compactMessages(messages) {
-  const names = new Map();
-  for (const m of messages) for (const tc of m.tool_calls ?? []) names.set(tc.id, tc.function?.name);
-  const toolMessages = messages.filter((m) => m.role === 'tool');
-  const kindOfResult = (m) => kindOf(names.get(m.tool_call_id));
-  const observations = toolMessages.filter((m) => !['bookkeeping', 'notes'].includes(kindOfResult(m)));
-  const notebookReads = toolMessages.filter((m) => kindOfResult(m) === 'notes');
-  // Only the agent adds the notebook header (tools quote it in page text), so it marks
-  // a notebook copy; one copy is enough, the latest.
-  const lastNotebook = messages.findLastIndex((m) => m.role === 'tool' && typeof m.content === 'string' && m.content.includes(NOTEBOOK_HEADER));
-  messages.forEach((m, i) => {
-    if (m.role === 'tool' && i < lastNotebook && typeof m.content === 'string') m.content = withoutNotebook(m.content);
-  });
-  for (const m of [...observations.slice(0, -KEEP_FULL_OBSERVATIONS), ...notebookReads.slice(0, -1)]) {
-    if (typeof m.content === 'string') m.content = trimKeepingNotebook(m.content, TRIMMED_OBSERVATION_CHARS);
-  }
-  // A note's text is in the latest notebook copy, so once one follows, the call keeps
-  // only a marker and old notes no longer grow the context.
-  const resultAt = new Map(messages.map((m, i) => [m.role === 'tool' ? m.tool_call_id : null, i]));
-  for (const m of messages) {
-    for (const tc of m.tool_calls ?? []) {
-      if (tc.function?.name === 'note' && resultAt.get(tc.id) < lastNotebook) tc.function.arguments = NOTE_SAVED_ARGS;
-    }
-  }
-  const withImages = messages.filter((m) => isToolScreenshotMessage(m));
-  for (const m of withImages.slice(0, -1)) {
-    m.content = m.content.map((c) => (c.type === 'image_url' ? { type: 'text', text: '[older screenshot removed]' } : c));
-  }
-}
-
-function isToolScreenshotMessage(m) {
-  if (!m || m.role !== 'user' || !Array.isArray(m.content)) return false;
-  if (!m.content.some((c) => c.type === 'image_url')) return false;
-  const textParts = m.content.filter((c) => c.type === 'text');
-  return textParts.length === 0 || textParts.some((c) => String(c.text ?? '').startsWith(SCREENSHOT_MESSAGE_PREFIX));
+  compactChatMessages(messages);
 }
 
 // A `<think>…</think>` block in an answer: a model whose thinking could not be
