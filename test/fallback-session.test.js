@@ -92,3 +92,54 @@ test('the handoff message tells the new model what not to repeat', () => {
   assert.match(text, /Cart: milk/);
   assert.match(text, /do not repeat/i);
 });
+
+test('a second task in the same session resets the handoff log to the current task and caps steps and argument size', async () => {
+  const primary = fakeSession([click, report, click, new Error('Model request failed (HTTP 429): limit')]);
+  const backup = fakeSession([report]);
+  const session = new FallbackSession({
+    primary,
+    createBackup: () => backup,
+    labels: { primary: 'A', backup: 'B' },
+    notify: () => {},
+  });
+
+  // First task
+  session.addUserMessage('First task: find shoes');
+  await session.next({});
+  session.addToolResult('c1', 'Clicked [3] shoes');
+  await session.next({});
+
+  // Second task in the same session
+  session.addUserMessage('Second task: check headphones');
+  assert.equal(session.log.currentTask, 'Second task: check headphones');
+  assert.equal(session.log.task, 'Second task: check headphones');
+  assert.equal(session.log.steps.length, 0, 'earlier task steps do not leak into the new task');
+  assert.equal(session.log.notes.length, 0, 'earlier task notes do not leak into the new task');
+
+  // Steer message during the second task stays a note, not a new task
+  session.addUserMessage('Message from the user while you work (it may change or add to the task):\nPrefer wireless');
+  assert.equal(session.log.currentTask, 'Second task: check headphones');
+  assert.equal(session.log.notes.length, 1);
+
+  await session.next({});
+  session.addToolResult('c1', 'Clicked [3] headphones');
+  await session.next({});
+
+  const [handoff] = backup.received;
+  assert.match(handoff.text, /Second task: check headphones/);
+  assert.doesNotMatch(handoff.text, /First task: find shoes/);
+  assert.doesNotMatch(handoff.text, /Clicked \[3\] shoes/);
+  assert.match(handoff.text, /Prefer wireless/);
+
+  // Long arguments and >40 steps are capped in handoffMessage
+  const hugeArg = 'z'.repeat(2000);
+  const manySteps = Array.from({ length: 50 }, (_, i) => ({
+    name: 'type_text',
+    args: { index: i, text: hugeArg },
+    result: `step-${i}`,
+  }));
+  const cappedText = handoffMessage({ currentTask: 'Cap test', notes: [], steps: manySteps, last: null }, 'quota');
+  assert.doesNotMatch(cappedText, /1\. type_text/, 'only the latest 40 steps are included');
+  assert.match(cappedText, /11\. type_text/, 'starts at step 11 of 50');
+  assert.doesNotMatch(cappedText, new RegExp(hugeArg), 'huge step arguments are truncated');
+});
