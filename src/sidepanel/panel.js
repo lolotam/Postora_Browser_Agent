@@ -2291,7 +2291,7 @@ chrome.windows.onRemoved.addListener((id) => {
 });
 watchMicrophone();
 $('input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.defaultPrevented) {
     e.preventDefault();
     $('composer').requestSubmit();
   }

@@ -21,10 +21,11 @@ export function parseAutocompleteTrigger(text, cursor = text.length) {
       tokenEnd: cursor,
     };
   }
-  const fileMatch = /(?:^|\s)@([^\s"]*)$/.exec(before);
+  const fileMatch = /(?:^|\s)@(?:"([^"]*)|([^\s"]*))$/.exec(before);
   if (fileMatch) {
-    const raw = fileMatch[1];
-    const tokenStart = before.length - raw.length - 1;
+    const quoted = fileMatch[1] !== undefined;
+    const raw = quoted ? fileMatch[1] : fileMatch[2];
+    const tokenStart = before.length - raw.length - (quoted ? 2 : 1);
     const slashIdx = raw.lastIndexOf('/');
     const directory = slashIdx === -1 ? '.' : (raw.slice(0, slashIdx) || '.');
     const prefix = slashIdx === -1 ? raw : raw.slice(slashIdx + 1);
@@ -91,8 +92,29 @@ export function createComposerAutocomplete({ input, list, getSessionId, getProje
     }));
   }
 
+  function currentTrigger() {
+    const cursor = typeof input.selectionStart === 'number' ? input.selectionStart : String(input.value ?? '').length;
+    return parseAutocompleteTrigger(input.value, cursor);
+  }
+
+  function matchesActiveTrigger(nextTrigger) {
+    return Boolean(
+      trigger
+      && nextTrigger
+      && trigger.kind === nextTrigger.kind
+      && trigger.query === nextTrigger.query
+      && trigger.tokenStart === nextTrigger.tokenStart
+      && trigger.tokenEnd === nextTrigger.tokenEnd
+    );
+  }
+
   function applyItem(item) {
     if (!trigger) return false;
+    const liveTrigger = currentTrigger();
+    if (!matchesActiveTrigger(liveTrigger)) {
+      void update();
+      return false;
+    }
     const value = String(input.value ?? '');
     const before = value.slice(0, trigger.tokenStart);
     const after = value.slice(trigger.tokenEnd);
@@ -110,12 +132,12 @@ export function createComposerAutocomplete({ input, list, getSessionId, getProje
   }
 
   async function update() {
-    const cursor = typeof input.selectionStart === 'number' ? input.selectionStart : String(input.value ?? '').length;
-    const nextTrigger = parseAutocompleteTrigger(input.value, cursor);
+    const nextTrigger = currentTrigger();
     if (!nextTrigger) {
       hide();
       return;
     }
+    const seq = ++loadSeq;
     if (nextTrigger.kind === 'slash') {
       trigger = nextTrigger;
       items = SLASH_COMMANDS
@@ -138,7 +160,9 @@ export function createComposerAutocomplete({ input, list, getSessionId, getProje
       return;
     }
     trigger = nextTrigger;
-    const seq = ++loadSeq;
+    items = [];
+    activeIndex = 0;
+    render();
     const sessionId = getSessionId?.();
     try {
       const data = await request('project-list-ui', { sessionId, path: nextTrigger.directory });
@@ -150,10 +174,11 @@ export function createComposerAutocomplete({ input, list, getSessionId, getProje
         .slice(0, 8)
         .map((entry) => {
           const relPath = nextTrigger.directory === '.' ? entry.name : `${nextTrigger.directory}/${entry.name}`;
+          const dirInsert = /\s/.test(relPath) ? `@"${relPath}/` : `@${relPath}/`;
           return {
             id: relPath,
             label: `${entry.directory ? '▱' : '@'} ${relPath}`,
-            insert: entry.directory ? `@${relPath}/` : `@${JSON.stringify(relPath)} `,
+            insert: entry.directory ? dirInsert : `@${JSON.stringify(relPath)} `,
             keepOpen: Boolean(entry.directory),
           };
         });
@@ -165,6 +190,7 @@ export function createComposerAutocomplete({ input, list, getSessionId, getProje
   }
 
   function onKeyDown(event) {
+    if (event.isComposing || event.keyCode === 229) return;
     if (!items.length || list?.hidden) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -179,6 +205,10 @@ export function createComposerAutocomplete({ input, list, getSessionId, getProje
       return;
     }
     if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+      if (!matchesActiveTrigger(currentTrigger())) {
+        void update();
+        return;
+      }
       event.preventDefault();
       applyItem(items[activeIndex]);
       return;

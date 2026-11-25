@@ -68,6 +68,14 @@ test('parseAutocompleteTrigger detects leading slash commands and @file mentions
     tokenStart: 5,
     tokenEnd: 18,
   });
+  assert.deepEqual(parseAutocompleteTrigger('Read @"My Files/doc'), {
+    kind: 'file',
+    query: 'My Files/doc',
+    directory: 'My Files',
+    prefix: 'doc',
+    tokenStart: 5,
+    tokenEnd: 19,
+  });
 });
 
 test('createComposerAutocomplete completes /compact and @file mentions', async () => {
@@ -107,7 +115,14 @@ test('createComposerAutocomplete completes /compact and @file mentions', async (
   assert.equal(ac.isOpen(), true);
   assert.equal(ac.items().length, 1);
   assert.equal(ac.items()[0].id, 'README.md');
+  assert.equal(input.triggerKeyDown('Enter', { isComposing: true }), false, 'IME composition Enter does not accept suggestion');
   assert.equal(input.triggerKeyDown('Enter'), true);
   assert.equal(input.value, 'Check @"README.md" ');
   assert.equal(ac.isOpen(), false);
+
+  // 3. Moving caret away from token invalidates selection
+  input.triggerInput('/c');
+  assert.equal(ac.isOpen(), true);
+  input.selectionStart = 0;
+  assert.equal(input.triggerKeyDown('Tab'), false, 'moving caret away prevents stale suggestion insertion');
 });
