@@ -31,7 +31,13 @@ for (const rel of runtimeFiles(root)) {
   fs.copyFileSync(from, to);
 }
 
-fs.writeFileSync(path.join(directory, 'config.json'), JSON.stringify({ origin }));
+const allowedRoots = process.env.POSTORA_ALLOWED_ROOTS
+  ? process.env.POSTORA_ALLOWED_ROOTS.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean)
+  : undefined;
+fs.writeFileSync(
+  path.join(directory, 'config.json'),
+  JSON.stringify({ origin, ...(allowedRoots ? { allowedRoots } : {}) }),
+);
 fs.writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "${path.join(directory, 'host.mjs')}" %*\r\n`);
 const hostManifest = path.join(directory, 'com.postora.private_terminal.json');
 fs.writeFileSync(hostManifest, JSON.stringify({ name: 'com.postora.private_terminal', description: 'Private Postora PowerShell bridge', path: launcher, type: 'stdio', allowed_origins: [origin] }, null, 2));

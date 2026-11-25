@@ -148,3 +148,121 @@ test('project_write aborted before rename or link leaves the target file unchang
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('secret and hidden filters apply case-insensitively across list, read and write, and .git is never writable', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'postora-project-filters-'));
+  try {
+    await fs.mkdir(path.join(root, '.git', 'hooks'), { recursive: true });
+    await fs.mkdir(path.join(root, 'NODE_MODULES', 'pkg'), { recursive: true });
+    await fs.mkdir(path.join(root, 'nested', '.SECRETS'), { recursive: true });
+    await fs.writeFile(path.join(root, '.git', 'config'), '[core]');
+    await fs.writeFile(path.join(root, 'NODE_MODULES', 'pkg', 'index.js'), 'module.exports = 1;');
+    await fs.writeFile(path.join(root, '.ENV.local'), 'SECRET=1');
+    await fs.writeFile(path.join(root, 'AUTH.JSON'), '{"token":"secret"}');
+    await fs.writeFile(path.join(root, 'nested', '.SECRETS', 'api.key'), 'KEY-DATA');
+    await fs.writeFile(path.join(root, 'nested', 'safe.txt'), 'safe text');
+
+    const rootList = await projectOperation({ type: 'project-list', root });
+    assert.deepEqual(rootList.entries.map((e) => e.name), ['nested'], 'case-insensitive protected dirs/files are omitted from listing');
+
+    const nestedList = await projectOperation({ type: 'project-list', root, path: 'nested' });
+    assert.deepEqual(nestedList.entries.map((e) => e.name), ['safe.txt']);
+
+    for (const blockedDir of ['.git', '.GIT', 'node_modules', 'NODE_MODULES', 'nested/.secrets', 'nested/.SECRETS']) {
+      await assert.rejects(
+        projectOperation({ type: 'project-list', root, path: blockedDir }),
+        /not allowed/i,
+        `project-list must refuse ${blockedDir}`,
+      );
+    }
+
+    for (const blockedRead of ['.git/config', '.GIT/config', '.env.local', '.ENV.local', 'auth.json', 'AUTH.JSON', 'NODE_MODULES/pkg/index.js', 'nested/.SECRETS/api.key']) {
+      await assert.rejects(
+        projectOperation({ type: 'project-read', root, path: blockedRead }),
+        /not allowed/i,
+        `project-read must refuse ${blockedRead}`,
+      );
+    }
+
+    for (const blockedWrite of ['.git/config', '.GIT/hooks/pre-commit', '.git/new-file', '.env', '.ENV.production', 'auth.json', 'CREDENTIALS.json', 'private.PEM', 'nested/.secrets/token.txt', 'dist/out.js']) {
+      await assert.rejects(
+        projectOperation({ type: 'project-write', root, path: blockedWrite, text: 'x', expected_hash: 'new' }),
+        /not allowed|never allowed/i,
+        `project-write must refuse ${blockedWrite}`,
+      );
+    }
+  } finally {
+    assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('canonical path component checks block symlinks to secret or .git paths inside the project', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'postora-project-canonical-'));
+  try {
+    await fs.mkdir(path.join(root, '.git'), { recursive: true });
+    await fs.writeFile(path.join(root, '.git', 'config'), '[core]');
+    await fs.writeFile(path.join(root, '.env'), 'SECRET=1');
+    let symlinkSupported = true;
+    try {
+      await fs.symlink(path.join(root, '.git'), path.join(root, 'innocent-dir'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      symlinkSupported = false;
+    }
+    if (symlinkSupported) {
+      await assert.rejects(
+        projectOperation({ type: 'project-read', root, path: 'innocent-dir/config' }),
+        /not allowed|never allowed/i,
+      );
+      await assert.rejects(
+        projectOperation({ type: 'project-write', root, path: 'innocent-dir/hooks', text: 'bad', expected_hash: 'new' }),
+        /not allowed|never allowed/i,
+      );
+      await assert.rejects(
+        projectOperation({ type: 'project-list', root, path: 'innocent-dir' }),
+        /not allowed|never allowed/i,
+      );
+    }
+  } finally {
+    assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('pinned allowedRoots in host configuration restricts project operations to configured roots', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'postora-pinned-roots-'));
+  const allowedDir = path.join(workspace, 'allowed');
+  const subProject = path.join(allowedDir, 'app');
+  const forbiddenDir = path.join(workspace, 'forbidden');
+  try {
+    await fs.mkdir(subProject, { recursive: true });
+    await fs.mkdir(forbiddenDir, { recursive: true });
+    await fs.writeFile(path.join(subProject, 'README.md'), 'allowed app');
+    await fs.writeFile(path.join(forbiddenDir, 'README.md'), 'forbidden app');
+
+    const okRead = await projectOperation(
+      { type: 'project-read', root: subProject, path: 'README.md' },
+      { allowedRoots: [allowedDir] },
+    );
+    assert.equal(okRead.text, 'allowed app');
+
+    await assert.rejects(
+      projectOperation(
+        { type: 'project-read', root: forbiddenDir, path: 'README.md' },
+        { allowedRoots: [allowedDir] },
+      ),
+      /allowedRoots/i,
+    );
+
+    await assert.rejects(
+      projectOperation(
+        { type: 'project-info', root: subProject },
+        { allowedRoots: [] },
+      ),
+      /not allowed/i,
+    );
+  } finally {
+    assert.equal(path.dirname(workspace), path.resolve(os.tmpdir()));
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
