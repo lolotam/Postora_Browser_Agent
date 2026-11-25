@@ -10,6 +10,7 @@ import { BrowserController } from '../browser/controller.js';
 import { Notebook } from '../agent/notebook.js';
 import { createFastLayer } from '../fast/fast-layer.js';
 import { AccessAuthority, ALLOW, ASK_FIRST, DENY, FULL_ACCESS } from '../permissions/policy.js';
+import { estimateConversationTokens } from '../agent/trimming.js';
 import { projectToolArgs, redactSecretReadOutput, sanitizeSessionBody } from '../agent/redaction.js';
 import { isSidePanelSender } from '../permissions/panel-sender.js';
 import { autoCompactDue, compactPrompt, lastInputTokens, parseCompactCommand } from '../sessions/compaction.js';
@@ -787,11 +788,38 @@ export class SessionRunner {
    * conversation is comes from the last turn's input tokens, or, on a task's
    * first turn, from the turn the previous task ended with.
    */
+  estimatedSessionTokens(session = this.session) {
+    if (typeof session?.estimatedInputTokens === 'function') {
+      const est = session.estimatedInputTokens();
+      if (Number.isFinite(est) && est > 0) return est;
+    }
+    if (Array.isArray(session?.messages)) {
+      const est = estimateConversationTokens(session.messages);
+      if (est > 0) return est;
+    }
+    let chars = 0;
+    let sawTurn = false;
+    for (let i = this.transcript.length - 1; i >= 0; i -= 1) {
+      const e = this.transcript[i];
+      if (e?.type === 'compacted') {
+        chars += String(e.summary ?? '').length;
+        break;
+      }
+      if (e?.type === 'turn-end') sawTurn = true;
+      if (typeof e?.text === 'string') chars += e.text.length;
+      if (typeof e?.report === 'string') chars += e.report.length;
+      if (typeof e?.summary === 'string') chars += e.summary.length;
+    }
+    return sawTurn && chars > 0 ? Math.ceil(chars / 4) : 0;
+  }
+
   compaction(model = '') {
     return {
       // `start` is the check before the task is added to the conversation: nothing to continue yet.
       beforeTurn: async ({ session, inputTokens, signal, task, images, start = false }) => {
-        const size = inputTokens || lastInputTokens(this.transcript);
+        const estimated = !inputTokens ? this.estimatedSessionTokens(session) : 0;
+        const effectiveInput = inputTokens || estimated;
+        const size = effectiveInput || lastInputTokens(this.transcript);
         const carry = start ? null : { task, images };
         const asked = this.inbox.filter((m) => m.compact && (m.now || m.mode !== 'queue'));
         for (const m of asked) this.dropMessage(m.id);
@@ -817,7 +845,7 @@ export class SessionRunner {
           if (size < this.autoCompactBlockedUntil && size < urgent) return false;
           this.autoCompactBlockedUntil = 0;
         }
-        if (this.autoCompactBlocked || this.compactedNotShrunk(tuned, inputTokens)) return false;
+        if (this.autoCompactBlocked || this.compactedNotShrunk(tuned, effectiveInput)) return false;
         if (!autoCompactDue(tuned, size)) return false;
         // "Queue" postpones it to the end of the task, unless the conversation has grown so far past the
         // threshold that waiting would risk the model's limit.
@@ -890,7 +918,7 @@ export class SessionRunner {
       // The session that holds the conversation, even if the backup finished the last task:
       // rebuilding it would put the summary request to the provider that had failed.
       if (!this.session) this.prepareModelSession(settings);
-      const done = await this.runCompaction(this.session, { focus, auto, continueTask: false, signal: abort.signal, size: lastInputTokens(this.transcript) });
+      const done = await this.runCompaction(this.session, { focus, auto, continueTask: false, signal: abort.signal, size: lastInputTokens(this.transcript) || this.estimatedSessionTokens(this.session) });
       return done ? 'done' : 'failed';
     } catch (err) {
       // Stop during a compaction is not a stopped task: a "stopped" event would offer to resume the last task.
@@ -922,7 +950,7 @@ export class SessionRunner {
    */
   async settle({ keep = new Set(), auto: allowAuto = true } = {}) {
     if (this.disposed || this.running) return;
-    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript));
+    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript) || this.estimatedSessionTokens(this.session));
     // A /compact typed while one is running waits for it, so asking again finds it.
     for (let asked = this.takeCompactRequests(keep); asked.length || auto; asked = this.takeCompactRequests(keep)) {
       const how = await this.compactIdle({ focus: joinFocus(asked), auto: !asked.length });

@@ -63,6 +63,13 @@ export class FallbackSession {
     return (this.switched ? this.labels.backup : this.labels.primary) ?? '';
   }
 
+  estimatedInputTokens() {
+    if (typeof this.active?.estimatedInputTokens === 'function') {
+      return this.active.estimatedInputTokens();
+    }
+    return 0;
+  }
+
   addUserMessage(text, images = []) {
     if (this.log.task === null || isNewUserTaskMessage(text)) {
       this.log.task = text;
