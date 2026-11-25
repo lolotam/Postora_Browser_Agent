@@ -312,6 +312,12 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .file-chips li { display: flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 4px 2px 8px; border: 1px solid var(--border); border-radius: 9999px; background: var(--surface); font-size: 12px; }
 .file-chips .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
 .file-chips button { border: 0; background: none; padding: 0 4px; cursor: pointer; color: var(--muted); }
+.composer-suggest { list-style: none; margin: 0 0 6px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
+.composer-suggest[hidden] { display: none; }
+.composer-suggest .suggest-item { width: 100%; border: 0; border-radius: 8px; background: transparent; color: var(--text); padding: 5px 8px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; text-align: start; cursor: pointer; font: 12px var(--font); }
+.composer-suggest .suggest-item.active, .composer-suggest .suggest-item:hover { background: var(--surface-2); }
+.composer-suggest .suggest-label { font: 600 11.5px var(--mono); color: var(--accent-text); flex: none; }
+.composer-suggest .suggest-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-box.dropping { border-color: var(--accent-text); }
 .msg.user.steer::after { content: attr(data-tag); display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
 /* The composer: what the user writes on top, the tools it needs underneath. */

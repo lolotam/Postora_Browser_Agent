@@ -7,6 +7,7 @@ import { createAccessUi, preferenceNoticeKey } from './access.js';
 import { createProjectUi } from './project.js';
 import { createPermissionUi } from './permissions.js';
 import { bindComposerSize } from './composer-size.js';
+import { createComposerAutocomplete } from './composer-autocomplete.js';
 import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 import { escapeAttr } from './model-picker.js';
 import { createModelDialog } from './model-dialog.js';
@@ -73,6 +74,15 @@ let port = null;
 let sessionId = null;
 const projectUi = createProjectUi({ getSessionId: () => sessionId, send: (...args) => send(...args), request,
   input: $('input'), isRunning: () => ui.running, t, resize: resizeComposer });
+const composerAutocomplete = createComposerAutocomplete({
+  input: $('input'),
+  list: $('composerSuggest'),
+  getSessionId: () => sessionId,
+  getProject: () => projectUi.current?.(),
+  request,
+  t,
+  resize: resizeComposer,
+});
 $('projectBtn').hidden = STORE_BUILD;
 let sessionList = [];
 let sessionListRefresh = 0;
