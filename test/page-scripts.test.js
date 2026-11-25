@@ -140,3 +140,112 @@ test('elementFrame answers null for the top document and its frame for a child f
   assert.equal(controller.elementFrame(4), 5);
   assert.equal(controller.elementFrame(9), null, 'an index past the snapshot has no frame');
 });
+
+test('snapshotPage anchors text around the current viewport when scrolled down', async () => {
+  const { snapshotPage } = await import('../src/browser/page-scripts.js');
+  const topBlock = {
+    nodeType: 1,
+    tagName: 'DIV',
+    childNodes: [{ nodeType: 3, nodeValue: 'TOP_HEADING_TEXT '.repeat(40) }],
+    getBoundingClientRect: () => ({ top: -600, bottom: -100, left: 0, right: 800, width: 800, height: 500 }),
+    getAttribute: () => null,
+  };
+  const midBlock = {
+    nodeType: 1,
+    tagName: 'DIV',
+    childNodes: [{ nodeType: 3, nodeValue: 'VIEWPORT_VISIBLE_SECTION '.repeat(30) }],
+    getBoundingClientRect: () => ({ top: 40, bottom: 540, left: 0, right: 800, width: 800, height: 500 }),
+    getAttribute: () => null,
+  };
+  const body = {
+    innerText: `${topBlock.childNodes[0].nodeValue}\n${midBlock.childNodes[0].nodeValue}`,
+    childNodes: [topBlock, midBlock],
+    querySelectorAll: () => [],
+  };
+  globalThis.window = { scrollY: 700, innerHeight: 800, innerWidth: 1280, __agentElements: [] };
+  globalThis.location = { href: 'https://example.test/long' };
+  globalThis.getComputedStyle = () => ({ display: 'block', visibility: 'visible', opacity: '1' });
+  globalThis.document = {
+    title: 'Long Page',
+    body,
+    documentElement: { scrollHeight: 2400 },
+    querySelectorAll: () => [],
+  };
+  const snap = snapshotPage(50, 200, { tokens: [], words: [], fragments: [] }, 1);
+  assert.match(snap.text, /VIEWPORT_VISIBLE_SECTION/, 'scrolled snapshot starts with text in the viewport');
+  assert.doesNotMatch(snap.text, /TOP_HEADING_TEXT/, 'scrolled-past top blocks do not crowd out the viewport text');
+});
+
+test('BrowserController.snapshot enforces one total maxElements cap across frames and BrowserController.text accepts a frame argument', async () => {
+  const { BrowserController } = await import('../src/browser/controller.js');
+  const { createToolExecutor, toolDefinitions } = await import('../src/agent/tools.js');
+  const { FULL_ACCESS } = await import('../src/permissions/policy.js');
+
+  const getTextDef = toolDefinitions({}).find((t) => t.name === 'get_text');
+  assert.equal(getTextDef.parameters.properties.frame?.type, 'integer');
+
+  const controller = Object.create(BrowserController.prototype);
+  controller.injectFrames = async () => [
+    {
+      frameId: 0,
+      result: {
+        url: 'https://example.test/',
+        title: 'Main',
+        scroll: { y: 0, viewport: 800, height: 800 },
+        elements: ['[0] button "Main 0"', '[1] button "Main 1"', '[2] button "Main 2"'],
+        offscreen: 1,
+        text: 'Main text',
+        dates: [],
+      },
+    },
+    {
+      frameId: 7,
+      result: {
+        url: 'https://frame.test/',
+        title: 'Child',
+        scroll: { y: 0, viewport: 400, height: 400 },
+        elements: ['[0] button "Child 0"', '[1] button "Child 1"', '[2] button "Child 2"'],
+        offscreen: 2,
+        text: 'Child text',
+        dates: [],
+      },
+    },
+  ];
+  const snap = await controller.snapshot({ maxElements: 4, maxTextChars: 1000 });
+  assert.equal(snap.elements.length, 4, 'combined elements across frames are capped at maxElements');
+  assert.deepEqual(snap.elements, [
+    '[0] button "Main 0"',
+    '[1] button "Main 1"',
+    '[2] button "Main 2"',
+    '[3] button "Child 0" (in frame)',
+  ]);
+  assert.equal(snap.offscreen, 1 + 2 + 2, 'dropped elements from the cap are added to offscreen');
+  assert.equal(controller.frameOf(3)?.frameId, 7);
+  assert.equal(controller.frameOf(4), null, 'dropped frame elements are not mapped');
+
+  const injectedCalls = [];
+  controller.inject = async (_fn, args, opts = {}) => {
+    injectedCalls.push({ args, opts });
+    return { start: args[0], total: 120, text: `frame-${opts.frameId ?? 0}-text`, dates: [] };
+  };
+  controller.currentTab = async () => ({ id: 1, url: 'https://example.test/', title: 'Main' });
+
+  const access = {
+    mode: FULL_ACCESS,
+    authorize: async () => ({ permit: 'p-1' }),
+    grantValid: () => true,
+  };
+  const execute = createToolExecutor(controller, { access });
+
+  const mainText = await execute('get_text', { start: 0, length: 500 });
+  assert.match(mainText.output, /frame-0-text/);
+  assert.equal(injectedCalls.at(-1).opts.frameId, undefined);
+
+  const childBySlot = await execute('get_text', { start: 10, length: 600, frame: 1 });
+  assert.match(childBySlot.output, /frame-7-text/);
+  assert.equal(injectedCalls.at(-1).opts.frameId, 7);
+
+  const childById = await execute('get_text', { start: 0, length: 600, frame: 7 });
+  assert.match(childById.output, /frame-7-text/);
+  assert.equal(injectedCalls.at(-1).opts.frameId, 7);
+});

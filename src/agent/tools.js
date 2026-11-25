@@ -45,7 +45,7 @@ const DEFINITIONS = [
   { name: 'hover', description: 'Move the mouse over an element (opens hover menus).', parameters: obj({ index: int('Element index'), generation: int('Snapshot generation id from the latest read_page or page state') }, ['index']) },
   { name: 'scroll', description: 'Scroll the page (or the scrollable area under an element) up or down by about one screen.', parameters: obj({ direction: { type: 'string', enum: ['up', 'down'] }, index: int('Optional element index to scroll inside'), generation: int('Snapshot generation id from the latest read_page or page state'), screens: { type: 'number', description: 'How many screens (default 1)' } }, ['direction']) },
   { name: 'scroll_at', description: 'Scroll the scrollable area under viewport coordinates (a chat transcript, a feed, an inner pane) up or down. Use when page scrolling does not move the area you want, taking the point from the latest screenshot.', parameters: obj({ x: { type: 'number' }, y: { type: 'number' }, direction: { type: 'string', enum: ['up', 'down'] }, screens: { type: 'number', description: 'How many screens (default 1)' } }, ['x', 'y', 'direction']) },
-  { name: 'get_text', description: 'Read more of the page text, for collecting information from long pages.', parameters: obj({ start: int('Character offset (default 0)'), length: int('Characters to read (default 6000, max 15000)') }) },
+  { name: 'get_text', description: 'Read more of the page text, for collecting information from long pages.', parameters: obj({ start: int('Character offset (default 0)'), length: int('Characters to read (default 6000, max 15000)'), frame: int('Optional frame index (0 for main page, 1+ for child frames in snapshot order, or frameId)') }) },
   { name: 'screenshot', description: 'Take a screenshot of the visible viewport to see layout, images, canvases or anything the element list does not capture.', parameters: obj({}), vision: true },
   { name: 'history', description: 'Go back, forward, or reload the current tab.', parameters: obj({ action: { type: 'string', enum: ['back', 'forward', 'reload'] } }, ['action']) },
   { name: 'wait', description: 'Wait for the page to update (e.g. after starting a slow operation).', parameters: obj({ seconds: { type: 'number', description: '1-15' } }, ['seconds']) },
@@ -733,9 +733,9 @@ export function createToolExecutor(rawBrowser, {
       await ctx.browser.scrollAt(at.x, at.y, String(direction), howMany, { guard, tabId: scope.tabId, signal: ctx.signal });
       return observe(`Scrolled ${direction} at (${at.x}, ${at.y}).`, ctx);
     },
-    get_text: async ({ start = 0, length = 6000 }, ctx) => {
-      await permitRead({ action: 'get_text', args: { start, length }, tabId: await currentTabId(ctx), describe: 'Read the text of the page' }, ctx);
-      const res = await ctx.browser.text(Math.max(0, start), Math.min(Math.max(length, 500), 15000));
+    get_text: async ({ start = 0, length = 6000, frame = null }, ctx) => {
+      await permitRead({ action: 'get_text', args: { start, length, ...(frame != null ? { frame } : {}) }, tabId: await currentTabId(ctx), describe: 'Read the text of the page' }, ctx);
+      const res = await ctx.browser.text(Math.max(0, start), Math.min(Math.max(length, 500), 15000), frame != null ? { frame } : undefined);
       const end = res.start + res.text.length;
       const dates = end >= res.total && res.dates?.length ? `\n\nDates on this page:\n${res.dates.join('\n')}` : '';
       return `Page text characters ${res.start}-${end} of ${res.total}${end < res.total ? ' (more available)' : ''}:\n${res.text}${dates}`;

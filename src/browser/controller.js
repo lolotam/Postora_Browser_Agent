@@ -803,12 +803,18 @@ export class BrowserController {
     const lines = [];
     const dates = [...(main.dates ?? [])];
     let text = main.text ?? '';
+    let offscreen = Number(main.offscreen) || 0;
     let offset = 0;
     for (const { frameId, result } of ordered) {
-      const count = result.elements.length;
+      const rawElements = Array.isArray(result.elements) ? result.elements : [];
+      const available = Math.max(0, maxElements - offset);
+      const count = Math.min(rawElements.length, available);
+      const dropped = rawElements.length - count;
+      if (frameId !== 0) offscreen += (Number(result.offscreen) || 0) + dropped;
+      else offscreen += dropped;
       frames.push({ frameId, offset, count });
       for (let i = 0; i < count; i += 1) {
-        let line = result.elements[i];
+        let line = rawElements[i];
         if (frameId !== 0) {
           const body = line.replace(/^\[\d+\]\s*/, '');
           line = `[${offset + i}] ${body} (in frame)`;
@@ -825,7 +831,7 @@ export class BrowserController {
       }
     }
     this.snapshotFrames = frames;
-    return { ...main, generation, elements: lines, text: text.slice(0, maxTextChars), dates: dates.slice(0, 60) };
+    return { ...main, generation, elements: lines, offscreen, text: text.slice(0, maxTextChars), dates: dates.slice(0, 60) };
   }
 
   /** Scrolls an indexed element into view and returns its centre, label and box. */
@@ -883,8 +889,21 @@ export class BrowserController {
     return result;
   }
 
-  async text(start, length) {
-    return this.inject(pageText, [start, length, SECRET_RULE]);
+  resolveTextFrameId(frame) {
+    if (frame == null) return null;
+    const n = Number(frame);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`Invalid frame index: ${frame}`);
+    if (n === 0) return null;
+    const frames = this.snapshotFrames ?? [];
+    const byId = frames.find((f) => f.frameId === n);
+    if (byId) return byId.frameId || null;
+    if (n < frames.length) return frames[n].frameId || null;
+    return n;
+  }
+
+  async text(start, length, { frame = null } = {}) {
+    const frameId = this.resolveTextFrameId(frame);
+    return this.inject(pageText, [start, length, SECRET_RULE], frameId != null ? { frameId } : {});
   }
 
   /**
