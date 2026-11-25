@@ -384,7 +384,7 @@ export function snapshotPage(maxElements, maxTextChars, rule, generation) {
         parts.push(node.nodeValue);
         return;
       }
-      if (node.nodeType !== 1) return;
+      if (node !== document.body && node.nodeType !== 1) return;
       if (hidden.includes(node)) return;
       const style = getComputedStyle(node);
       if (style.display === 'none' || style.visibility === 'hidden') return;
