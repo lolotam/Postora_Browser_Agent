@@ -1770,8 +1770,10 @@ async function runUiLayoutScenario(context, extensionId) {
     if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
     await panel.waitForSelector('#settingsView:not([hidden])');
     if (await panel.isHidden('#page-provider-main')) {
-      await panel.click('#settingsRowModels');
-      await panel.waitForSelector('#page-models:not([hidden])');
+      if (await panel.isHidden('#page-models')) {
+        await panel.click('#settingsRowModels');
+        await panel.waitForSelector('#page-models:not([hidden])');
+      }
       await panel.click('#settingsRowMain');
     }
     await panel.waitForSelector('#page-provider-main:not([hidden])');

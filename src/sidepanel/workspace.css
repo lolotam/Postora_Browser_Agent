@@ -14,7 +14,14 @@ html[dir="rtl"] body { letter-spacing: 0; }
 .bar button { border-radius: 12px; }
 .session-btn { font-size: 13px; }
 #messages { padding: 18px 16px; gap: 6px; }
-.empty { display: none; }
+.empty { display: flex; flex-direction: column; gap: 8px; padding: 12px 4px 4px; }
+.empty[hidden] { display: none; }
+.empty-title { font-size: 14px; color: var(--text); }
+.empty-body { margin: 0; font-size: 12px; line-height: 1.5; }
+.empty-steps { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.empty-step { display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-2); font: 12px/1.45 var(--font); cursor: pointer; }
+.empty-step:hover { background: var(--surface-2); color: var(--text); }
+.empty-step-num { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface-2); color: var(--accent-text); font: 600 11px var(--mono); }
 .msg.user { padding: 9px 14px; border-radius: 20px; margin-block-end: 8px; }
 .msg.final { background: transparent; border: 0; padding: 6px 0; margin-block-start: 10px; }
 .msg.mode-note { align-self: center; font-size: 11px; color: var(--muted); padding: 3px 8px; text-align: center; }

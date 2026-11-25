@@ -1137,6 +1137,7 @@ async function copyText(text) {
 
 function clearMessages() {
   $('resumeRow').hidden = true;
+  $('emptyState').hidden = false;
   ui.thread = null;
   ui.compacting = null;
   $('messages').querySelectorAll('.msg, .trace, .thread').forEach((n) => n.remove());
@@ -2931,7 +2932,40 @@ const saveSettings = createSettingsSaver({
   onSaved: (saved) => { settings = saved; renderDriveContents(); },
   save: (next) => request('save-settings', { settings: next }),
 });
-const mainForm = createProviderForm($('mainProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
+const mainForm = createProviderForm($('mainProvider'), {
+  request,
+  getPresets: () => presets,
+  keyStore,
+  onChange: () => syncAuthFrames(),
+  onModels: (info) => {
+    renderModelFields();
+    if (info?.autoPicked && info?.signedIn && settings && !activeModel()) {
+      autoSaveFirstSignInModel();
+    }
+  },
+});
+
+async function autoSaveFirstSignInModel() {
+  if (!settings || activeModel()) return;
+  const draft = mainForm.read();
+  const next = structuredClone(settings);
+  Object.assign(next, draft);
+  next.keys = keyStore.snapshot();
+  if (settingsProblem(next)) return;
+  try {
+    await saveSettings((current) => {
+      if (slotSettings(current).model) return current;
+      const merged = structuredClone(current);
+      Object.assign(merged, draft);
+      merged.keys = keyStore.snapshot();
+      return merged;
+    });
+    updateChip();
+    renderSettingsSummaries();
+  } catch {
+    // Manual Save remains available if background persistence fails.
+  }
+}
 const fallbackForm = createProviderForm($('fallbackProvider'), { request, getPresets: () => presets, keyStore, onChange: () => syncAuthFrames(), onModels: () => renderModelFields() });
 keyStore.register($('fastApiKey'), () => $('fastProvider').value);
 keyStore.register($('fastFallbackApiKey'), () => $('fastFallbackProvider').value);
@@ -3213,12 +3247,20 @@ async function init() {
   await refreshAuthStates();
   updateChip();
   renderSettingsSummaries();
-  // No model to work with yet: the panel opens straight at the main provider,
-  // so there is an obvious route to set one up.
-  if (!activeModel()) toggleSettings(true, 'provider-main');
+  // No model to work with yet: the panel opens straight at the Models overview,
+  // where the tested free setup and the main provider row are both one click away.
+  if (!activeModel()) toggleSettings(true, 'models');
   mainForm.loadModels();
   loadFastModels();
 }
+
+$('emptyState')?.addEventListener?.('click', (event) => {
+  const btn = event.target.closest?.('[data-example]');
+  if (!btn) return;
+  $('input').value = t(btn.dataset.example);
+  resizeComposer();
+  $('input').focus();
+});
 
 // Tokens land in storage even when the worker that polled for them was restarted
 // and its port to this panel is gone, so storage is the reliable sign-in signal.
