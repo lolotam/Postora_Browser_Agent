@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { elementAction, pointSnap } from '../src/browser/page-scripts.js';
+import { elementAction, pointSnap, snapshotPage } from '../src/browser/page-scripts.js';
 
 // The smallest element elementAction('locate') reads, with the given attributes.
 function locate(attrs, type = 'text') {
@@ -356,4 +356,45 @@ test('typing in a frame needs the approved frame itself in the focus chain, not 
   assert.equal((await run({ top: { iframe: false, focused: true }, inApproved: true })).ok, false);
   // Without window focus no frame can be told from another: the old check stands.
   assert.equal((await run({ top: { iframe: true, focused: false }, inApproved: false })).ok, true);
+});
+
+test('snapshotPage reports selected, checked, pressed, and current state on tabs and ARIA controls', () => {
+  const makeControl = (tag, attrs, text) => {
+    const map = new Map(Object.entries(attrs));
+    return {
+      tagName: tag.toUpperCase(),
+      innerText: text,
+      childNodes: [],
+      dataset: {},
+      getAttribute: (k) => map.get(k) ?? null,
+      setAttribute: (k, v) => map.set(k, v),
+      removeAttribute: (k) => map.delete(k),
+      getBoundingClientRect: () => ({ left: 10, top: 20, right: 110, bottom: 50, width: 100, height: 30 }),
+      querySelectorAll: () => [],
+      querySelector: () => null,
+      closest: () => null,
+    };
+  };
+  const activeTab = makeControl('button', { role: 'tab', 'data-state': 'active' }, 'Individual');
+  const inactiveTab = makeControl('button', { role: 'tab', 'aria-selected': 'false' }, 'Soul ID');
+  const switchBtn = makeControl('button', { role: 'switch', 'aria-checked': 'true' }, 'Auto-run');
+
+  globalThis.window = { scrollY: 0, innerHeight: 800, innerWidth: 1280, __agentElements: [] };
+  globalThis.location = { href: 'https://example.test/tabs' };
+  globalThis.getComputedStyle = () => ({ display: 'inline-flex', visibility: 'visible', opacity: '1', overflowY: 'visible' });
+  globalThis.document = {
+    title: 'Tabs',
+    body: { innerText: 'Individual Soul ID', childNodes: [], querySelectorAll: () => [] },
+    documentElement: { scrollHeight: 800 },
+    querySelectorAll: (sel) => {
+      if (sel === '[data-agent-idx]' || sel === '[datetime]' || sel.startsWith('div,section')) return [];
+      return [activeTab, inactiveTab, switchBtn];
+    },
+  };
+  const snap = snapshotPage(50, 500, { tokens: [], words: [], fragments: [] }, 1);
+  assert.deepEqual(snap.elements, [
+    '[0] button[role=tab] "Individual" selected=true',
+    '[1] button[role=tab] "Soul ID" selected=false',
+    '[2] button[role=switch] "Auto-run" checked',
+  ]);
 });

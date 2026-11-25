@@ -1266,14 +1266,14 @@ export class BrowserController {
       let pressed = false;
       let releaseSent = false;
       try {
-        await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i }, {
+        await this.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: 1, clickCount: i }, {
           guard,
           tabId: tab.id,
           precheck,
           signal,
           onDispatch: () => { pressed = true; },
         });
-        await this.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: i }, {
+        await this.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: 0, clickCount: i }, {
           tabId: tab.id,
           signal,
           onDispatch: () => { releaseSent = true; },
@@ -1281,7 +1281,7 @@ export class BrowserController {
       } finally {
         if (pressed && !releaseSent) {
           await Promise.resolve(
-            chrome.debugger.sendCommand?.({ tabId: tab.id }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: i }),
+            chrome.debugger.sendCommand?.({ tabId: tab.id }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: 0, clickCount: i }),
           ).catch(() => {});
         }
       }
