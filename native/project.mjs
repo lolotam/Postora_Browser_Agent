@@ -3,11 +3,59 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const HIDDEN = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.venv', 'vendor']);
+// Windows strips trailing dots and spaces when resolving a filename, and
+// compares names case-insensitively. Normalize every component the same way.
+const cleanName = (name) => String(name ?? '').trim().replace(/[. ]+$/g, '').toLowerCase();
+export const isGitName = (name) => cleanName(name) === '.git';
+export const isHiddenName = (name) => HIDDEN.has(String(name ?? '').toLowerCase()) || HIDDEN.has(cleanName(name));
 // A secret name, with or without a leading dot: `.secrets`, `.secrets.json`,
 // `.token` and `auth.json` are all names a secret file has. The context the
-// model reads must not carry them.
-const secret = (name) => /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$|\.postora-write\.lock$|^\.?(?:auth|credentials|secrets?|tokens?)(?:\.|$)|^\.npmrc$|^\.git-credentials$/i.test(name);
+// model reads must not carry them, and project_read / project_write must not
+// read or overwrite them.
+const SECRET_PATTERN = /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$|\.postora-write\.lock$|^\.?(?:auth|credentials|secrets?|tokens?)(?:\.|$)|^\.npmrc$|^\.git-credentials$/i;
+export const secret = (name) => SECRET_PATTERN.test(String(name ?? '')) || SECRET_PATTERN.test(cleanName(name));
+export const isProtectedName = (name) => isHiddenName(name) || secret(name);
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+function splitComponents(relPath) {
+  return String(relPath ?? '')
+    .split(/[\\/]+/)
+    .filter((part) => part && part !== '.');
+}
+
+function assertAllowedComponents(relPath, { forWrite = false } = {}) {
+  for (const part of splitComponents(relPath)) {
+    if (isGitName(part)) {
+      throw new Error(forWrite ? 'Writing inside .git is never allowed.' : 'Accessing .git is not allowed.');
+    }
+    if (isProtectedName(part)) {
+      throw new Error(`Access to protected or secret path "${part}" is not allowed.`);
+    }
+  }
+}
+
+function isSameOrInside(parentDir, candidateDir) {
+  const norm = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+  const rel = path.relative(norm(parentDir), norm(candidateDir));
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+}
+
+async function assertRootPinned(canonicalRoot, allowedRoots) {
+  if (allowedRoots === null || allowedRoots === undefined) return;
+  if (!Array.isArray(allowedRoots) || allowedRoots.length === 0) {
+    throw new Error('Project root is not allowed by the host configuration.');
+  }
+  for (const entry of allowedRoots) {
+    if (typeof entry !== 'string' || !path.isAbsolute(entry)) continue;
+    try {
+      const realAllowed = await fs.realpath(entry);
+      if (isSameOrInside(realAllowed, canonicalRoot)) return;
+    } catch {
+      // Ignore non-existent configured roots.
+    }
+  }
+  throw new Error('Project root is not in the host\'s pinned allowedRoots configuration.');
+}
 
 /** Bounded initial context: recursive inventory and text, with explicit limits. */
 async function projectContext(root) {
@@ -20,7 +68,7 @@ async function projectContext(root) {
     catch { errors.push(relative); continue; }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (HIDDEN.has(entry.name) || secret(entry.name) || entry.isSymbolicLink()) continue;
+      if (isProtectedName(entry.name) || entry.isSymbolicLink()) continue;
       if (paths.length >= 1000) { truncated = true; break; }
       const name = relative === '.' ? entry.name : `${relative}/${entry.name}`;
       if (pathCharacters + name.length > 64000) { truncated = true; break; }
@@ -53,32 +101,41 @@ async function projectContext(root) {
   return { paths, documents, characters, truncated, errors, limits: { entries: 1000, depth: 12, characters: 48000, charactersPerFile: 8000, pathCharacters: 64000 }, omitted: 'Dependencies, build output, symlinks, common secret files and binary files are omitted. Use project_list/project_read for more context.' };
 }
 
-export async function projectInfo(root) {
+export async function projectInfo(root, { allowedRoots = null } = {}) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('Select an absolute project directory.');
   const real = await fs.realpath(root);
   if (!(await fs.stat(real)).isDirectory()) throw new Error('Project root must be a directory.');
+  await assertRootPinned(real, allowedRoots);
   return { root: real, name: path.basename(real) || real };
 }
 
-export async function projectPath(root, relative = '.', { create = false } = {}) {
-  const project = await projectInfo(root);
+export async function projectPath(root, relative = '.', { create = false, forWrite = false, allowedRoots = null } = {}) {
+  const project = await projectInfo(root, { allowedRoots });
   if (typeof relative !== 'string' || path.isAbsolute(relative)) throw new Error('Use a project-relative path.');
   const full = path.resolve(project.root, relative);
   const inside = (candidate) => {
     const rel = path.relative(project.root, candidate);
     if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) throw new Error('Path is outside the selected project.');
+    return rel;
   };
-  inside(full);
+  const requestedRel = inside(full);
+  assertAllowedComponents(relative, { forWrite });
+  assertAllowedComponents(requestedRel, { forWrite });
   try {
     const real = await fs.realpath(full);
-    inside(real);
+    const canonicalRel = inside(real);
+    assertAllowedComponents(canonicalRel, { forWrite });
     return real;
   } catch (error) {
     if (!create || error.code !== 'ENOENT') throw error;
     // A new file may only be created in an existing, canonical directory.
     const parent = await fs.realpath(path.dirname(full));
-    inside(parent);
-    return path.join(parent, path.basename(full));
+    const parentRel = inside(parent);
+    assertAllowedComponents(parentRel, { forWrite });
+    const target = path.join(parent, path.basename(full));
+    const canonicalRel = inside(target);
+    assertAllowedComponents(canonicalRel, { forWrite });
+    return target;
   }
 }
 
@@ -95,17 +152,18 @@ function throwIfPreCommitAborted(signal) {
   throw err;
 }
 
-export async function projectOperation(message, { signal = null, beforeCommit = null } = {}) {
+export async function projectOperation(message, { signal = null, beforeCommit = null, allowedRoots = null } = {}) {
   throwIfPreCommitAborted(signal);
-  const project = await projectInfo(message.root);
+  const project = await projectInfo(message.root, { allowedRoots });
   if (message.type === 'project-info') return { ...project };
   if (message.type === 'project-context') return projectContext(project.root);
   const relative = message.path ?? '.';
-  const target = await projectPath(project.root, relative, { create: message.type === 'project-write' });
+  const isWrite = message.type === 'project-write';
+  const target = await projectPath(project.root, relative, { create: isWrite, forWrite: isWrite, allowedRoots });
   throwIfPreCommitAborted(signal);
   if (message.type === 'project-list') {
     const entries = await fs.readdir(target, { withFileTypes: true });
-    return { path: relative, entries: entries.filter((entry) => !HIDDEN.has(entry.name) && !secret(entry.name) && !entry.isSymbolicLink())
+    return { path: relative, entries: entries.filter((entry) => !isProtectedName(entry.name) && !entry.isSymbolicLink())
       .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
       .slice(0, 500).map((entry) => ({ name: entry.name, directory: entry.isDirectory() })), truncated: entries.length > 500 };
   }
@@ -144,7 +202,7 @@ export async function projectOperation(message, { signal = null, beforeCommit = 
         const data = Buffer.from(message.text);
         const mode = previous ? (await fs.stat(target)).mode & 0o777 : 0o600;
         await fs.writeFile(temporary, data, { flag: 'wx', mode });
-        if (await projectPath(project.root, relative, { create: true }) !== target) throw new Error('File target changed before writing.');
+        if (await projectPath(project.root, relative, { create: true, forWrite: true, allowedRoots }) !== target) throw new Error('File target changed before writing.');
         let actual;
         try { actual = await fs.readFile(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
         if (previous ? !actual || hash(actual) !== message.expected_hash : actual !== undefined) {

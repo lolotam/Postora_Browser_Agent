@@ -297,7 +297,8 @@ export function startHost(origin, options = {}) {
       }
 
       if (String(message.type).startsWith('project-')) {
-        projectTask = projectOperation(message, { signal: abort.signal });
+        const allowedRoots = Array.isArray(config.allowedRoots) ? config.allowedRoots : null;
+        projectTask = projectOperation(message, { signal: abort.signal, allowedRoots });
         const result = await projectTask;
         reply({ exitCode: 0, result });
         return;
