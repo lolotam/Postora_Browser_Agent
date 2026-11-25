@@ -4,7 +4,7 @@ import { runAgent } from '../src/agent/agent.js';
 import { createToolExecutor, formatSnapshot, normalizeUrl, toolDefinitions } from '../src/agent/tools.js';
 import { BrowserController } from '../src/browser/controller.js';
 import { AccessAuthority, FULL_ACCESS } from '../src/permissions/policy.js';
-import { renderMarkdown, reportFileName } from '../src/sidepanel/markdown.js';
+import { renderMarkdown, renderMarkdownToDom, reportFileName } from '../src/sidepanel/markdown.js';
 
 /** Scripted provider session: returns the queued turns in order and records results. */
 function scriptedSession(turns) {
@@ -156,11 +156,47 @@ test('navigate and open_tab allow only http and https URLs', async () => {
   await assert.rejects(() => controller.openTab('file:///C:/test.txt'), /only http and https/i);
 });
 
-test('renderMarkdown escapes HTML and only links http(s) URLs', () => {
-  const html = renderMarkdown('<img src=x onerror=alert(1)> [bad](javascript:alert(1)) [ok](https://a.b)');
+test('renderMarkdown escapes HTML and only links http(s) URLs without re-matching inside href', () => {
+  const html = renderMarkdown('<img src=x onerror=alert(1)> [bad](javascript:alert(1)) [data](data:text/html,hi) [ok](https://a.b)');
   assert.ok(!html.includes('<img'));
   assert.ok(!html.includes('href="javascript:'));
+  assert.ok(!html.includes('href="data:'));
   assert.match(html, /<a href="https:\/\/a\.b"/);
+
+  // A Markdown link whose URL or label contains a URL or parentheses must not be re-matched by the autolinker.
+  const nestedUrl = renderMarkdown('[Visit https://inner.example/path](https://outer.example/go?next=https://inner.example/path)');
+  assert.equal(nestedUrl.split('<a ').length - 1, 1, 'single <a> tag without nested autolink corruption');
+  assert.equal(
+    nestedUrl,
+    '<p><a href="https://outer.example/go?next=https://inner.example/path" target="_blank" rel="noopener noreferrer">Visit https://inner.example/path</a></p>',
+  );
+
+  // DOM builder builds element nodes directly without innerHTML and only links http(s).
+  class MiniNode {
+    constructor(tag) {
+      this.tagName = tag.toUpperCase();
+      this.children = [];
+      this.attributes = {};
+      this.textContent = '';
+    }
+    setAttribute(k, v) { this.attributes[k] = String(v); }
+    appendChild(child) { this.children.push(child); return child; }
+  }
+  const fakeDoc = {
+    createElement: (tag) => new MiniNode(tag),
+    createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
+  };
+  const root = new MiniNode('div');
+  renderMarkdownToDom('[safe](https://example.com/a?u=https://example.org) [evil](javascript:alert(1)) https://auto.example/x', {
+    document: fakeDoc,
+    container: root,
+  });
+  const p = root.children[0];
+  const links = p.children.filter((c) => c.tagName === 'A');
+  assert.equal(links.length, 2);
+  assert.equal(links[0].attributes.href, 'https://example.com/a?u=https://example.org');
+  assert.equal(links[0].textContent, 'safe');
+  assert.equal(links[1].attributes.href, 'https://auto.example/x');
 });
 
 test('a report downloads as a markdown file named after the session', () => {

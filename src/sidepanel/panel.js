@@ -1,4 +1,4 @@
-import { renderMarkdown, reportFileName } from './markdown.js';
+import { renderMarkdown, renderMarkdownToDom, reportFileName } from './markdown.js';
 import { contentDirection } from './content-direction.js';
 import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
 import { isMicWindowSender, isWorkerSender } from '../permissions/panel-sender.js';
@@ -620,7 +620,8 @@ function onEvent(event) {
     case 'assistant-text':
       {
         const node = ui.liveText ?? threadPart('msg assistant');
-        node.innerHTML = renderMarkdown(event.text);
+        node.textContent = '';
+        renderMarkdownToDom(event.text, { document, container: node });
         node.dir = contentDirection(event.text);
       }
       ui.liveText = null;
@@ -687,7 +688,8 @@ function onEvent(event) {
       ui.liveText?.remove();
       ui.liveText = null;
       const node = add(`msg final${event.success ? '' : ' partial'}`, '');
-      node.innerHTML = renderMarkdown(event.report);
+      node.textContent = '';
+      renderMarkdownToDom(event.report, { document, container: node });
       node.dir = contentDirection(event.report);
       const heading = document.createElement('h3');
       heading.textContent = t(event.success ? 'report.final' : 'report.partial');
