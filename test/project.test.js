@@ -187,7 +187,7 @@ test('secret and hidden filters apply case-insensitively across list, read and w
     for (const blockedWrite of ['.git/config', '.GIT/hooks/pre-commit', '.git/new-file', '.env', '.ENV.production', 'auth.json', 'CREDENTIALS.json', 'private.PEM', 'nested/.secrets/token.txt', 'dist/out.js']) {
       await assert.rejects(
         projectOperation({ type: 'project-write', root, path: blockedWrite, text: 'x', expected_hash: 'new' }),
-        /not allowed/i,
+        /not allowed|never allowed/i,
         `project-write must refuse ${blockedWrite}`,
       );
     }
@@ -212,15 +212,15 @@ test('canonical path component checks block symlinks to secret or .git paths ins
     if (symlinkSupported) {
       await assert.rejects(
         projectOperation({ type: 'project-read', root, path: 'innocent-dir/config' }),
-        /not allowed/i,
+        /not allowed|never allowed/i,
       );
       await assert.rejects(
         projectOperation({ type: 'project-write', root, path: 'innocent-dir/hooks', text: 'bad', expected_hash: 'new' }),
-        /not allowed/i,
+        /not allowed|never allowed/i,
       );
       await assert.rejects(
         projectOperation({ type: 'project-list', root, path: 'innocent-dir' }),
-        /not allowed/i,
+        /not allowed|never allowed/i,
       );
     }
   } finally {
