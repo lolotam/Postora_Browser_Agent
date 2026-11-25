@@ -90,7 +90,6 @@ export function classifyAction(tool) {
 
 /** Whether the mode lets this action run without asking the user first. */
 export function requiresApproval(mode, action) {
-  if (action === LOCAL_EXECUTION) return true;
   if (action === OBSERVE) return false;
   return normalizeMode(mode) !== FULL_ACCESS;
 }
@@ -564,7 +563,7 @@ export class AccessAuthority {
     if (op.kind === OBSERVE) {
       return { permit: this.#issuePermit(op, 'observation', signal), reason: null, source: 'observation' };
     }
-    if (this.#mode === FULL_ACCESS && op.kind !== LOCAL_EXECUTION) {
+    if (this.#mode === FULL_ACCESS) {
       return { permit: this.#issuePermit(op, 'full-access', signal), reason: null, source: 'full-access' };
     }
     const { promise } = this.requestApproval({

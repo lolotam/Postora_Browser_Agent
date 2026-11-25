@@ -218,6 +218,20 @@ export function snapshotPage(maxElements, maxTextChars, rule, generation) {
       parts.push(`value=${JSON.stringify(clean(el.value, 60))}`);
     }
     if (type === 'checkbox' || type === 'radio') parts.push(el.checked ? 'checked' : 'unchecked');
+    else if (el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-checked') === 'false') {
+      parts.push(el.getAttribute('aria-checked') === 'true' ? 'checked' : 'unchecked');
+    }
+    if (el.getAttribute('aria-selected') === 'true' || (role === 'tab' && el.getAttribute('data-state') === 'active')) {
+      parts.push('selected=true');
+    } else if (el.getAttribute('aria-selected') === 'false' || (role === 'tab' && el.getAttribute('data-state') === 'inactive')) {
+      parts.push('selected=false');
+    }
+    if (el.getAttribute('aria-pressed') === 'true' || el.getAttribute('aria-pressed') === 'false') {
+      parts.push(`pressed=${el.getAttribute('aria-pressed')}`);
+    }
+    if (el.getAttribute('aria-current') && el.getAttribute('aria-current') !== 'false') {
+      parts.push(`current=${el.getAttribute('aria-current')}`);
+    }
     if (tag === 'select') {
       const options = [...el.options].slice(0, 12).map((o) => clean(o.text, 30));
       parts.push(`options=${JSON.stringify(options)}`);

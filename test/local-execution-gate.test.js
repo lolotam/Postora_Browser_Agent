@@ -51,13 +51,13 @@ test('the result kinds used for trimming are unchanged for the four tools', asyn
   for (const action of LOCAL_ACTIONS) assert.notEqual(kindOf(action), LOCAL_EXECUTION, action);
 });
 
-test('local execution is classified and still requires approval in Full access', () => {
+test('local execution is classified and requires approval in Ask first while Full access grants without asking', () => {
   assert.equal(LOCAL_EXECUTION, 'local-execution');
   for (const action of LOCAL_ACTIONS) {
     assert.equal(classifyAction(action), LOCAL_EXECUTION, `${action} is not classified as local execution`);
   }
   assert.equal(requiresApproval(ASK_FIRST, LOCAL_EXECUTION), true);
-  assert.equal(requiresApproval(FULL_ACCESS, LOCAL_EXECUTION), true);
+  assert.equal(requiresApproval(FULL_ACCESS, LOCAL_EXECUTION), false);
 });
 
 test('local execution asks and stays blocked when denied in Ask first', async () => {
@@ -71,14 +71,13 @@ test('local execution asks and stays blocked when denied in Ask first', async ()
   }
 });
 
-test('local execution still asks in Full access and a denial grants nothing', async () => {
+test('local execution gets a permit in Full access without popping an approval card on every step', async () => {
   for (const action of LOCAL_ACTIONS) {
     const { authority, asked } = makeAuthority({ mode: FULL_ACCESS });
-    const pending = authority.authorize({ action, args: {} });
-    await tick();
-    assert.equal(asked.length, 1, `${action} used the Full-access shortcut`);
-    assert.equal(asked[0].kind, 'local-execution', `${action} lost its kind`);
-    await refuse(asked[0], pending, authority);
+    const answer = await authority.authorize({ action, args: {} });
+    assert.ok(answer.permit, `${action} did not receive a permit in Full access`);
+    assert.equal(answer.source, 'full-access');
+    assert.equal(asked.length, 0, `${action} should not ask when Full access is active`);
   }
 });
 
@@ -90,9 +89,9 @@ test('a click still gets a permit in Full access without a card', async () => {
   assert.equal(asked.length, 0);
 });
 
-test('a stored localExecution flag cannot grant local execution', async () => {
+test('a stored localExecution flag cannot grant local execution in Ask first', async () => {
   const { authority, asked } = makeAuthority({
-    mode: FULL_ACCESS,
+    mode: ASK_FIRST,
     extra: { settings: { localExecution: true }, localExecution: true },
   });
   const pending = authority.authorize({ action: 'run_terminal', args: { command: 'echo fixture' } });
