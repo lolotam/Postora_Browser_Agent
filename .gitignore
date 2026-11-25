@@ -8,4 +8,7 @@ test-results/
 .env*
 dist/
 .claude/worktrees/
+.playwright-mcp/
 showcase-results/
+handoff-*.md
+*.tmp
