@@ -4,9 +4,9 @@ import { normalizeLocal, LOCAL_MODELS, isLocalProvider } from '../src/voice/loca
 import { validateTranscription } from '../src/voice/transcription.js';
 import { mergeSettings } from '../src/lib/settings.js';
 
-test('normalizeLocal migrates legacy local provider to Nemotron defaults', () => {
-  assert.equal(normalizeLocal({ provider: 'local', model: 'base' }).provider, 'local-nemotron');
-  assert.equal(normalizeLocal({ provider: 'local', model: 'base' }).model, 'nemotron-3.5-q8_0');
+test('normalizeLocal migrates legacy local provider to Whisper defaults', () => {
+  assert.equal(normalizeLocal({ provider: 'local', model: 'base' }).provider, 'local-whisper');
+  assert.equal(normalizeLocal({ provider: 'local', model: 'base' }).model, 'base');
   assert.equal(normalizeLocal({ provider: 'local', model: 'base' }).endpoint, '');
 });
 
@@ -50,8 +50,8 @@ test('a local model is never asked over the network', async () => {
 
 test('mergeSettings migrates legacy local transcription and retains browser/custom context', () => {
   const legacy = mergeSettings({ transcription: { provider: 'local', model: 'base', endpoint: '', apiKey: '', services: {} } });
-  assert.equal(legacy.transcription.provider, 'local-nemotron');
-  assert.equal(legacy.transcription.model, 'nemotron-3.5-q8_0');
+  assert.equal(legacy.transcription.provider, 'local-whisper');
+  assert.equal(legacy.transcription.model, 'base');
   assert.equal(legacy.transcription.mode, 'auto');
 
   const browser = mergeSettings({ transcription: { mode: 'browser', provider: 'openai' } });

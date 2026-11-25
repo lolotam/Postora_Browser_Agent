@@ -129,8 +129,13 @@ export const zaiOAuth = {
     const headers = { Authorization: `Bearer ${pollToken}`, 'Content-Type': 'application/json' };
     const start = (await json(`${ZCODE}/oauth/cli/init`, { method: 'POST', headers, body: JSON.stringify({ provider: 'zai' }) }, signal)).data;
     const flow = requireText(start?.flow_id);
-    const rawExpiry = Number(start.expires_at);
-    const deadline = Math.min(rawExpiry < 1e12 ? rawExpiry * 1000 : rawExpiry, Date.now() + 15 * 60 * 1000);
+    const toMs = (value) => (Number(value) < 1e12 ? Number(value) * 1000 : Number(value));
+    const expiresAt = toMs(start.expires_at);
+    // The server says how long the flow lasts relative to its own clock; a
+    // local clock that is off must not make a fresh flow look already expired.
+    const lifetime = start.server_time == null ? NaN : expiresAt - toMs(start.server_time);
+    const cap = Date.now() + 15 * 60 * 1000;
+    const deadline = Number.isFinite(lifetime) && lifetime > 0 ? Math.min(Date.now() + lifetime, cap) : Math.min(expiresAt, cap);
     if (!Number.isFinite(deadline)) throw new Error('Invalid account authorization expiry.');
     notifyLogin('zai', start.authorize_url, '', notify);
     while (Date.now() < deadline) {

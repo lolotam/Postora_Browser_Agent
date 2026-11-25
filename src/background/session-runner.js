@@ -828,6 +828,21 @@ export class SessionRunner {
     return sawTurn && chars > 0 ? Math.ceil(chars / 4) : 0;
   }
 
+  /**
+   * The automatic compaction setting with the threshold it really applies. The
+   * threshold the user set wins, but it never passes 80% of the model's context
+   * window: an 80k threshold on a 128k model compacts at 80k anyway, while a
+   * 200k threshold on a 256k model compacts at 80% of the window instead of at
+   * its very edge. The check before a turn and the check when the session is
+   * free both use it, so they agree on when a conversation is too long.
+   */
+  autoCompactConfig(model = '') {
+    const config = this.settings?.autoCompact;
+    const windowTokens = contextWindowFor(String(typeof model === 'function' ? model() : model ?? '').split(' · ').pop());
+    const threshold = Math.min(Number(config?.thresholdTokens) || 0, Math.floor(windowTokens * 0.8));
+    return { config: { ...config, thresholdTokens: threshold }, windowTokens };
+  }
+
   compaction(model = '') {
     return {
       // `start` is the check before the task is added to the conversation: nothing to continue yet.
@@ -841,14 +856,7 @@ export class SessionRunner {
         if (asked.length) {
           return this.runCompaction(session, { focus: joinFocus(asked), auto: false, continueTask: !start, carry, signal, size });
         }
-        const config = this.settings?.autoCompact;
-        // The threshold the user set wins, but it never passes 80% of the
-        // model's context window: an 80k threshold on a 128k model compacts
-        // at 80k anyway, while a 200k threshold on a 256k model compacts at
-        // 80% of the window instead of at its very edge.
-        const windowTokens = contextWindowFor(String(typeof model === 'function' ? model() : model ?? '').split(' · ').pop());
-        const threshold = Math.min(Number(config.thresholdTokens) || 0, Math.floor(windowTokens * 0.8));
-        const tuned = { ...config, thresholdTokens: threshold };
+        const { config: tuned, windowTokens } = this.autoCompactConfig(model);
         // A compaction that did not shrink the conversation waits for it to grow
         // again before another summary is paid for. Past the urgent limit the
         // conversation is compacted whatever it is: the model's own limit is
@@ -965,7 +973,8 @@ export class SessionRunner {
    */
   async settle({ keep = new Set(), auto: allowAuto = true } = {}) {
     if (this.disposed || this.running) return;
-    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(this.settings?.autoCompact, lastInputTokens(this.transcript) || this.estimatedSessionTokens(this.session));
+    const { config: tuned } = this.autoCompactConfig(() => this.session?.model || (this.settings ? slotSettings(this.settings).model : ''));
+    let auto = allowAuto && !this.autoCompactBlocked && !this.autoCompactBlockedUntil && autoCompactDue(tuned, lastInputTokens(this.transcript) || this.estimatedSessionTokens(this.session));
     // A /compact typed while one is running waits for it, so asking again finds it.
     for (let asked = this.takeCompactRequests(keep); asked.length || auto; asked = this.takeCompactRequests(keep)) {
       const how = await this.compactIdle({ focus: joinFocus(asked), auto: !asked.length });

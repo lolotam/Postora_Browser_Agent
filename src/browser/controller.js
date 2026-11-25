@@ -3,7 +3,7 @@
 // real user's, and work on sites that ignore synthetic DOM events.
 
 import { AgentOverlay } from './overlay.js';
-import { snapshotPage, elementAction, suggestionAction, pageText, pageReadyState, devicePixelRatioOf, domSettled, documentIdOf, permissionTarget, pointSnap, focusInFrame } from './page-scripts.js';
+import { snapshotPage, elementAction, suggestionAction, pageText, pageReadyState, devicePixelRatioOf, domSettled, documentIdOf, permissionTarget, pointSnap, focusInFrame, frameHasFocus } from './page-scripts.js';
 import { secretRule } from '../voice/voice-safety.js';
 import { WorkingTabClosedError } from './working-tab.js';
 
@@ -985,7 +985,13 @@ export class BrowserController {
         // better answer the top document keeps what it captured.
         const results = await this.injectFrames(permissionTarget, ['capture', { kind: 'focus' }, SECRET_RULE], { tabId: tab.id });
         let picked = null;
-        for (const entry of results ?? []) {
+        // A frame that held the focus before another one took it keeps its own
+        // activeElement: only the frames in the focus chain are candidates.
+        // When the window itself has no focus nothing can be told apart, and
+        // every frame stays a candidate.
+        const answered = (results ?? []).filter((entry) => entry?.result?.ok);
+        const inChain = answered.filter((entry) => entry.result.hasFocus === true);
+        for (const entry of inChain.length ? inChain : answered) {
           if (!entry?.result?.ok) continue;
           const element = entry.result.element;
           const slot = element?.tag === 'iframe' || Boolean(element?.body);
@@ -1134,7 +1140,13 @@ export class BrowserController {
   async assertFocusChain(target, { guard = null } = {}) {
     if (!target.frameId) return true;
     const chained = await this.inject(focusInFrame, [], { tabId: target.tabId, guard });
-    if (!chained) throw new Error(INPUT_CANCELLED);
+    if (!chained?.iframe) throw new Error(INPUT_CANCELLED);
+    // The focus sits in some iframe: it must be the frame that was approved,
+    // not a sibling that took the focus after the approval.
+    if (chained.focused) {
+      const inChain = await this.inject(frameHasFocus, [], { tabId: target.tabId, guard, frameId: target.frameId });
+      if (!inChain) throw new Error(INPUT_CANCELLED);
+    }
     return true;
   }
 

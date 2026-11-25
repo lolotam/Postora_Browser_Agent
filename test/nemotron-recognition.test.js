@@ -329,3 +329,58 @@ test('noncontinuous emits final then onend', async () => {
   assert.ok(env.events.result.some((e) => e.results[0]?.isFinal));
   assert.ok(env.events.end >= 1);
 });
+
+test('a silent chunk that follows another silent chunk does not start the silence timeout again', async () => {
+  const env = makeEnvironment({ endSilenceMs: 600 });
+  env.api.continuous = true;
+  env.api.start();
+  await flush(12);
+  await env.emitSpeech();
+  await env.emitSilence();
+  await env.clock.tick(400);
+  await env.emitSilence();
+  await env.clock.tick(300);
+  await flush(8);
+  assert.equal(env.streamCalls.finalizes, 1, 'the timeout ran from the first silent chunk');
+});
+
+test('stop closes the phrase in progress and delivers its final before the end', async () => {
+  const env = makeEnvironment({ endSilenceMs: 600 });
+  env.api.continuous = true;
+  env.api.start();
+  await flush(12);
+  await env.emitSpeech();
+  env.partialHandler()({ phraseId: 0, seq: 0, committed: 'open the', tentative: ' door' });
+  await flush(4);
+  env.api.stop();
+  await flush(8);
+  assert.equal(env.streamCalls.finalizes, 1, 'the phrase is finalized by the stop');
+  assert.equal(env.events.end, 0, 'the end waits for the final');
+  env.finalHandler()({ phraseId: 0, text: 'open the door' });
+  await flush(10);
+  assert.ok(env.events.result.some((e) => e.results[e.resultIndex]?.isFinal && e.results[e.resultIndex][0].transcript === 'open the door'));
+  assert.equal(env.events.end, 1);
+});
+
+test('stop without speech ends at once, and a model that never answers does not hold the stop', async () => {
+  const idle = makeEnvironment({ endSilenceMs: 600 });
+  idle.api.continuous = true;
+  idle.api.start();
+  await flush(12);
+  idle.api.stop();
+  await flush(8);
+  assert.equal(idle.streamCalls.finalizes, 0);
+  assert.equal(idle.events.end, 1);
+
+  const silent = makeEnvironment({ endSilenceMs: 600 });
+  silent.api.continuous = true;
+  silent.api.start();
+  await flush(12);
+  await silent.emitSpeech();
+  silent.api.stop();
+  await flush(8);
+  assert.equal(silent.events.end, 0);
+  await silent.clock.tick(6000);
+  await flush(10);
+  assert.equal(silent.events.end, 1);
+});

@@ -72,6 +72,8 @@ export async function openSpeechStream({ runtime = 'com.postora.private_terminal
     }
     if (message?.type === 'speech-stream-reset-ack') {
       currentPhraseId = message.phraseId;
+      // The host starts the next phrase at sequence 0.
+      currentSeq = -1;
       resetResolve?.(message);
       return;
     }

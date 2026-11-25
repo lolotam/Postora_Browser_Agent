@@ -12,7 +12,7 @@ globalThis.chrome = {
   },
 };
 
-const { createStoredSession, importSessions, listSessions, loadSession, saveSession } = await import('../src/sessions/store.js');
+const { createStoredSession, importSessions, listSessions, loadSession, saveSession, validateSessions } = await import('../src/sessions/store.js');
 
 const body = (text) => ({ transcript: [{ type: 'user', text }], log: null, groupId: null });
 
@@ -69,4 +69,24 @@ test('a restore of the same conversation twice does not add it twice', async () 
   const added = await importSessions(archive);
   assert.equal(added, 0, 'the same conversation is not added again');
   assert.equal((await listSessions()).length, 1);
+});
+
+test('a restore of a colliding conversation twice keeps one copy of it', async () => {
+  const meta = await createStoredSession('Local');
+  await saveSession(meta.id, body('local text'));
+  const archive = [{ meta: { id: meta.id, title: 'Local', titled: true, createdAt: 1, updatedAt: 2 }, body: body('other text') }];
+  assert.equal(await importSessions(archive), 1);
+  assert.equal(await importSessions(archive), 0, 'the copy a restore made is recognised');
+  assert.equal((await listSessions()).length, 2);
+});
+
+test('an archive whose notebook cannot be opened is refused before anything is stored', async () => {
+  const entry = (notebook) => [{ meta: { id: 'nb-1', title: 'N', titled: true, createdAt: 1, updatedAt: 2 }, body: { ...body('x'), notebook } }];
+  assert.doesNotThrow(() => validateSessions(entry(undefined)), 'a notebook may be omitted');
+  assert.doesNotThrow(() => validateSessions(entry({ entries: [{ text: 'a note', url: '', at: 1 }], dropped: false })));
+  for (const bad of [{ entries: [null] }, { entries: [{ url: 'u' }] }, { entries: [{ text: 5 }] }, { entries: 'x' }, ['a'], 'text']) {
+    assert.throws(() => validateSessions(entry(bad)), /damaged/, JSON.stringify(bad));
+  }
+  await assert.rejects(importSessions(entry({ entries: [null] })), /damaged/);
+  assert.equal((await listSessions()).length, 0);
 });

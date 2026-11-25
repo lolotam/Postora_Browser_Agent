@@ -267,3 +267,38 @@ test('client stream rejects malformed current replies and disconnect before open
   delete globalThis.chrome;
 });
 
+
+test('client stream starts the next phrase at sequence 0 after the host acknowledges a reset', async () => {
+  const listeners = { message: [], disconnect: [] };
+  const sent = [];
+  const port = {
+    postMessage(message) { sent.push(message); },
+    disconnect() {},
+    onMessage: { addListener(fn) { listeners.message.push(fn); } },
+    onDisconnect: { addListener(fn) { listeners.disconnect.push(fn); } },
+  };
+  globalThis.chrome = { runtime: { connectNative: () => port } };
+  try {
+    const stream = await openSpeechStream({ captureId: 'cap', onError: () => {} });
+    listeners.message[0]({ type: 'speech-stream-opened', captureId: 'cap', phraseId: 0 });
+    await stream.ready;
+    const first = stream.feed(new Float32Array(4));
+    await Promise.resolve();
+    listeners.message[0]({ type: 'speech-stream-partial', captureId: 'cap', phraseId: 0, seq: 0, committed: '', tentative: '' });
+    await first;
+    const resetting = stream.reset();
+    await Promise.resolve();
+    listeners.message[0]({ type: 'speech-stream-reset-ack', captureId: 'cap', phraseId: 1 });
+    await resetting;
+    const second = stream.feed(new Float32Array(4));
+    await Promise.resolve();
+    await Promise.resolve();
+    const feeds = sent.filter((m) => m.type === 'speech-stream-feed');
+    assert.deepEqual(feeds.map((m) => [m.phraseId, m.seq]), [[0, 0], [1, 0]]);
+    listeners.message[0]({ type: 'speech-stream-partial', captureId: 'cap', phraseId: 1, seq: 0, committed: '', tentative: '' });
+    await second;
+    await stream.cancel();
+  } finally {
+    delete globalThis.chrome;
+  }
+});

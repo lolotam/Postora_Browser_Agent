@@ -233,3 +233,30 @@ test('the runtime check reads the answer of a child, and a child that dies is a 
   assert.equal(crashed.ok, false);
   assert.ok(crashed.instruction, 'a child that dies still gets an instruction');
 });
+
+test('nemotron install reports progress in the envelope the native client accepts, and keeps no staging behind', async () => {
+  await withTempHome(async (home) => {
+    const fixture = assetBuffer('progress-bytes');
+    const asset = { ...NEMOTRON_ASSET, name: 'nemotron.gguf', size: fixture.size, sha256: fixture.sha256, url: 'https://example.invalid/model.gguf' };
+    const destination = path.join(home, 'nemotron-3.5-q8_0-53ce288f');
+    const events = [];
+    await nemotronInstall({
+      home,
+      supported: true,
+      asset,
+      fetcher: fakeFetcher(fixture.bytes),
+      onProgress: (event) => events.push(event),
+      // A valid model that is already in place makes the commit a no-op.
+      loadModel: async () => {
+        await fs.mkdir(destination, { recursive: true });
+        await fs.writeFile(path.join(destination, asset.name), fixture.bytes);
+        return { dispose() {} };
+      },
+    });
+    assert.ok(events.length >= 2);
+    assert.ok(events.every((event) => event.type === 'progress' && Number.isInteger(event.percent) && event.percent <= 99));
+    assert.equal(events.at(-1).received, asset.size);
+    const left = (await fs.readdir(home)).filter((name) => name.includes('.staging-'));
+    assert.deepEqual(left, [], 'the downloaded copy is removed');
+  });
+});

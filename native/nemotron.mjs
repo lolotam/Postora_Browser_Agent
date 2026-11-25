@@ -94,12 +94,18 @@ export async function nemotronInstall({
   await fs.mkdir(staging, { recursive: true });
   let loaded;
   try {
+    // The envelope of native/speech.mjs: the client takes a reply without
+    // `type: 'progress'` for the final answer and rejects it.
+    let received = 0;
     await downloadAsset(asset, modelFile, {
       fetcher,
       signal,
-      onBytes(bytes) { onProgress?.({ phase: 'download', bytes, total: asset.size }); },
+      onBytes(bytes) {
+        received += bytes;
+        onProgress?.({ type: 'progress', phase: 'download', received, total: asset.size, percent: Math.min(99, Math.floor(received * 100 / asset.size)) });
+      },
     });
-    onProgress?.({ phase: 'verify', bytes: asset.size, total: asset.size });
+    onProgress?.({ type: 'progress', phase: 'install', received: asset.size, total: asset.size, percent: 99 });
     if (typeof loadModel === 'function') {
       loaded = await loadModel(modelFile);
       if (loaded && typeof loaded.dispose === 'function') await loaded.dispose?.();
@@ -108,9 +114,10 @@ export async function nemotronInstall({
     signal?.throwIfAborted();
     const valid = async () => fileReady(path.join(destination, asset.name), asset.size);
     await commitInstallation(staging, destination, valid, signal);
-  } catch (error) {
+  } finally {
+    // A commit that found a valid model already in place moves nothing: the
+    // download must not stay behind. After a real commit the folder is gone.
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
-    throw error;
   }
   return nemotronStatus({ home, supported, asset });
 }

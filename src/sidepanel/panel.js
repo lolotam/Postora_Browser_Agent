@@ -566,6 +566,7 @@ function onEvent(event) {
         ui.compacting = null;
       }
       $('resumeRow').hidden = event.running || !event.resumable;
+      if (!event.running && !replaying) voiceOwner = null;
       if (!event.running) {
         const task = voiceTask;
         if (task && !task.settled && task.sessionId === sessionId) {
@@ -718,7 +719,7 @@ function onEvent(event) {
       if (ui.replayed) askForRating(); // live finals only, not the history replayed on open
       const voiceEntry = voiceEntryFor(event);
       if (voiceEntry) {
-        const voiceT = (key) => translateFor(speechLocale(voiceTask?.text || event.report).slice(0, 2), key);
+        const voiceT = (key) => translateFor(speechLocale((voiceTask ?? voiceOwner)?.text || event.report).slice(0, 2), key);
         // A report that says the task failed is never shown as a success.
         if (event.success) {
           voiceEntry.setOk(t('voice.success'));
@@ -729,6 +730,7 @@ function onEvent(event) {
         }
         // Worker cleanup (detach/save/settle) continues after final; wait for idle.
         completeVoiceTaskAfterCleanup(voiceTask);
+        voiceOwner = null;
       }
       break;
     }
@@ -737,7 +739,10 @@ function onEvent(event) {
       add('msg error', text);
       if (voiceEntryFor(event)) {
         voiceEntryFor(event).setErr(text);
-        if (!replaying) completeVoiceTaskAfterCleanup(voiceTask);
+        if (!replaying) {
+          completeVoiceTaskAfterCleanup(voiceTask);
+          voiceOwner = null;
+        }
       }
       break;
     }
@@ -749,6 +754,10 @@ function onEvent(event) {
       ui.compacting?.remove();
       ui.compacting = null;
       addCompacted(event);
+      // The size before the summary no longer holds: the bar waits for the
+      // next turn to say how large the shortened conversation is.
+      ui.context = { input: 0, model: ui.context.model };
+      updateContextBar();
       break;
     case 'compact-failed':
       ui.compacting?.remove();
@@ -759,7 +768,10 @@ function onEvent(event) {
       add('msg error', t('msg.stopped'));
       if (voiceEntryFor(event)) {
         voiceEntryFor(event).setErr(t('voice.cancelled'));
-        if (!replaying) completeVoiceTaskAfterCleanup(voiceTask);
+        if (!replaying) {
+          completeVoiceTaskAfterCleanup(voiceTask);
+          voiceOwner = null;
+        }
       }
       break;
     case 'notice':
@@ -1611,6 +1623,9 @@ let voiceOrigin = null;
 const voicePanelId = crypto.randomUUID();
 // The command the worker is running for this panel, and the log entry it owns.
 let voiceTask = null;
+// The task whose command is over (it asked a question) but whose later events
+// still belong to the entry of that command, until the task ends.
+let voiceOwner = null;
 let voiceController = null;
 let voiceState = 'idle';
 // The approval that is waiting for the user, so it can be withdrawn.
@@ -1707,6 +1722,14 @@ async function openMicWindow({ continuous = false } = {}) {
   micWindowId = created?.id ?? null;
 }
 
+/** Whether a tab address is the extension's microphone page of this capture. */
+function isMicTabOfEpoch(tabUrl, micBase, epoch) {
+  try {
+    const url = new URL(tabUrl ?? '');
+    return `${url.protocol}//${url.host}${url.pathname}` === micBase && url.searchParams.get('epoch') === String(epoch);
+  } catch { return false; }
+}
+
 function closeMicWindow() {
   const epoch = micEpoch;
   const winId = micWindowId;
@@ -1717,14 +1740,12 @@ function closeMicWindow() {
   if (winId != null) chrome.windows.remove(winId).catch(() => {});
   // The window handle can be lost (a stale id after a panel reload, a
   // windows.remove that failed), so the microphone's own tabs are removed by
-  // address as well: the window closes either way.
+  // address as well: the window closes either way. Only the tabs of this
+  // capture go: another panel's microphone tab has an epoch of its own.
   const micBase = chrome.runtime.getURL('src/sidepanel/mic.html');
   chrome.tabs.query({}).then((tabs) => {
     for (const tab of tabs) {
-      const tabUrl = tab.url ?? '';
-      if (tabUrl === micBase || tabUrl.startsWith(`${micBase}?`) || tabUrl.startsWith(`${micBase}#`)) {
-        chrome.tabs.remove(tab.id).catch(() => {});
-      }
+      if (isMicTabOfEpoch(tab.url, micBase, epoch)) chrome.tabs.remove(tab.id).catch(() => {});
     }
   }).catch(() => {});
 }
@@ -1993,7 +2014,7 @@ function showChat() {
 /** The log entry of the command the worker is running, when this event is its. */
 function voiceEntryFor(event) {
   if (replaying) return null;
-  const task = voiceTask;
+  const task = voiceTask ?? voiceOwner;
   if (!task) return null;
   if (task.sessionId !== sessionId) return null;
   // The history that was replayed on open is older than the command.
@@ -2021,11 +2042,15 @@ function settleVoiceCommand() {
   task.awaitingIdle = false;
   task.settled = true;
   voiceTask = null;
+  // The command is over, the task is not: its tool calls and its report still
+  // belong to the entry of the command.
+  voiceOwner = task;
   task.resolve?.();
 }
 
 function cancelVoiceTask(message) {
   const task = voiceTask;
+  voiceOwner = null;
   if (!task) return;
   voiceTask = null;
   task.awaitingIdle = false;
@@ -2084,6 +2109,7 @@ async function runVoiceCommand(text, { signal, entry }) {
   return new Promise((resolve) => {
     const task = { entry, text, startedAt: Date.now(), sessionId, resolve, awaitingIdle: false, settled: false };
     voiceTask = task;
+    voiceOwner = null;
     voiceTarget().then((target) => {
       if (signal.aborted || voiceTask !== task || sessionId !== task.sessionId) {
         resolve();
@@ -2309,11 +2335,12 @@ window.addEventListener('pagehide', () => {
   voiceApproval?.();
 });
 chrome.runtime.onMessage.addListener(onMicMessage);
-// Auth events arrive via runtime messages too, so a panel without a port
-// (e.g. after a worker restart) still hears the failure or device code.
-const AUTH_RUNTIME_EVENTS = new Set(['auth-success', 'auth-event', 'auth-prompt', 'auth-error']);
+// Auth events and a tab's session change arrive via runtime messages too, so a
+// panel without a port (e.g. after a worker restart) still hears the failure,
+// the device code or the session a notification brought back.
+const AUTH_RUNTIME_EVENTS = new Set(['auth-success', 'auth-event', 'auth-prompt', 'auth-error', 'tab-session-changed']);
 chrome.runtime.onMessage.addListener((message, sender) => {
-  // Only the worker reports sign-in events: a page's content script must not
+  // Only the worker reports these events: a page's content script must not
   // show a sign-in prompt or code of its own in the panel.
   if (AUTH_RUNTIME_EVENTS.has(message?.type) && isWorkerSender(sender)) onEvent(message);
 });
@@ -2411,6 +2438,7 @@ async function openSession(id) {
   port?.disconnect();
   port = null;
   sessionId = id;
+  voiceOwner = null;
   projectUi.reset();
   ui.replayed = false;
   ui.running = false;
@@ -4054,34 +4082,43 @@ function setAuthMessage(provider, text) {
   // A signed-in provider has nothing to complain about.
   const connected = Boolean(authState[provider]?.connected);
   authNote[provider] = connected ? '' : (text ?? '');
-  const box = authEl(provider, 'message');
-  if (!box) return;
-  box.textContent = authNote[provider];
-  box.hidden = !authNote[provider];
+  // Every slot that shows the provider says the same thing.
+  for (const root of authRoots(provider)) {
+    const box = root.querySelector('[data-auth="message"]');
+    if (!box) continue;
+    box.textContent = authNote[provider];
+    box.hidden = !authNote[provider];
+  }
 }
 
 /** The device code of a sign-in, when the provider gave one. */
 function showDeviceCode(provider, code, url) {
-  const box = authEl(provider, 'device');
-  if (!box) return;
-  // A sign-in that gives only a link still has something to show: the box
-  // stays and the code line goes away.
-  if (!code && !url) {
-    box.hidden = true;
-    return;
+  // Every slot that shows the provider shows the same code.
+  for (const root of authRoots(provider)) {
+    const box = root.querySelector('[data-auth="device"]');
+    if (!box) continue;
+    // A sign-in that gives only a link still has something to show: the box
+    // stays and the code line goes away.
+    if (!code && !url) {
+      box.hidden = true;
+      continue;
+    }
+    const shown = root.querySelector('[data-auth="deviceCode"]');
+    if (shown) { shown.textContent = code || ''; shown.hidden = !code; }
+    const link = root.querySelector('[data-auth="deviceLink"]');
+    if (link && url) link.href = url;
+    box.hidden = false;
   }
-  const shown = authEl(provider, 'deviceCode');
-  if (shown) { shown.textContent = code || ''; shown.hidden = !code; }
-  const link = authEl(provider, 'deviceLink');
-  if (link && url) link.href = url;
-  box.hidden = false;
 }
 
 /** The field the code the provider's page shows is pasted into. */
 function showCodePrompt(provider, visible) {
+  for (const root of authRoots(provider)) {
+    const other = root.querySelector('[data-auth="code"]');
+    if (other) other.hidden = !visible;
+  }
   const box = authEl(provider, 'code');
   if (!box) return;
-  box.hidden = !visible;
   // Keep the field on screen. The settings page is long, and scrolling to the
   // error at its bottom hides the field the code was just pasted into.
   if (visible) box.scrollIntoView({ block: 'nearest' });

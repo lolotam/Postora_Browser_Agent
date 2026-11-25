@@ -56,3 +56,11 @@ test('a local model that cannot be built fails with its reason and is not replac
   }), /private native host is missing/);
   assert.equal(audioBuilt, 0, 'the audio is not sent somewhere else instead');
 });
+
+test('the configured silence reaches the live local recognizer', () => {
+  const built = [];
+  createConfiguredRecognition({ transcription: { mode: 'auto', provider: 'local-nemotron', endSilenceMs: 2000 } }, {
+    createNemotron: (options) => { built.push(options); return { kind: 'nemotron' }; },
+  });
+  assert.equal(built[0].endSilenceMs, 2000);
+});
