@@ -29,3 +29,29 @@ test('an explicit language wins; auto follows the browser and falls back to Engl
 test('t fills placeholders', () => {
   assert.equal(t('model.pickCount', { n: 3 }), '— 3 models —');
 });
+
+test('Base URL, API Key, transcription errors, and model-session errors exist in both Arabic and English', () => {
+  for (const key of [
+    'compat.baseUrl',
+    'compat.apiKey',
+    'err.transcriptionUnknownService',
+    'err.transcriptionEndpointRequired',
+    'err.transcriptionHttpsRequired',
+    'err.transcriptionNemotronLive',
+    'err.transcriptionApiKeyRequired',
+    'err.transcriptionFailedHttp',
+    'err.transcriptionEmpty',
+    'err.chooseChatgptModel',
+    'err.chooseClaudeModel',
+    'err.chooseGrokModel',
+    'err.chooseGeminiModel',
+    'err.chooseKimiModel',
+    'err.chooseModelInSettings',
+    'err.testTimeout',
+    'err.testEmptyReply',
+  ]) {
+    assert.ok(MESSAGES.en[key], `missing en key ${key}`);
+    assert.ok(MESSAGES.ar[key], `missing ar key ${key}`);
+    assert.notEqual(MESSAGES.en[key], MESSAGES.ar[key], `${key} should be translated in Arabic`);
+  }
+});
