@@ -1024,7 +1024,8 @@ export class SessionRunner {
       // user, even though it was ended through the abort signal.
       const err = this.tabLost && !isWorkingTabClosed(thrown) ? new WorkingTabClosedError(this.browser.homeTabId) : thrown;
       const stopped = !this.tabLost && (abort.signal.aborted || err.name === 'AbortError');
-      if (!stopped) this.continuation = null;
+      const resumableError = !stopped && !this.tabLost && !isWorkingTabClosed(err) && isResumableProviderError(err);
+      if (!stopped && !resumableError) this.continuation = null;
       // The code is the stable name of the failure: the panel translates it, and
       // the message is what a reader without the code sees.
       const code = typeof err?.code === 'string' ? err.code : '';
@@ -1197,4 +1198,12 @@ export class SessionRunner {
 /** The focus texts of waiting /compact requests, as one. */
 function joinFocus(items) {
   return items.map((m) => m.compact?.focus).filter(Boolean).join('; ');
+}
+
+export function isResumableProviderError(err) {
+  if (!err) return false;
+  if (Number.isInteger(err.status)) return true;
+  if (err.network || err.name === 'DeadlineError' || err.name === 'ProviderHttpError') return true;
+  const msg = String(err.message ?? '');
+  return /Model request failed|Primary failed:|HTTP \d{3}|did not answer within|response stream ended|The model returned an error|The model response failed|Claude request failed|ChatGPT request failed|Grok request failed|Gemini request failed|Kimi request failed/i.test(msg);
 }

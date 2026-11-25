@@ -160,15 +160,26 @@ export class AnthropicSession {
     this.messages.push({ role: 'user', content: [block] });
   }
 
-  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }) {
+  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }, streamRetried = false) {
     if (mayCompact(this.model, this.effort)) compactMessages(this.messages);
-    this.retryWaitMs = 0;
+    if (!streamRetried) this.retryWaitMs = 0;
 
     const response = await this.post(toolChoice, signal);
-    const turn = await readAnthropicStream(response, { signal, onEvent });
+    let turn;
+    try {
+      turn = await readAnthropicStream(response, { signal, onEvent });
+    } catch (err) {
+      if (!err?.received && !streamRetried && err?.name !== 'AbortError' && !signal?.aborted) {
+        return this.next({ signal, onEvent, toolChoice }, true);
+      }
+      throw err;
+    }
     // The turn only counts when the message stopped; a stream that ends early
     // leaves the conversation as it was.
     if (!turn.stopped) {
+      if (!turn.received && !streamRetried && !signal?.aborted) {
+        return this.next({ signal, onEvent, toolChoice }, true);
+      }
       resetText(turn, onEvent);
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
     }
@@ -259,7 +270,7 @@ export class AnthropicSession {
  * One handler per event type.
  */
 async function readAnthropicStream(response, { signal, onEvent }) {
-  const state = { blocks: [], byIndex: new Map(), usage: null, stopReason: null, stopped: false, streamed: false, wasReset: false };
+  const state = { blocks: [], byIndex: new Map(), usage: null, stopReason: null, stopped: false, streamed: false, received: false, wasReset: false };
   try {
     for await (const { data } of readSse(response, signal)) {
       const event = JSON.parse(data);
@@ -269,6 +280,7 @@ async function readAnthropicStream(response, { signal, onEvent }) {
   } catch (err) {
     // A body that fails to read, the idle timeout or a malformed event.
     resetText(state, onEvent);
+    if (err && typeof err === 'object') err.received = state.received;
     throw err;
   }
   return state;
@@ -298,6 +310,7 @@ const STREAM_HANDLERS = {
       entry.id = block.id;
       entry.name = block.name;
       entry.json = '';
+      state.received = true;
     }
     state.blocks.push(entry);
     state.byIndex.set(event.index, entry);
@@ -308,14 +321,17 @@ const STREAM_HANDLERS = {
     if (delta.type === 'text_delta' && entry?.type === 'text') {
       entry.text += delta.text ?? '';
       state.streamed = true;
+      if (delta.text) state.received = true;
       onEvent({ type: 'text-delta', delta: delta.text ?? '' });
     } else if (delta.type === 'thinking_delta' && entry?.type === 'thinking') {
       entry.thinking += delta.thinking ?? '';
+      if (delta.thinking) state.received = true;
       onEvent({ type: 'reasoning-delta', delta: delta.thinking ?? '' });
     } else if (delta.type === 'signature_delta' && entry?.type === 'thinking') {
       entry.signature += delta.signature ?? '';
     } else if (delta.type === 'input_json_delta' && entry?.type === 'tool_use') {
       entry.json += delta.partial_json ?? '';
+      state.received = true;
     }
   },
   content_block_stop: (state, event, onEvent) => {

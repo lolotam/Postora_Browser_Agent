@@ -165,3 +165,61 @@ test('a pause after a lost connection is announced as a connection problem', asy
   }, { wait: async () => {}, random: () => 1, notify: (n) => { notices.push(n); return 'id'; } });
   assert.equal(notices[0].code, 'network');
 });
+
+test('a stream that fails before any output is retried once; a stream that fails after output is not replayed', async () => {
+  const original = globalThis.fetch;
+  try {
+    // 1. Fails before any output -> retried once and succeeds
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response('data: {"error":{"message":"upstream stream reset"}}\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }
+      return new Response('data: {"choices":[{"delta":{"content":"Recovered"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    };
+    const s1 = new CompatibleSession({
+      baseUrl: 'https://x.test/v1',
+      apiKey: 'k',
+      model: 'm',
+      effort: '',
+      thinkingStyle: 'none',
+      systemPrompt: 's',
+      tools: [],
+    });
+    s1.addUserMessage('hi');
+    const turn1 = await s1.next({});
+    assert.equal(turn1.text, 'Recovered');
+    assert.equal(calls, 2, 'retried once when stream failed before any output');
+
+    // 2. Fails after partial output -> NOT retried
+    let callsAfterOutput = 0;
+    globalThis.fetch = async () => {
+      callsAfterOutput += 1;
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"Partial "}}]}\n\ndata: {"error":{"message":"mid-stream error"}}\n\n',
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      );
+    };
+    const s2 = new CompatibleSession({
+      baseUrl: 'https://x.test/v1',
+      apiKey: 'k',
+      model: 'm',
+      effort: '',
+      thinkingStyle: 'none',
+      systemPrompt: 's',
+      tools: [],
+    });
+    s2.addUserMessage('hi');
+    await assert.rejects(s2.next({}), /mid-stream error/);
+    assert.equal(callsAfterOutput, 1, 'never replays a stream once output has been emitted');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
