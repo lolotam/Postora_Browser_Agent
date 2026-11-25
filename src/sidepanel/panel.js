@@ -554,6 +554,7 @@ function onEvent(event) {
       break;
     case 'status':
       setRunning(event.running);
+      if (!event.running) $('messages')?.setAttribute?.('aria-live', 'polite');
       // The live dot follows the task: it pulses while a task works and goes
       // out when the session settles, replays included.
       $('chatLog').classList.toggle('live', Boolean(event.running));
@@ -613,11 +614,13 @@ function onEvent(event) {
       openThread(event.step, event.model);
       break;
     case 'reasoning-delta':
+      $('messages')?.setAttribute?.('aria-live', 'off');
       ui.liveReasoning ??= threadPart('msg reasoning');
       pendingReasoningDelta += event.delta;
       scheduleDeltaFlush();
       break;
     case 'text-delta':
+      $('messages')?.setAttribute?.('aria-live', 'off');
       ui.liveText ??= threadPart('msg assistant');
       pendingTextDelta += event.delta;
       scheduleDeltaFlush();
@@ -631,6 +634,7 @@ function onEvent(event) {
     case 'assistant-text':
       pendingTextDelta = '';
       flushPendingDeltas();
+      $('messages')?.setAttribute?.('aria-live', 'polite');
       {
         const node = ui.liveText ?? threadPart('msg assistant');
         node.textContent = '';
@@ -934,6 +938,7 @@ function showThreadModel(tag, model) {
 
 function closeThread() {
   flushPendingDeltas();
+  $('messages')?.setAttribute?.('aria-live', 'polite');
   const thread = ui.thread;
   if (!thread) return;
   if (!thread.userToggled) thread.box.open = false;
