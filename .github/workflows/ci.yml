@@ -32,6 +32,14 @@ jobs:
         run: npm run package
       - name: Build the private package
         run: npm run package:private
+      - name: Upload built packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: postora-release-packages
+          path: |
+            dist/postora-browser-agent-v*.zip
+            dist/postora-private-v*.zip
+          if-no-files-found: error
       - name: Unpack the store package
         run: unzip -q dist/postora-browser-agent-v*.zip -d "$RUNNER_TEMP/postora-store"
       - name: End-to-end (packaged extension with mock models)
@@ -47,19 +55,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Download built release packages
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Install Windows runtime artifacts for packaging
-        run: |
-          npm install --force --no-save @transcribe-cpp/win32-x64-cpu-vulkan@0.4.2
-          npm install --force --no-save "@koromix/koffi-win32-x64@$(node -p "require('koffi/package.json').version")"
-      - name: Build release packages
-        run: |
-          npm run package
-          npm run package:private
+          name: postora-release-packages
+          path: dist
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
