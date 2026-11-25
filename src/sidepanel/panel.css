@@ -211,6 +211,8 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #chatLog[open] > summary::before { transform: rotate(90deg); }
 :root[dir="rtl"] #chatLog:not([open]) > summary::before { transform: scaleX(-1); }
 .chat-log-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: background .2s; }
+.chat-log-status { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 11px var(--mono); text-align: end; }
+.chat-log-status:empty { display: none; }
 #chatLog.live .chat-log-dot { background: var(--accent-text); animation: chat-live-pulse 1.2s ease infinite; }
 @keyframes chat-live-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { #chatLog.live .chat-log-dot { animation: none; } }

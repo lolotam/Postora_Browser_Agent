@@ -45,7 +45,7 @@ const resizeComposer = bindComposerSize($('input'));
 // question is answered once, and a second answer to it is refused.
 import { contextWindowFor } from '../lib/context-window.js';
 
-const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' } };
+const ui = { thread: null, compacting: null, pending: [], running: false, question: null, questionId: 0, answering: null, liveText: null, liveReasoning: null, trace: null, steps: new Map(), replayed: false, notices: [], stats: newStats(), context: { input: 0, model: '' }, liveStatus: { step: 0, tool: '', model: '' } };
 const MAX_NOTICES = 3;
 let settings = null;
 let presets = {};
@@ -574,7 +574,11 @@ function onEvent(event) {
       const node = add(event.steer ? 'msg user steer' : 'msg user', event.text);
       if (event.steer) node.dataset.tag = t('msg.steered');
       // An answer to ask_user or a message sent while working is part of the task.
-      if (!event.answer && !event.steer) ui.stats = newStats(event.at);
+      if (!event.answer && !event.steer) {
+        ui.stats = newStats(event.at);
+        ui.liveStatus = { step: 0, tool: '', model: '' };
+        updateChatLogStatus();
+      }
       break;
     }
     case 'pending-added':
@@ -875,6 +879,12 @@ function openThread(step, model = '') {
     if (!log.dataset.userToggled) log.open = false;
     log.classList.add('live');
   }
+  ui.liveStatus = {
+    step: Number(step) || ui.liveStatus.step,
+    tool: '',
+    model: model || ui.liveStatus.model,
+  };
+  updateChatLogStatus();
   ui.trace = null;
   const box = Object.assign(document.createElement('details'), { className: 'thread', open: false });
   const summary = document.createElement('summary');
@@ -923,6 +933,12 @@ function threadTitle(thread) {
 }
 
 function addStep({ step, callId, name, args, fast }) {
+  ui.liveStatus = {
+    ...ui.liveStatus,
+    step: Number(step) || ui.liveStatus.step,
+    tool: name || ui.liveStatus.tool,
+  };
+  updateChatLogStatus();
   const row = document.createElement('details');
   row.className = fast ? 'step fast' : 'step';
   const compact = JSON.stringify(args ?? {}).replace(/^\{|\}$/g, '');
@@ -969,7 +985,9 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
     input: Number.isFinite(usage?.input) ? usage.input : ui.context.input,
     model: (model || ui.context.model).split(' · ').pop(),
   };
+  if (model) ui.liveStatus.model = model;
   updateContextBar();
+  updateChatLogStatus();
   const tokens = usage ? t('stats.tokens', { input: number(usage.input), output: number(usage.output) }) : '';
   const waited = retryWaitMs ? t('stats.retryWait', { time: formatDuration(retryWaitMs) }) : '';
   const time = Number.isFinite(ms) ? formatDuration(ms) : '';
@@ -987,6 +1005,27 @@ function addTurn({ model, ms, retryWaitMs, usage }) {
   if (time) row.append(span('time', time));
   traceBlock().append(row);
   scrollDown();
+}
+
+/** Live progress in the folded summary line: step n of max, active tool, model, and tokens. */
+function updateChatLogStatus() {
+  const node = $('chatLogStatus');
+  if (!node) return;
+  const active = ui.running || Boolean($('chatLog')?.classList?.contains('live'));
+  if (!active) {
+    node.textContent = '';
+    return;
+  }
+  const max = Number(settings?.maxSteps) || 40;
+  const stepPart = ui.liveStatus.step > 0 ? t('chat.liveStep', { step: ui.liveStatus.step, max }) : '';
+  const toolPart = ui.liveStatus.tool || '';
+  const rawModel = ui.liveStatus.model || ui.context.model || '';
+  const modelPart = String(rawModel).split(' · ').pop().split('/').pop();
+  const totalTokens = (ui.stats?.input ?? 0) + (ui.stats?.output ?? 0);
+  const tokenPart = totalTokens > 0
+    ? t('stats.tokens', { input: number(ui.stats.input), output: number(ui.stats.output) })
+    : '';
+  node.textContent = [stepPart, toolPart, modelPart, tokenPart].filter(Boolean).join(' · ');
 }
 
 /** Under the final report: the whole task's time and tokens. */
@@ -1113,6 +1152,8 @@ function clearMessages() {
     log.open = true;
     log.classList.remove('live');
   }
+  ui.liveStatus = { step: 0, tool: '', model: '' };
+  updateChatLogStatus();
   ui.steps.clear();
   ui.trace = null;
   ui.notices = ui.notices.filter((n) => n.local);
@@ -1228,7 +1269,11 @@ function releaseAnswer(questionId) {
 
 function setRunning(running) {
   ui.running = running;
-  if (!running) closeThread();
+  if (!running) {
+    closeThread();
+    $('chatLog')?.classList?.remove('live');
+  }
+  updateChatLogStatus();
   $('statusDot').classList.toggle('running', running);
   $('stopBtn').hidden = !running;
   $('voiceToggle').hidden = running;
@@ -2805,6 +2850,7 @@ function applyLanguage(language) {
   mainForm.rerender();
   fallbackForm.rerender();
   renderNotices();
+  updateChatLogStatus();
   renderSessionTitle();
   syncFastProvider();
   syncFastFallback();
