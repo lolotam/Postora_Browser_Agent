@@ -463,3 +463,77 @@ test('without a getter the panel still follows what the worker says', () => {
   ui.apply({ sessionId: 'session-a', mode: FULL_ACCESS, revision: 2 });
   assert.equal(elements.select.value, FULL_ACCESS, 'a panel without a chat getter is not left behind');
 });
+
+function makePreferenceScene() {
+  let current = 'session-a';
+  const sent = [];
+  const elements = {};
+  for (const name of ['select', 'state', 'risk', 'voice', 'warning', 'acknowledge', 'confirm', 'cancel', 'remember']) {
+    elements[name] = new FakeElement(name);
+  }
+  const ui = createAccessUi({
+    elements,
+    t: (key) => key,
+    request: async (message) => { sent.push(message); return true; },
+    getSessionId: () => current,
+  });
+  return {
+    ui,
+    elements,
+    sent,
+    async pickFull() { elements.select.value = FULL_ACCESS; await elements.select.dispatch('change'); },
+    async acknowledge() { elements.acknowledge.checked = true; await elements.acknowledge.dispatch('change'); },
+    async confirm() { await elements.confirm.dispatch('click'); },
+  };
+}
+
+test('changing "remember" while the warning is open dismisses it and clears the acknowledgement', async () => {
+  const scene = makePreferenceScene();
+  scene.ui.apply({
+    sessionId: 'session-a',
+    mode: ASK_FIRST,
+    revision: 1,
+    accessPreference: { remember: true, mode: ASK_FIRST, profileRevision: 2, restoreFailed: false, unpersisted: false },
+  });
+  await scene.pickFull();
+  await scene.acknowledge();
+  assert.equal(scene.elements.warning.open, true);
+  assert.equal(scene.elements.acknowledge.checked, true);
+
+  scene.ui.applyPreference({ remember: false, mode: ASK_FIRST, profileRevision: 3, restoreFailed: false, unpersisted: false });
+  assert.equal(scene.elements.warning.open, false, 'the warning opened for the old "remember" setting is closed');
+  assert.equal(scene.elements.acknowledge.checked, false, 'the stale acknowledgement is cleared');
+  assert.equal(scene.elements.confirm.disabled, true);
+  assert.equal(scene.elements.remember.checked, false);
+
+  await scene.confirm();
+  assert.deepEqual(scene.sent, []);
+});
+
+test('confirming the warning sends the profileRevision captured when it opened and rejects a stale remember dialog', async () => {
+  const scene = makePreferenceScene();
+  scene.ui.apply({
+    sessionId: 'session-a',
+    mode: ASK_FIRST,
+    revision: 1,
+    accessPreference: { remember: true, mode: ASK_FIRST, profileRevision: 5, restoreFailed: false, unpersisted: false },
+  });
+  await scene.pickFull();
+  await scene.acknowledge();
+  await scene.confirm();
+  assert.equal(scene.sent.length, 1);
+  assert.equal(scene.sent[0].expectedProfileRevision, 5);
+
+  let confirmedRemember = 0;
+  scene.ui.apply({
+    sessionId: 'session-a',
+    mode: FULL_ACCESS,
+    revision: 2,
+    accessPreference: { remember: false, mode: ASK_FIRST, profileRevision: 6, restoreFailed: false, unpersisted: false },
+  });
+  assert.equal(scene.ui.askRememberAcknowledgement(() => { confirmedRemember += 1; }), true);
+  await scene.acknowledge();
+  scene.ui.applyPreference({ remember: false, mode: ASK_FIRST, profileRevision: 7, restoreFailed: false, unpersisted: false });
+  await scene.confirm();
+  assert.equal(confirmedRemember, 0, 'remember dialog opened at profileRevision 6 must not confirm under profileRevision 7');
+});

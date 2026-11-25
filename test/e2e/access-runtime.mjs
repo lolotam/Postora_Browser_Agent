@@ -315,6 +315,24 @@ async function enableFullAccess(panel) {
   await panel.waitForFunction(() => document.getElementById('accessSelect')?.value === 'full-access', { timeout: 20000 });
 }
 
+/** Leaves the shared profile back at remembered Ask first for scenarios that run after this one. */
+async function resetAccessPreference(panel) {
+  await panel?.evaluate?.(async () => {
+    const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+    if (pref && (!pref.remember || pref.mode === 'full-access')) {
+      let rev = pref.profileRevision;
+      if (!pref.remember) {
+        const on = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: true, expectedProfileRevision: rev });
+        rev = on?.result?.preference?.profileRevision ?? rev;
+      }
+      const off = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: false, expectedProfileRevision: rev });
+      rev = off?.result?.preference?.profileRevision ?? rev;
+      await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: false, expectedProfileRevision: rev });
+    }
+    await chrome.storage.local.remove('accessPreference');
+  }).catch(() => {});
+}
+
 /** Wait for an actual worker snapshot, not the optimistic/default label. */
 async function waitForConfirmedChat(panel, previousSession = null) {
   await panel.waitForFunction((previous) => {
@@ -782,6 +800,17 @@ export async function runAccessRuntimeScenario(context, extensionId) {
   const { panel, errors } = await openPanel(context, extensionId, base);
   let target = null;
   try {
+    // Opt out of "remember" so the per-chat runtime tests exercise chat-scoped Full access and restart downgrade.
+    await panel.evaluate(async () => {
+      const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+      await chrome.runtime.sendMessage({
+        type: 'set-access-remember',
+        remember: false,
+        expectedProfileRevision: pref?.profileRevision,
+      });
+    });
+    await panel.waitForFunction(() => document.getElementById('rememberAccessMode')?.checked === false, { timeout: 10000 });
+
     target = await context.newPage();
     await target.goto(`${base}/page`);
     await target.bringToFront();
@@ -828,6 +857,7 @@ export async function runAccessRuntimeScenario(context, extensionId) {
     await shot(panel, 'access-runtime-failure.png').catch(() => {});
     throw new Error(`${error.stack ?? error.message}\nView: ${JSON.stringify(view)}`, { cause: error });
   } finally {
+    await resetAccessPreference(panel);
     await target?.close();
     await panel.close();
     server.close();

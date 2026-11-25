@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { runAccessUiScenario } from './access-ui.mjs';
 import { runAccessRuntimeScenario } from './access-runtime.mjs';
+import { runAccessRememberedScenario } from './access-remembered.mjs';
 import { runVoiceAccessScenario } from './voice-access.mjs';
 import { runFocusedWorkspaceScenario } from './focused-workspace.mjs';
 import { runNamedProvidersScenario } from './named-providers.mjs';
@@ -515,8 +516,11 @@ async function enableFullAccess(panel) {
   // The panel is a real tab in E2E, unlike Chrome's visible side-panel surface.
   // Foreground it so native-dialog scrolling/stability is not background-throttled.
   await panel.bringToFront();
+  await panel.waitForFunction(() => document.getElementById('accessState')?.textContent?.trim(), { timeout: 15000 }).catch(() => {});
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await panel.evaluate(() => document.getElementById('accessSelect')?.value === 'full-access')) return true;
     await panel.selectOption('#accessSelect', 'full-access');
+    if (await panel.evaluate(() => document.getElementById('accessSelect')?.value === 'full-access')) return true;
     const opened = await panel.waitForSelector('#accessWarning[open]', { timeout: 15000 }).then(() => true, () => false);
     if (!opened) continue;
     try {
@@ -534,7 +538,25 @@ async function enableFullAccess(panel) {
     if (confirmed) return true;
     await panel.keyboard.press('Escape').catch(() => {});
   }
-  return false;
+  return panel.evaluate(() => document.getElementById('accessSelect')?.value === 'full-access').catch(() => false);
+}
+
+/** Resets any remembered Full access and restores default Ask-first + remember:true after a scenario. */
+async function resetAccessPreference(panel) {
+  await panel?.evaluate?.(async () => {
+    const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+    if (pref && (!pref.remember || pref.mode === 'full-access')) {
+      let rev = pref.profileRevision;
+      if (!pref.remember) {
+        const on = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: true, expectedProfileRevision: rev });
+        rev = on?.result?.preference?.profileRevision ?? rev;
+      }
+      const off = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: false, expectedProfileRevision: rev });
+      rev = off?.result?.preference?.profileRevision ?? rev;
+      await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: false, expectedProfileRevision: rev });
+    }
+    await chrome.storage.local.remove('accessPreference');
+  }).catch(() => {});
 }
 
 async function runScenario(context, extensionId, { name, task, handlers, fast, expectReport, check, stopWorker = false, sendEarly = false, pagePath = '/page', during = null, needsFullAccess = true }) {
@@ -682,6 +704,7 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
     })).catch(() => null);
     throw new Error(`${name}: ${error.message}; UI: ${JSON.stringify(state)}; setup: ${setupFailures.join('; ')}`);
   } finally {
+    if (needsFullAccess && !sendEarly) await resetAccessPreference(panel);
     await panel.close();
     server.close();
   }
@@ -784,6 +807,7 @@ async function runParallelScenario(context, extensionId) {
     if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
     return failures;
   } finally {
+    await resetAccessPreference(pages[0]);
     for (const page of pages) await page.close();
     server.close();
   }
@@ -1433,6 +1457,7 @@ async function runVoiceReplayScenario(context, extensionId) {
     console.log(`\n== scenario: voice-replay ==\nmodel calls before ${before}, after ${counts.llm}`);
     return failures;
   } finally {
+    await resetAccessPreference(panel);
     await target?.close();
     await panel.close();
     server.close();
@@ -1921,6 +1946,7 @@ async function main() {
       ...(await verify(runVoiceReplayScenario)),
       ...(await verify(runAccessUiScenario)),
       ...(await verify(runAccessRuntimeScenario)),
+      ...(await verify(runAccessRememberedScenario)),
       ...(await verify(runVoiceAccessScenario)),
       ...(await runScenario(context, extensionId, {
         name: 'fast-access-disabled',

@@ -279,12 +279,18 @@ export class AccessAuthority {
    * `sessionId` is required: an authority without a session has nothing to
    * bind an approval to, and a missing session must never be able to answer
    * a question.
+   *
+   * `initialMode` is the mode a chat opens in: Ask first unless the worker
+   * restores the mode the owner chose to remember. Anything that is not the
+   * exact Full-access name is Ask first, and the revision starts at 1 either
+   * way, so every permit is still bound to a revision.
    */
-  constructor({ sessionId, onChange = () => {}, onRequest = () => {}, onRequestSettled = () => {} } = {}) {
+  constructor({ sessionId, initialMode = ASK_FIRST, onChange = () => {}, onRequest = () => {}, onRequestSettled = () => {} } = {}) {
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new TypeError('AccessAuthority needs the session it belongs to');
     }
     this.#sessionId = sessionId;
+    this.#mode = normalizeMode(initialMode);
     this.#onChange = typeof onChange === 'function' ? onChange : () => {};
     this.#onRequest = typeof onRequest === 'function' ? onRequest : () => {};
     this.#onRequestSettled = typeof onRequestSettled === 'function' ? onRequestSettled : () => {};

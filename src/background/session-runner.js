@@ -127,7 +127,13 @@ function portBoundToSession(port, sessionId) {
 }
 
 export class SessionRunner {
-  constructor({ meta, body, color, isTakenByOther, onSessionsChanged }) {
+  /**
+   * `initialAccessMode`, `onAccessModeChange` and `getProfileAccess` belong to
+   * the worker that remembers the owner's choice. A runner built without them
+   * is the standalone one: it starts at Ask first, changes its mode by itself
+   * and says nothing about a profile.
+   */
+  constructor({ meta, body, color, isTakenByOther, onSessionsChanged, initialAccessMode = ASK_FIRST, onAccessModeChange = null, getProfileAccess = null }) {
     this.id = meta.id;
     this.continuation = checkpointFor(body);
     this.title = meta.title;
@@ -148,6 +154,10 @@ export class SessionRunner {
     this.autoCompactBlockedUntil = 0; // the size a conversation must pass before it is compacted again
     this.awaitingShrink = false; // an automatic compaction happened and its effect is not measured yet
     this.onSessionsChanged = onSessionsChanged;
+    // Asked to store a mode change before it is applied, and what the profile
+    // remembers. Both are the worker's; null means the standalone runner.
+    this.onAccessModeChange = typeof onAccessModeChange === 'function' ? onAccessModeChange : null;
+    this.getProfileAccess = typeof getProfileAccess === 'function' ? getProfileAccess : null;
     this.ports = new Set();
     // The live panels that may ask for the access mode, and the listeners
     // this runner left on each port, so a port that goes away takes its
@@ -166,10 +176,13 @@ export class SessionRunner {
     this.askNotices = []; // "needs your answer" notifications still shown
     this.settings = null;
     // The worker's own authority for this session: what it may do and what the
-    // user has approved. It lives in the worker's memory only, so a new chat
-    // and a restarted worker both start at Ask first.
+    // user has approved. It lives in the worker's memory only. A chat opens in
+    // the mode the worker hands it: Ask first, or the mode the owner chose to
+    // remember for this profile. The approvals and permits never outlive the
+    // worker.
     this.access = new AccessAuthority({
       sessionId: this.id,
+      initialMode: initialAccessMode,
       onChange: (state) => this.onAccessChanged(state),
       onRequest: (request) => this.onAccessRequest(request),
       onRequestSettled: (settled) => this.onAccessRequestSettled(settled),
@@ -199,7 +212,7 @@ export class SessionRunner {
   /** `early` holds what the panel sent before this session finished loading. */
   attach(port, early = []) {
     try {
-      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, resumable: Boolean(this.continuation), question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), permissions: this.currentPermissions(), project: this.project });
+      port.postMessage({ type: 'replay', events: this.transcriptForReplay(), running: this.running, resumable: Boolean(this.continuation), question: this.pendingQuestion?.question ?? null, pending: this.inbox, access: this.access.state(), ...this.profileAccessField(), permissions: this.currentPermissions(), project: this.project });
     } catch {
       // The panel closed or moved on while this session loaded. Keeping its closed
       // port would make every later emit throw before reaching the next panel.
@@ -320,6 +333,9 @@ export class SessionRunner {
       this.broadcastAccess();
       return this.refusal('invalid-mode');
     }
+    // A worker that remembers the owner's choice stores it before it applies
+    // it, so the answer comes later.
+    if (this.onAccessModeChange) return this.changeProfileMode(msg, mode);
     const result = this.access.setMode(mode, {
       trusted: true,
       acknowledged: msg.acknowledged === true,
@@ -330,6 +346,59 @@ export class SessionRunner {
     if (!result.changed) this.broadcastAccess();
     else this.emit({ type: 'access-mode-note', mode: this.access.mode });
     return result;
+  }
+
+  /**
+   * A mode request of a worker that remembers the owner's choice.
+   *
+   * The worker stores the choice first (Full access) or applies it to every
+   * chat first (Ask first). Whatever the answer is, the panels are told what is
+   * really in force, and a refusal or a warning is told in words they know.
+   */
+  async changeProfileMode(msg, mode) {
+    const before = this.access.mode;
+    let result;
+    try {
+      result = await this.onAccessModeChange({
+        runner: this,
+        mode,
+        acknowledged: msg.acknowledged === true,
+        expectedRevision: msg.expectedRevision,
+        expectedProfileRevision: msg.expectedProfileRevision,
+      });
+    } catch {
+      result = { ok: false, changed: false, reason: 'storage-failed' };
+    }
+    if (this.disposed) return result;
+    // The mode in force comes first: the panel clears its notice when it is
+    // told the mode, so a notice that came before it would never be read.
+    this.broadcastAccess();
+    if (mode === FULL_ACCESS && this.access.mode !== before) this.emit({ type: 'access-mode-note', mode: this.access.mode });
+    if (!result?.ok) this.broadcast({ type: 'access-preference-notice', reason: result?.reason ?? 'refused' });
+    else if (result.warning) this.broadcast({ type: 'access-preference-notice', reason: result.warning });
+    return { ...result, ...this.access.state() };
+  }
+
+  /**
+   * The owner chose Ask first somewhere, or turned "remember" off: every live
+   * session goes back to Ask first at once, its permits are revoked and any
+   * pending approvals are cancelled.
+   */
+  forceDowngradeToAskFirst() {
+    if (this.access.mode === FULL_ACCESS) {
+      const result = this.access.setMode(ASK_FIRST, { trusted: true });
+      if (result.changed) this.emit({ type: 'access-mode-note', mode: ASK_FIRST });
+      return result;
+    }
+    this.access.cancel('mode-changed');
+    this.stop();
+    return { ok: true, changed: false, ...this.access.state() };
+  }
+
+  /** The profile's remembered choice, as a field of an event; nothing when there is no profile. */
+  profileAccessField() {
+    const preference = this.getProfileAccess?.();
+    return preference ? { accessPreference: preference } : {};
   }
 
   /** A request that changed nothing, and the state that is in force. */
@@ -468,7 +537,7 @@ export class SessionRunner {
 
   /** The mode that is really in force, to every panel of this session. */
   broadcastAccess() {
-    this.broadcast({ type: 'access-state', ...this.access.state() });
+    this.broadcast({ type: 'access-state', ...this.access.state(), ...this.profileAccessField() });
   }
 
   /**
@@ -499,7 +568,7 @@ export class SessionRunner {
       if (event.type === 'final') this.transition('finished');
       else if (event.type === 'ask') this.transition('ask', `ask-${(this.asks += 1)}`);
     }
-    for (const port of this.ports) port.postMessage(event);
+    this.broadcast(event);
   }
 
   /** Shows a notice and returns its id; `{ dismiss: id }` withdraws one (a retry that ended). */

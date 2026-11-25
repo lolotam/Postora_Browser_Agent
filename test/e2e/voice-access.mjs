@@ -470,6 +470,23 @@ async function stopWithdrawsTheQuestion(panel, target, failures) {
 
 // ---------- the scenario ----------
 
+async function resetAccessPreference(panel) {
+  await panel?.evaluate?.(async () => {
+    const pref = (await chrome.runtime.sendMessage({ type: 'get-access-preference' }))?.result;
+    if (pref && (!pref.remember || pref.mode === 'full-access')) {
+      let rev = pref.profileRevision;
+      if (!pref.remember) {
+        const on = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: true, expectedProfileRevision: rev });
+        rev = on?.result?.preference?.profileRevision ?? rev;
+      }
+      const off = await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: false, expectedProfileRevision: rev });
+      rev = off?.result?.preference?.profileRevision ?? rev;
+      await chrome.runtime.sendMessage({ type: 'set-access-remember', remember: true, acknowledged: false, expectedProfileRevision: rev });
+    }
+    await chrome.storage.local.remove('accessPreference');
+  }).catch(() => {});
+}
+
 export async function runVoiceAccessScenario(context, extensionId) {
   const failures = [];
   const { server, counts, base } = await startServer();
@@ -499,6 +516,7 @@ export async function runVoiceAccessScenario(context, extensionId) {
     console.log(`\n== scenario: voice-access ==\nfast calls: ${counts.jev}, main calls: ${counts.llm}\n${failures.length ? failures.join('\n') : 'the voice path asked the worker'}`);
     return failures;
   } finally {
+    await resetAccessPreference(panel);
     await target?.close();
     await panel.close();
     server.close();

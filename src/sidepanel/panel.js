@@ -3,7 +3,7 @@ import { contentDirection } from './content-direction.js';
 import { MIC_PANEL, MIC_WINDOW, micListenTarget, speechLang, voiceErrorKey } from './voice.js';
 import { isMicWindowSender, isWorkerSender } from '../permissions/panel-sender.js';
 import { currentLanguage, resolveLanguage, setLanguage, t, translateFor } from './i18n.js';
-import { createAccessUi } from './access.js';
+import { createAccessUi, preferenceNoticeKey } from './access.js';
 import { createProjectUi } from './project.js';
 import { createPermissionUi } from './permissions.js';
 import { bindComposerSize } from './composer-size.js';
@@ -151,6 +151,9 @@ const accessUi = createAccessUi({
     voice: $('voiceAccess'),
     warning: $('accessWarning'),
     acknowledge: $('accessAcknowledge'),
+    acknowledgeText: $('accessAcknowledgeText'),
+    scope: $('accessWarningScope'),
+    remember: $('rememberAccessMode'),
     confirm: $('accessConfirm'),
     cancel: $('accessCancel'),
   },
@@ -191,8 +194,20 @@ async function requestAccess(message) {
 function renderAccessError() {
   const node = $('accessError');
   if (!node) return;
-  node.textContent = accessErrorKey ? t(accessErrorKey) : '';
-  node.hidden = !accessErrorKey;
+  // A notice about what the profile remembers stays while it is true: a
+  // downgrade that could not be stored, or a remembered mode that could not
+  // be restored. A failure of a request is shown until the worker speaks.
+  const preference = accessUi.preference;
+  const key = accessErrorKey
+    || (preference?.unpersisted
+      ? 'access.notice.notCleared'
+      : preference?.optOutUnpersisted
+        ? 'access.notice.notRemembered'
+        : preference?.restoreFailed
+          ? 'access.notice.restoreFailed'
+          : '');
+  node.textContent = key ? t(key) : '';
+  node.hidden = !key;
 }
 
 /**
@@ -421,8 +436,8 @@ function refreshApprovals() {
  * under it. What the worker still waits for is what is left; the history of
  * the chat is not a request.
  */
-function applyAccessReplay(state, permissions) {
-  applyAccessState(state);
+function applyAccessReplay(state, permissions, preference) {
+  applyAccessState(state && typeof state === 'object' && preference !== undefined ? { ...state, accessPreference: preference } : state);
   permissionRequests.clear();
   for (const request of Array.isArray(permissions) ? permissions : []) {
     if (request && typeof request.id === 'string') permissionRequests.set(request.id, request);
@@ -472,7 +487,36 @@ function onEvent(event) {
       // The worker's own state, sent with the replay: the mode that is really
       // in force for this chat now, not a moment of the conversation, and the
       // requests it still waits for under it.
-      applyAccessReplay(event.access, event.permissions);
+      applyAccessReplay(event.access, event.permissions, event.accessPreference);
+      break;
+    case 'access-preference-state': {
+      // The profile's remembered choice moved, here or in another panel.
+      const previousRevision = accessUi.preference?.profileRevision ?? null;
+      accessUi.applyPreference(event.accessPreference);
+      if ((accessUi.preference?.profileRevision ?? null) !== previousRevision) {
+        rememberErrorKey = '';
+      }
+      if (!accessUi.preference?.unpersisted) {
+        if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
+        if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
+      }
+      if (!accessUi.preference?.optOutUnpersisted) {
+        if (accessErrorKey === 'access.notice.notRemembered') accessErrorKey = '';
+        if (rememberErrorKey === 'access.notice.notRemembered') rememberErrorKey = '';
+      }
+      renderRemember();
+      renderAccessError();
+      break;
+    }
+    case 'access-preference-notice':
+      if (replaying) break;
+      if (event.reason === 'not-cleared' || (event.reason === 'not-remembered' && accessUi.preference?.optOutUnpersisted)) {
+        renderRemember();
+        renderAccessError();
+        break;
+      }
+      accessErrorKey = preferenceNoticeKey(event.reason) || 'access.error.send';
+      renderAccessError();
       break;
     case 'access-state':
       // The worker says what the mode is now. A state that belongs to the
@@ -2707,6 +2751,7 @@ function applyLanguage(language) {
   // answer do not.
   permissionUi.updateLanguage(approvalWords);
   renderAccessError();
+  renderRemember();
   renderFiles();
   projectUi.render();
   if (!settings) return;
@@ -2939,7 +2984,7 @@ let settingsDirty = false;
 
 // Fields that hold transient secrets, not settings: typing into them never
 // invents a draft.
-const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field';
+const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field, #rememberAccessMode';
 
 // Any edit in any page marks the draft, wherever the user walks afterwards.
 $('settingsView').addEventListener('input', (e) => {
@@ -2964,6 +3009,98 @@ function syncFooter() {
   $('settingsFooter').hidden = settingsNav.section() === null && !settingsDirty;
 }
 
+// ---------- remember my choice ----------
+
+// The switch in Settings → Behavior. It is not a setting: it belongs to the
+// profile, the worker keeps it, and the panel only asks and shows the answer.
+let rememberErrorKey = '';
+let rememberBusy = false;
+
+/** The switch itself is drawn by the access control; a failure is shown beside it. */
+function renderRemember() {
+  const node = $('rememberAccessError');
+  if (!node) return;
+  const key = rememberErrorKey
+    || (accessUi.preference?.unpersisted
+      ? 'access.notice.notCleared'
+      : accessUi.preference?.optOutUnpersisted
+        ? 'access.notice.notRemembered'
+        : '');
+  node.textContent = key ? t(key) : '';
+  node.hidden = !key;
+}
+
+/** The worker is asked once; whatever it answers is what the panel shows. */
+async function changeRemember(remember, acknowledged) {
+  rememberBusy = true;
+  rememberErrorKey = '';
+  try {
+    const result = await request('set-access-remember', {
+      remember,
+      acknowledged,
+      expectedProfileRevision: accessUi.preference?.profileRevision,
+    });
+    if (result?.preference) accessUi.applyPreference(result.preference);
+    if (!result?.ok) {
+      // Another chat is in Full access: the same warning is read first.
+      if (result?.reason === 'needs-acknowledgement' && !acknowledged && accessUi.askRememberAcknowledgement(() => changeRemember(true, true))) return;
+      rememberErrorKey = preferenceNoticeKey(result?.reason) || 'access.error.send';
+    } else if (result.warning && result.warning !== 'not-cleared' && result.warning !== 'not-remembered') {
+      rememberErrorKey = preferenceNoticeKey(result.warning);
+    }
+  } catch {
+    rememberErrorKey = 'access.error.send';
+    const rememberBox = $('rememberAccessMode');
+    if (rememberBox) rememberBox.checked = accessUi.preference?.remember ?? true;
+  } finally {
+    rememberBusy = false;
+    renderRemember();
+    renderAccessError();
+  }
+}
+
+$('rememberAccessMode').addEventListener('change', (event) => {
+  const box = event.target;
+  const wanted = box.checked;
+  const confirmedRemember = accessUi.preference?.remember ?? true;
+  if (rememberBusy) {
+    box.checked = confirmedRemember;
+    renderRemember();
+    return;
+  }
+  // Turning it on while Full access is on makes Full access reach new chats:
+  // the warning is read and acknowledged before anything is sent.
+  if (wanted && accessUi.confirmed.mode === FULL_ACCESS) {
+    box.checked = confirmedRemember; // nothing is chosen until the warning is acknowledged
+    if (!accessUi.askRememberAcknowledgement(() => changeRemember(true, true))) {
+      rememberErrorKey = 'access.error.connect';
+      renderRemember();
+    }
+    return;
+  }
+  box.checked = confirmedRemember;
+  changeRemember(wanted, false);
+});
+
+/** The panel opened or the worker came back: what the profile remembers is asked for. */
+async function refreshAccessPreference() {
+  try {
+    accessUi.applyPreference(await request('get-access-preference'));
+    if (!accessUi.preference?.unpersisted) {
+      if (accessErrorKey === 'access.notice.notCleared') accessErrorKey = '';
+      if (rememberErrorKey === 'access.notice.notCleared') rememberErrorKey = '';
+    }
+    if (!accessUi.preference?.optOutUnpersisted) {
+      if (accessErrorKey === 'access.notice.notRemembered') accessErrorKey = '';
+      if (rememberErrorKey === 'access.notice.notRemembered') rememberErrorKey = '';
+    }
+  } catch {
+    // The replay of the connection carries it too.
+  }
+  renderRemember();
+  renderAccessError();
+}
+
 async function init() {
   const data = await request('get-settings');
   settings = data.settings;
@@ -2974,6 +3111,7 @@ async function init() {
   // The access control is drawn again in the language the panel settled on.
   // The mode it shows is still the one the worker confirmed.
   accessUi.updateLanguage(t);
+  refreshAccessPreference();
   // The same for the approvals: the words change, the requests do not.
   permissionUi.updateLanguage(approvalWords);
   renderDriveState();
