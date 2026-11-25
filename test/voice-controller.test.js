@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createVoiceController } from '../src/voice/voice-controller.js';
+import { createVoiceController, decodeVoicePrefs, isVoiceStopWord } from '../src/voice/voice-controller.js';
 
 // A recognizer that behaves like Chrome's: it ends when it is told to, and it
 // hands the words it heard to the controller.
@@ -56,11 +56,13 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
   const pauses = [];
   const resumes = [];
   const logs = [];
+  const stateUpdates = [];
   const saved = { handsFree, speakReplies };
   let clock = 1000;
   let spoken = null;
   let blocked = false;
   let release = null;
+  let stopped = 0;
 
   const controller = createVoiceController({
     createRecognition: () => {
@@ -79,7 +81,10 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     say: (text, { onEnd }) => { spoken = { text, onEnd }; },
     stopSpeech: () => { spoken = null; },
     speaking: () => Boolean(spoken),
-    onState: (state) => states.push(state),
+    onState: (state, meta) => {
+      states.push(state);
+      stateUpdates.push({ state, listening: Boolean(meta?.listening) });
+    },
     onTranscript: (text, options) => transcripts.push({ text, ...options }),
     onCommand: async (text, { signal }) => {
       commands.push({ text, signal });
@@ -100,7 +105,9 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     savePrefs: async (next) => { Object.assign(saved, next); },
     onFailure: (code, detail) => { failures.push(code); failureDetails.push(detail); },
     onMicBlocked: () => { blocked = true; },
+    onStop: () => { stopped += 1; },
     cancelledText: () => 'Cancelled',
+    heardNotRunText: () => 'heard, not run',
     now: () => clock,
   });
 
@@ -109,6 +116,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     created,
     commands,
     states,
+    stateUpdates,
     transcripts,
     failures,
     failureDetails,
@@ -117,6 +125,7 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
     resumes,
     logs,
     saved,
+    stopped: () => stopped,
     blocked: () => blocked,
     speak: () => spoken,
     endSpeech: () => { const s = spoken; spoken = null; s?.onEnd?.(); },
@@ -125,21 +134,24 @@ function setup({ handsFree = true, speakReplies = false, panel = true, prefs, fa
   };
 }
 
-test('a queued command waits for the worker to be idle before it starts', async () => {
+test('a phrase heard while a command runs is dropped as heard, not run, and the next phrase after idle runs', async () => {
   const app = setup({ handsFree: true });
   await app.controller.open();
   const rec = app.created[0];
 
   rec.hear('open youtube');
   rec.hear('scroll down');
-  assert.deepEqual(app.commands.map((c) => c.text), ['open youtube'], 'the second command waits for the first to be done');
+  assert.deepEqual(app.commands.map((c) => c.text), ['open youtube'], 'a phrase heard while busy does not start');
+  assert.equal(app.logs.length, 2);
+  assert.deepEqual(app.logs[1], { command: 'scroll down', status: { text: 'heard, not run', state: 'dropped' } });
+  assert.deepEqual(app.transcripts.at(-1), { text: 'scroll down', final: true, dropped: true });
 
-  // The worker is idle only when the task it ran has finished its cleanup.
-  // Until then the second command must not start: it would ask a session that
-  // is still working on something.
   app.release();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(app.commands.map((c) => c.text), ['open youtube', 'scroll down'], 'the second command starts after the idle');
+  assert.deepEqual(app.commands.map((c) => c.text), ['open youtube'], 'dropped phrase never runs after the task finishes');
+
+  rec.hear('click first video');
+  assert.deepEqual(app.commands.map((c) => c.text), ['open youtube', 'click first video'], 'a phrase spoken after idle runs normally');
 });
 
 test('microphone-window transcription failures preserve the provider detail once', async () => {
@@ -378,16 +390,17 @@ test('a reply that finishes after the screen was closed does not bring the micro
   assert.equal(app.created.length, 1, 'nothing was started again');
 });
 
-test('the commands run one after another', async () => {
+test('the commands run one after another once the running command finishes', async () => {
   const app = setup({ handsFree: true });
   await app.controller.open();
   app.created[0].hear('first');
-  app.created[0].hear('second');
-  assert.deepEqual(app.commands.map((c) => c.text), ['first'], 'the second waits');
+  assert.deepEqual(app.commands.map((c) => c.text), ['first']);
   assert.equal(app.controller.busy, true);
 
   app.release();
   await new Promise((r) => setTimeout(r, 0));
+  assert.equal(app.controller.busy, false);
+  app.created[0].hear('second');
   assert.deepEqual(app.commands.map((c) => c.text), ['first', 'second']);
 });
 
@@ -483,19 +496,76 @@ test('the typed command runs like a spoken one', async () => {
   assert.deepEqual(app.transcripts.at(-1), { text: 'scroll down', final: true });
 });
 
-test('the commands that were waiting are cancelled, and the one that ran is marked too', async () => {
+test('the command that was running is marked cancelled when the screen closes, while a phrase heard while busy stays dropped', async () => {
   const app = setup({ handsFree: true });
   await app.controller.open();
   app.created[0].hear('first');
   app.created[0].hear('second');
-  assert.equal(app.logs.length, 2, 'both commands are in the log');
+  assert.equal(app.logs.length, 2, 'both utterances are in the log');
+  assert.equal(app.logs[1].status?.text, 'heard, not run');
+  assert.equal(app.logs[1].status?.state, 'dropped');
 
   app.controller.close();
 
   assert.equal(app.logs[0].status?.text, 'Cancelled', 'the command that ran is marked as cancelled');
   assert.equal(app.logs[0].status?.state, 'err');
-  assert.equal(app.logs[1].status?.text, 'Cancelled', 'the command that never ran says it was cancelled');
-  assert.equal(app.logs[1].status?.state, 'err');
+  assert.equal(app.logs[1].status?.text, 'heard, not run', 'the dropped phrase keeps its dropped status');
+  assert.equal(app.logs[1].status?.state, 'dropped');
+});
+
+test('hands-free defaults to off for a new profile and keeps an existing saved choice', async () => {
+  assert.deepEqual(decodeVoicePrefs({}), { handsFree: false, speakReplies: false });
+  assert.deepEqual(decodeVoicePrefs({ voiceHandsfree: true, voiceSpeak: false }), { handsFree: true, speakReplies: false });
+  assert.deepEqual(decodeVoicePrefs({ voiceHandsfree: false, voiceSpeak: true }), { handsFree: false, speakReplies: true });
+
+  const fresh = setup({ prefs: {} });
+  await fresh.controller.open();
+  assert.deepEqual(fresh.controller.prefs, { handsFree: false, speakReplies: false });
+  assert.equal(fresh.controller.listening, false, 'a new profile does not start listening until asked');
+  assert.equal(fresh.created.length, 0);
+
+  const optedIn = setup({ prefs: { handsFree: true, speakReplies: false } });
+  await optedIn.controller.open();
+  assert.deepEqual(optedIn.controller.prefs, { handsFree: true, speakReplies: false });
+  assert.equal(optedIn.controller.listening, true, 'an existing hands-free choice is kept');
+  assert.equal(optedIn.created.length, 1);
+});
+
+test('a stop word spoken mid-task stops the running task and starts nothing', async () => {
+  for (const word of ['stop', 'cancel', 'وقف', 'توقف', 'الغِ', 'Stop!', '«إلغاء»']) {
+    assert.equal(isVoiceStopWord(word), true, `${word} should be recognized as a stop word`);
+  }
+  assert.equal(isVoiceStopWord('stop the video'), false);
+
+  for (const word of ['stop', 'cancel', 'وقف', 'توقف', 'الغِ']) {
+    const app = setup({ handsFree: true });
+    await app.controller.open();
+    app.created[0].hear('open youtube');
+    assert.equal(app.commands.length, 1);
+    assert.equal(app.controller.busy, true);
+
+    app.created[0].hear(word);
+    assert.equal(app.commands.length, 1, `"${word}" starts no second command`);
+    assert.equal(app.commands[0].signal.aborted, true, `"${word}" aborts the running command`);
+    assert.equal(app.controller.busy, false, `"${word}" leaves the controller idle`);
+    assert.equal(app.stopped(), 1, `"${word}" notifies the stop handler`);
+    assert.equal(app.logs.length, 1, `"${word}" does not add a command log entry`);
+    assert.deepEqual(app.logs[0].status, { text: 'Cancelled', state: 'err' });
+    app.controller.close();
+  }
+});
+
+test('the state callback reports live capture even while a task is thinking', async () => {
+  const app = setup({ handsFree: true });
+  await app.controller.open();
+  assert.deepEqual(app.stateUpdates.at(-1), { state: 'listening', listening: true });
+
+  app.created[0].hear('open youtube');
+  assert.deepEqual(app.stateUpdates.at(-1), { state: 'thinking', listening: true });
+
+  app.controller.stopListening();
+  assert.deepEqual(app.stateUpdates.at(-1), { state: 'thinking', listening: false });
+  app.controller.close();
 });
 
 test('a cancelled command stops the one that is running', async () => {

@@ -950,10 +950,18 @@ async function runVoiceScenario(context, extensionId) {
       count: document.querySelectorAll('#voiceLive').length,
       inView: Boolean(document.getElementById('voiceLive').closest('#voiceView')),
       chatHidden: document.getElementById('chatView').hidden,
+      handsFreeChecked: document.getElementById('voiceHandsfree')?.checked,
+      listeningOnOpen: Boolean(window.__recognition?.started),
     }));
     if (screen.count !== 1) failures.push(`the panel has ${screen.count} transcripts`);
     if (!screen.inView) failures.push('the transcript is not the one in the voice screen');
     if (!screen.chatHidden) failures.push('the chat is still shown behind the voice screen');
+    if (screen.handsFreeChecked !== false) failures.push('hands-free did not default to off for a new profile');
+    if (screen.listeningOnOpen) failures.push('a new profile started listening before hands-free or the mic was turned on');
+
+    // Turning hands-free on starts continuous listening and is remembered.
+    await panel.check('#voiceHandsfree');
+    await panel.waitForFunction(() => window.__recognition?.started === true, { timeout: 10000 });
 
     // The microphone icon fills the button, and the empty log says so in the
     // panel's language.
@@ -1110,6 +1118,7 @@ async function runVoiceWindowScenario(context, extensionId) {
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      voiceHandsfree: true,
       settings: {
         transcription: { mode: 'browser' },
         provider: 'compatible',
@@ -1196,6 +1205,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      voiceHandsfree: true,
       settings: {
         transcription: { mode: 'browser' },
         provider: 'compatible',
@@ -1223,6 +1233,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'clicked 1', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 1, { timeout: 15000 }).catch(() => {});
     const clicked = await target.evaluate(() => ({
       text: document.getElementById('out')?.textContent ?? '',
       trusted: document.getElementById('out')?.dataset.trusted ?? '',
@@ -1235,6 +1246,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('field')?.value === 'hello', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 2, { timeout: 15000 }).catch(() => {});
     const typed = await target.evaluate(() => ({
       value: document.getElementById('field')?.value ?? '',
       trusted: document.getElementById('out')?.dataset.trusted ?? '',
@@ -1247,6 +1259,7 @@ async function runVoiceTrustedScenario(context, extensionId) {
     await waitForApproval(panel, pageErrors);
     await panel.click('#approvals .permission-allow');
     await target.waitForFunction(() => document.getElementById('out')?.textContent === 'entered', { timeout: 15000 }).catch(() => {});
+    await panel.waitForFunction(() => document.querySelectorAll('#voiceLog .voice-entry.ok').length >= 3, { timeout: 15000 }).catch(() => {});
     const entered = await target.evaluate(() => document.getElementById('out')?.textContent ?? '');
     if (entered !== 'entered') failures.push(`Enter did not reach the page ("${entered}")`);
 
@@ -1297,6 +1310,7 @@ async function runVoiceSwitchScenario(context, extensionId) {
   try {
     await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
     await panel.evaluate((baseUrl) => chrome.storage.local.set({
+      voiceHandsfree: true,
       settings: {
         transcription: { mode: 'browser' },
         provider: 'compatible',

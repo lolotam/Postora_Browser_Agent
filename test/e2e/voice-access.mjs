@@ -166,6 +166,7 @@ async function openPanel(context, extensionId, base) {
   });
   await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
   await panel.evaluate((baseUrl) => chrome.storage.local.set({
+    voiceHandsfree: true,
     settings: {
         transcription: { mode: 'browser' },
       provider: 'compatible',
@@ -210,7 +211,13 @@ const oldApprovalShown = async (panel) => panel.evaluate(() => {
 const logEntries = (panel) => panel.$$eval('#voiceLog .voice-entry', (rows) => rows.map((row) => row.textContent));
 
 /** The page starts again: nothing of the step before is left on it. */
-async function resetPage(target) {
+async function resetPage(target, panel = null) {
+  if (panel) {
+    await panel.waitForFunction(() => {
+      const top = document.querySelector('#voiceLog .voice-entry');
+      return !top || top.classList.contains('ok') || top.classList.contains('err') || top.classList.contains('dropped');
+    }, { timeout: 15000 }).catch(() => {});
+  }
   await target.reload();
   await target.waitForFunction(() => Boolean(document.getElementById('go')));
 }
@@ -233,7 +240,7 @@ async function backToChat(panel) {
  * nothing.
  */
 async function askFirstRefuses(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
   await panel.evaluate(() => window.__say('click go'));
 
@@ -266,7 +273,7 @@ async function askFirstRefuses(panel, target, failures) {
  * Ask first: the same command runs once the user allows it.
  */
 async function allowOnceRunsOneAction(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
   await panel.evaluate(() => window.__say('click go'));
 
@@ -286,7 +293,7 @@ async function allowOnceRunsOneAction(panel, target, failures) {
  * Ask first: a spoken scroll of the page goes through the worker as well.
  */
 async function scrollGoesThroughTheWorker(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
   await panel.evaluate(() => window.__say('scroll down'));
 
@@ -306,7 +313,7 @@ async function scrollGoesThroughTheWorker(panel, target, failures) {
  * written value is the one that was asked for.
  */
 async function secretWriteAsks(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
   await panel.evaluate(() => window.__say('type TEST_WRITTEN_VALUE into the password field'));
 
@@ -337,7 +344,7 @@ async function secretWriteAsks(panel, target, failures) {
  * brings the value back.
  */
 async function secretReadAsks(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
   // Provider dashboards commonly display existing tokens in read-only fields.
   // Reading one still needs its own approval, not write eligibility.
@@ -375,7 +382,7 @@ async function secretReadAsks(panel, target, failures) {
  * Enter that follows is real input.
  */
 async function terminalTakesTheText(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
 
   // The terminal takes the focus, the way it does in a browser.
@@ -401,6 +408,10 @@ async function terminalTakesTheText(panel, target, failures) {
   if (!trusted.some((entry) => entry.startsWith('terminalInput:trusted'))) {
     failures.push(`the terminal did not get real input: ${JSON.stringify(trusted)}`);
   }
+  await panel.waitForFunction(() => {
+    const top = document.querySelector('#voiceLog .voice-entry');
+    return top && (top.classList.contains('ok') || top.classList.contains('err'));
+  }, { timeout: 15000 }).catch(() => {});
 
   // The Enter that follows is real input as well.
   await panel.evaluate(() => window.__say('press enter in the terminal'));
@@ -420,7 +431,7 @@ async function terminalTakesTheText(panel, target, failures) {
  * runs without any question.
  */
 async function fullAccessAsksNothing(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
 
   // The access control lives in the chat: the voice screen goes back first.
@@ -455,7 +466,7 @@ async function fullAccessAsksNothing(panel, target, failures) {
  * question is open, and nothing runs.
  */
 async function stopWithdrawsTheQuestion(panel, target, failures) {
-  await resetPage(target);
+  await resetPage(target, panel);
   await resetCounters(panel);
   await panel.evaluate(() => window.__say('click go'));
   const card = await waitForCard(panel).catch(() => null);
