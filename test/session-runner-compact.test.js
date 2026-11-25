@@ -321,3 +321,52 @@ test('a /compact that arrives while one runs is done after it', async () => {
   assert.deepEqual(focuses, ['', 'more', 'drained']);
   assert.deepEqual(runner.inbox, []);
 });
+
+test('auto-compaction estimates tokens as chars/4 when provider usage is missing', async () => {
+  const { CompatibleSession } = await import('../src/providers/openai-compatible.js');
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(
+      'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      { headers: { 'Content-Type': 'text/event-stream' } },
+    );
+    const compat = new CompatibleSession({
+      baseUrl: 'https://x.test/v1',
+      apiKey: 'k',
+      model: 'm',
+      effort: '',
+      thinkingStyle: 'gemini',
+      systemPrompt: 'sys',
+      tools: [],
+      usage: false,
+    });
+    compat.addUserMessage('x'.repeat(400));
+    const turn = await compat.next({});
+    assert.ok(turn.usage, 'CompatibleSession provides estimated usage when stream omits usage');
+    assert.equal(turn.usage.estimated, true);
+    assert.equal(turn.usage.prompt_tokens, Math.ceil((3 + 400) / 4));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const { runner } = await busyRunner('Estimate compact', 'next-step');
+  const calls = [];
+  const baseSession = compactingSession(calls);
+  const bigSession = {
+    ...baseSession,
+    messages: [
+      { role: 'system', content: 's'.repeat(4000) },
+      { role: 'user', content: 'u'.repeat(32000) },
+    ],
+  };
+  assert.equal(
+    await runner.compaction().beforeTurn({
+      session: bigSession,
+      inputTokens: 0,
+      signal: runner.abort.signal,
+    }),
+    true,
+    'beforeTurn compacts using chars/4 token estimate when reported inputTokens is 0',
+  );
+  assert.equal(calls.length, 1);
+});

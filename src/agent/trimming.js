@@ -285,6 +285,12 @@ export function estimateConversationChars(items = []) {
   return total;
 }
 
+/** Estimates input token count (`Math.ceil(characters / 4)`) when provider usage is missing. */
+export function estimateConversationTokens(items = [], extraChars = 0) {
+  const totalChars = estimateConversationChars(items) + Math.max(0, Number(extraChars) || 0);
+  return totalChars > 0 ? Math.ceil(totalChars / 4) : 0;
+}
+
 function readChatUserText(m) {
   if (typeof m.content === 'string') return m.content;
   if (Array.isArray(m.content)) return m.content.find((c) => c.type === 'text')?.text ?? '';

@@ -6,7 +6,7 @@ import { MODEL_IDLE_MS, fetchModel, readSse } from '../lib/sse.js';
 import { requestJson } from '../lib/json.js';
 import { ProviderHttpError, readError, retryStreamBeforeOutput, withRetry } from '../lib/retry.js';
 import { parseTextToolCalls } from './text-tool-calls.js';
-import { compactChatMessages, SCREENSHOT_MESSAGE_PREFIX } from '../agent/trimming.js';
+import { compactChatMessages, estimateConversationTokens, SCREENSHOT_MESSAGE_PREFIX } from '../agent/trimming.js';
 
 // Gateways such as Vercel's list image, video and embedding models next to chat
 // models. "evaluation" models (typesafe-ai/jev) are kept, flagged as decision models.
@@ -85,6 +85,10 @@ export class CompatibleSession {
   addToolResult(callId, output, images = []) {
     this.messages.push({ role: 'tool', tool_call_id: callId, content: output });
     this.pendingImages.push(...images);
+  }
+
+  estimatedInputTokens() {
+    return estimateConversationTokens(this.messages);
   }
 
   async next({ signal, onEvent = () => {}, toolChoice = 'auto' }, deadline = Date.now() + MODEL_IDLE_MS, retrying = false, streamRetried = false) {
@@ -229,6 +233,7 @@ export class CompatibleSession {
         onEvent({ type: 'text-reset' }); // the streamed text was a call, not an answer
       }
     }
+    const estimatedPromptTokens = this.estimatedInputTokens();
     this.messages.push({
       role: 'assistant',
       content: content || null,
@@ -237,7 +242,12 @@ export class CompatibleSession {
       // a tool call keeps it.
       ...(minimax || this.thinkingStyle === 'kimi' ? storedReasoning(result) : {}),
     });
-    return { text: answer, toolCalls: result.toolCalls, usage: result.usage, retryWaitMs: this.retryWaitMs };
+    const usage = result.usage ?? {
+      prompt_tokens: estimatedPromptTokens,
+      completion_tokens: Math.ceil(((content || answer || '').length + (result.rawToolCalls.length ? JSON.stringify(result.rawToolCalls).length : 0)) / 4),
+      estimated: true,
+    };
+    return { text: answer, toolCalls: result.toolCalls, usage, retryWaitMs: this.retryWaitMs };
   }
 
   /** The request up to its response headers, retried on rate limits and overloads. */
