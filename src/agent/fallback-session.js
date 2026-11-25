@@ -7,6 +7,7 @@
 import { describeFailure } from '../lib/failure.js';
 import { NOTE_SAVED_ARGS } from './notebook.js';
 import { untrustedDataBlock } from './prompt.js';
+import { projectToolArgs, redactSecretReadOutput } from './redaction.js';
 import { compactedMessage } from '../sessions/compaction.js';
 
 const CANCEL_SUMMARY = '[System] The request to summarize the conversation was cancelled. Do not answer it. Carry on from where you were.';
@@ -58,13 +59,15 @@ export class FallbackSession {
     this.active.addUserMessage(text);
   }
 
-  addToolResult(callId, output, images = []) {
+  addToolResult(callId, output, images = [], { secret = false } = {}) {
     const call = this.openCalls.get(callId);
+    const safeOutput = redactSecretReadOutput(String(output));
     if (call) {
-      this.log.steps.push({ name: call.name, args: call.args, result: firstLine(output) });
+      const safeArgs = projectToolArgs(call.name, call.args, { secret });
+      this.log.steps.push({ name: call.name, args: safeArgs, result: firstLine(safeOutput) });
       this.openCalls.delete(callId);
     }
-    this.log.last = { text: String(output).slice(0, LAST_TEXT_CHARS), images };
+    this.log.last = { text: safeOutput.slice(0, LAST_TEXT_CHARS), images };
     this.active.addToolResult(callId, output, images);
   }
 

@@ -8,6 +8,7 @@ import { keyGroup, shareKeys } from './keys.js';
 import { credentialOf } from './credentials.js';
 import { ACCOUNT_STORAGE_KEYS, migrateLegacyAccounts, storeCredential } from '../providers/account-auth.js';
 import { exportSessions, importSessions, validateSessions } from '../sessions/store.js';
+import { sanitizeSessionBody } from '../agent/redaction.js';
 
 const FORMAT = 'browser-agent-backup';
 const VERSION = 3;
@@ -200,7 +201,7 @@ export async function exportBackup({ includeSessions = true, includeCredentials 
     exportedAt: new Date().toISOString(),
     settings: includeCredentials ? merged : stripSettingsCredentials(merged),
     accounts: includeCredentials ? signedInAccounts(stored) : {},
-    sessions: includeSessions ? await exportSessions() : [],
+    sessions: includeSessions ? (await exportSessions()).map(({ meta, body }) => ({ meta, body: sanitizeSessionBody(body) })) : [],
   };
 }
 
