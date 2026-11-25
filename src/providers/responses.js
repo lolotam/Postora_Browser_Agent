@@ -64,19 +64,20 @@ export class ResponsesSession {
     this.pendingImages.push(...images);
   }
 
-  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }) {
+  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }, streamRetried = false) {
     if (this.pendingImages.length) {
       this.input.push(userMessage(SCREENSHOT_MESSAGE_PREFIX, this.pendingImages));
       this.pendingImages = [];
     }
     compactInput(this.input);
-    this.retryWaitMs = 0;
+    if (!streamRetried) this.retryWaitMs = 0;
 
     const response = await this.post(toolChoice, signal);
     const items = [];
     let usage = null;
     let completed = false;
     let streamed = false;
+    let received = false;
     let wasReset = false;
     // A half answer must not stay on screen, nor be followed by the backup's.
     const resetText = () => {
@@ -91,15 +92,18 @@ export class ResponsesSession {
         switch (event.type) {
           case 'response.output_text.delta':
             streamed = true;
+            if (event.delta) received = true;
             onEvent({ type: 'text-delta', delta: event.delta });
             break;
           case 'response.reasoning_summary_text.delta':
+            if (event.delta) received = true;
             onEvent({ type: 'reasoning-delta', delta: event.delta });
             break;
           case 'response.reasoning_summary_part.done':
             onEvent({ type: 'reasoning-delta', delta: '\n\n' });
             break;
           case 'response.output_item.done':
+            received = true;
             items.push(event.item);
             break;
           case 'response.completed':
@@ -120,11 +124,17 @@ export class ResponsesSession {
     } catch (err) {
       // A body that fails to read, the idle timeout or a malformed event.
       resetText();
+      if (!received && !streamRetried && err?.name !== 'AbortError' && !signal?.aborted) {
+        return this.next({ signal, onEvent, toolChoice }, true);
+      }
       throw err;
     }
     // The turn only counts when the response completed; a stream that ends
     // early leaves the conversation as it was.
     if (!completed) {
+      if (!received && !streamRetried && !signal?.aborted) {
+        return this.next({ signal, onEvent, toolChoice }, true);
+      }
       resetText();
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
     }

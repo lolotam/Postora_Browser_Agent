@@ -4,7 +4,7 @@
 import { providerMessage } from '../lib/failure.js';
 import { MODEL_IDLE_MS, fetchModel, readSse } from '../lib/sse.js';
 import { requestJson } from '../lib/json.js';
-import { ProviderHttpError, readError, withRetry } from '../lib/retry.js';
+import { ProviderHttpError, readError, retryStreamBeforeOutput, withRetry } from '../lib/retry.js';
 import { parseTextToolCalls } from './text-tool-calls.js';
 import { compactChatMessages, SCREENSHOT_MESSAGE_PREFIX } from '../agent/trimming.js';
 
@@ -87,7 +87,7 @@ export class CompatibleSession {
     this.pendingImages.push(...images);
   }
 
-  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }, deadline = Date.now() + MODEL_IDLE_MS, retrying = false) {
+  async next({ signal, onEvent = () => {}, toolChoice = 'auto' }, deadline = Date.now() + MODEL_IDLE_MS, retrying = false, streamRetried = false) {
     if (this.pendingImages.length) {
       this.messages.push(this.textOnly
         ? userMessage('A screenshot was taken, but this model cannot read images. Use read_page or get_text instead.')
@@ -107,12 +107,12 @@ export class CompatibleSession {
       // deadline, once (no images are left after that); later screenshots become a note.
       if (NO_VISION_STATUS.has(status) && NO_VISION.test(detail) && dropImages(this.messages)) {
         this.textOnly = true;
-        return this.next({ signal, onEvent, toolChoice }, deadline, true);
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, streamRetried);
       }
       // An endpoint that refuses the usage option: ask again without it, once.
       if (status === 400 && this.usage && /stream_options/i.test(detail)) {
         this.usage = false;
-        return this.next({ signal, onEvent, toolChoice }, deadline, true);
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, streamRetried);
       }
       // OpenRouter's own advice for this one is to drop a tool, which the agent cannot do.
       if (/support tool use/i.test(detail)) throw failure(err, 'this model cannot call tools, which the agent needs to use the browser. Pick another model.');
@@ -129,30 +129,40 @@ export class CompatibleSession {
     let shown = '';
     let done = false;
     let received = false; // any part of the answer (text, reasoning or a call) arrived
-    for await (const { data } of readSse(res, signal)) {
-      if (data === '[DONE]') {
-        done = true;
-        break;
-      }
-      const chunk = JSON.parse(data);
-      if (chunk.error) {
-        const message = chunk.error.message ?? JSON.stringify(chunk.error);
-        // vLLM answers HTTP 200 and reports a model without vision inside the stream
-        // ("multimodal processing is not enabled"): handled like the HTTP error, once,
-        // and only before anything was shown, so a retry never adds to a shown answer.
-        if (!received && NO_VISION.test(message) && dropImages(this.messages)) {
-          this.textOnly = true;
-          return this.next({ signal, onEvent, toolChoice }, deadline, true);
+    try {
+      for await (const { data } of readSse(res, signal)) {
+        if (data === '[DONE]') {
+          done = true;
+          break;
         }
-        if (shown) onEvent({ type: 'text-reset' }); // the backup's answer must not follow a half answer
-        throw new Error(message);
+        const chunk = JSON.parse(data);
+        if (chunk.error) {
+          const message = chunk.error.message ?? JSON.stringify(chunk.error);
+          // vLLM answers HTTP 200 and reports a model without vision inside the stream
+          // ("multimodal processing is not enabled"): handled like the HTTP error, once,
+          // and only before anything was shown, so a retry never adds to a shown answer.
+          if (!received && NO_VISION.test(message) && dropImages(this.messages)) {
+            this.textOnly = true;
+            return this.next({ signal, onEvent, toolChoice }, deadline, true, streamRetried);
+          }
+          if (shown) onEvent({ type: 'text-reset' }); // the backup's answer must not follow a half answer
+          throw new Error(message);
+        }
+        const delta = acc.push(chunk);
+        if (delta.text || delta.reasoning || chunk.choices?.[0]?.delta?.tool_calls?.length) received = true;
+        const text = filter ? filter.push(delta.text) : delta.text;
+        shown += text;
+        if (text) onEvent({ type: 'text-delta', delta: text });
+        if (delta.reasoning) onEvent({ type: 'reasoning-delta', delta: delta.reasoning });
       }
-      const delta = acc.push(chunk);
-      if (delta.text || delta.reasoning || chunk.choices?.[0]?.delta?.tool_calls?.length) received = true;
-      const text = filter ? filter.push(delta.text) : delta.text;
-      shown += text;
-      if (text) onEvent({ type: 'text-delta', delta: text });
-      if (delta.reasoning) onEvent({ type: 'reasoning-delta', delta: delta.reasoning });
+    } catch (err) {
+      if (!received && !streamRetried) {
+        return retryStreamBeforeOutput(
+          () => { throw err; },
+          { signal, deadline, canRetry: () => true },
+        ).catch(() => this.next({ signal, onEvent, toolChoice }, deadline, true, true));
+      }
+      throw err;
     }
 
     const result = acc.result();
@@ -168,6 +178,12 @@ export class CompatibleSession {
     let content = result.text;
     // Neither a finish reason nor [DONE]: the connection dropped mid-answer.
     if (!result.finishReason && !done) {
+      if (!received && !streamRetried && signal && !signal.aborted && deadline - Date.now() > 0) {
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, true);
+      }
+      if (!received && !streamRetried && !signal && deadline - Date.now() > 0) {
+        return this.next({ signal, onEvent, toolChoice }, deadline, true, true);
+      }
       if (answer) onEvent({ type: 'text-reset' }); // withdrawn before the backup or the error shows
       throw new Error('Model request failed: the response stream ended before the answer was complete.');
     }

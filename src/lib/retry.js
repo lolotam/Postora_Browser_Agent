@@ -130,6 +130,22 @@ export async function withRetry(attempt, { signal, deadline = Date.now() + MODEL
   }
 }
 
+/**
+ * Retries a streaming turn once when the response stream fails before any output
+ * (text, reasoning, or tool call) was emitted. Once any output has arrived, the
+ * stream is never replayed.
+ */
+export async function retryStreamBeforeOutput(runStream, { canRetry = () => true, signal = null, deadline = Date.now() + MODEL_IDLE_MS } = {}) {
+  try {
+    return await runStream();
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) throw err;
+    if (deadline - Date.now() <= 0) throw err;
+    if (!canRetry(err)) throw err;
+    return runStream();
+  }
+}
+
 async function retryLoop(attempt, { signal, deadline, provider, wait, random, onWait, onPause }) {
   let waited = 0; // MAX_WAIT_MS is the budget for all pauses of one request together
   for (let n = 1; ; n += 1) {
