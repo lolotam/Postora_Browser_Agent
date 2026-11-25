@@ -42,7 +42,7 @@ export function killTree(pid) {
   });
 }
 
-export function createFrameParser(onMessage, { maxMessage = MAX_MESSAGE, maxBuffered = MAX_MESSAGE * 2 } = {}) {
+export function createFrameParser(onMessage, { maxMessage = MAX_MESSAGE, maxBuffered = MAX_MESSAGE * 2, sync = false } = {}) {
   let buffer = Buffer.alloc(0);
   let queued = Promise.resolve();
 
@@ -56,7 +56,11 @@ export function createFrameParser(onMessage, { maxMessage = MAX_MESSAGE, maxBuff
       const body = buffer.subarray(4, 4 + length).toString('utf8');
       buffer = buffer.subarray(4 + length);
       const message = JSON.parse(body);
-      queued = queued.then(() => onMessage(message), () => onMessage(message));
+      if (sync) {
+        onMessage(message);
+      } else {
+        queued = queued.then(() => onMessage(message), () => onMessage(message));
+      }
     }
   };
 }
@@ -145,6 +149,7 @@ export function startHost(origin, options = {}) {
   let accepted = false;
   let ended = false;
   let timedOut = false;
+  let cancelled = false;
   let output = '';
   let outputBytes = 0;
   let truncated = false;
@@ -155,6 +160,7 @@ export function startHost(origin, options = {}) {
   let speechTask;
   let projectTask;
   let killing = null;
+  let currentType = '';
 
   const kill = () => {
     if (killing) return killing;
@@ -170,6 +176,54 @@ export function startHost(origin, options = {}) {
     }
   };
 
+  const replyProjectCancellation = (err) => {
+    const confirmedPreCommit = err?.preCommitAbort === true && !err?.committed;
+    if (confirmedPreCommit) {
+      reply({ cancelled: true, outcome: 'stopped' });
+      return;
+    }
+    reply({
+      cancelled: true,
+      outcome: 'unknown',
+      ...(err?.message ? { error: err.message } : {}),
+    });
+  };
+
+  const stopWork = async () => {
+    if (cancelled) return;
+    cancelled = true;
+    abort.abort();
+    clearTimeout(timer);
+    const hadChild = Boolean(child);
+    await kill();
+    if (projectTask) {
+      try {
+        const result = await projectTask;
+        reply({ exitCode: 0, result });
+        return;
+      } catch (err) {
+        replyProjectCancellation(err);
+        return;
+      }
+    }
+    if (speechTask) {
+      await speechTask.catch(() => {});
+      reply({ cancelled: true, outcome: 'stopped' });
+      return;
+    }
+    if (!hadChild) {
+      reply({ cancelled: true, outcome: 'stopped' });
+      return;
+    }
+    reply({
+      cancelled: true,
+      outcome: 'unknown',
+      exitCode: -1,
+      output,
+      truncated,
+    });
+  };
+
   const capture = (chunk, decoder) => {
     const room = MAX_OUTPUT - outputBytes;
     if (chunk.length > room) truncated = true;
@@ -180,8 +234,21 @@ export function startHost(origin, options = {}) {
     }
   };
 
+  const handleControlFrame = (message) => {
+    if (message?.type === 'cancel') {
+      void stopWork();
+    }
+  };
+
+  let controlParser = null;
+
   stdin.on('data', async (chunk) => {
-    if (accepted) return;
+    if (accepted) {
+      if (!streamMode && controlParser) {
+        try { controlParser(chunk); } catch { /* Ignore malformed trailing control bytes. */ }
+      }
+      return;
+    }
     input = Buffer.concat([input, chunk]);
     if (input.length < 4) return;
     const length = input.readUInt32LE(0);
@@ -192,24 +259,36 @@ export function startHost(origin, options = {}) {
     }
     if (input.length < 4 + length) return;
     accepted = true;
+    const rest = input.subarray(4 + length);
     try {
       const message = JSON.parse(input.subarray(4, 4 + length).toString('utf8'));
+      currentType = String(message?.type ?? '');
 
       if (message?.type === 'speech-stream-open') {
         streamMode = true;
         // The chunk that carried the opening frame can carry more frames.
-        const rest = input.subarray(4 + length);
         input = Buffer.alloc(0);
         await startStreamMode(message, { stdin, stdout, rest });
         return;
       }
 
+      controlParser = createFrameParser(handleControlFrame, { maxBuffered: MAX_MESSAGE * 2, maxMessage: MAX_MESSAGE, sync: true });
+      input = Buffer.alloc(0);
+      if (rest.length) {
+        try { controlParser(rest); } catch { /* Ignore malformed control bytes. */ }
+      }
+      if (cancelled) return;
+
+      if (message?.type === 'cancel') {
+        await stopWork();
+        return;
+      }
+
       if (String(message.type).startsWith('speech-')) {
-        input = Buffer.alloc(0);
         speechTask = speechOperation(message, {
           signal: abort.signal,
           onChild: (value) => { child = value; },
-          onProgress: (value) => { if (!ended) stdout.write(frame(value)); },
+          onProgress: (value) => { if (!ended && !replied) stdout.write(frame(value)); },
         });
         const result = await speechTask;
         child = null;
@@ -218,7 +297,6 @@ export function startHost(origin, options = {}) {
       }
 
       if (String(message.type).startsWith('project-')) {
-        input = Buffer.alloc(0);
         projectTask = projectOperation(message, { signal: abort.signal });
         const result = await projectTask;
         reply({ exitCode: 0, result });
@@ -226,7 +304,6 @@ export function startHost(origin, options = {}) {
       }
 
       const args = validateCommand(message);
-      input = Buffer.alloc(0);
       const command = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $ErrorActionPreference = 'Stop';\n${args.command}`;
       child = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
         ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')],
@@ -235,15 +312,24 @@ export function startHost(origin, options = {}) {
       const stderrDecoder = new StringDecoder('utf8');
       child.stdout.on('data', (data) => capture(data, stdoutDecoder));
       child.stderr.on('data', (data) => capture(data, stderrDecoder));
-      child.once('error', (error) => reply({ error: error.message }));
+      child.once('error', (error) => { if (!cancelled) reply({ error: error.message }); });
       child.once('close', (code) => {
         child = null;
         output += stdoutDecoder.end() + stderrDecoder.end();
+        if (cancelled) return;
         reply({ exitCode: timedOut ? -1 : (code ?? -1), output, truncated, timedOut });
       });
       timer = setTimeout(() => { timedOut = true; void kill(); }, args.timeout);
     } catch (error) {
-      reply({ error: error.message });
+      if (cancelled) {
+        if (currentType.startsWith('project-')) {
+          replyProjectCancellation(error);
+        } else {
+          reply({ cancelled: true, outcome: 'stopped' });
+        }
+      } else {
+        reply({ error: error.message });
+      }
     }
   });
 

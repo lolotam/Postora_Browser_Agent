@@ -107,6 +107,7 @@ export function createTranscriptionForm(root = document) {
     try {
       const { result } = await nativeRequest({ type: 'speech-install', modelId }, {
         signal: controller.signal,
+        confirmWaitMs: 0,
         onProgress: (event) => {
           if (record.generation !== mine) return;
           record.percent = event.percent;
@@ -123,6 +124,21 @@ export function createTranscriptionForm(root = document) {
     } catch (error) {
       if (record.generation !== mine) return;
       record.error = error?.message || String(error);
+      if (error?.outcome === 'unknown') {
+        void nativeRequest({ type: 'speech-status', modelId }).then(
+          ({ result: status }) => {
+            if (record.generation !== mine) return;
+            if (status?.installed === true) {
+              record.installed = true;
+              record.percent = 100;
+              record.phase = 'ready';
+              record.error = '';
+              if (provider === modelId) renderLocal(record);
+            }
+          },
+          () => {},
+        );
+      }
     } finally {
       if (record.generation === mine) {
         record.controller = null;
