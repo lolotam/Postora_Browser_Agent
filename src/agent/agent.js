@@ -39,6 +39,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
   let fast = fastLayer;
   let fastActions = [];
   let llmHasSeenPage = false;
+  let skipFastNextStep = false;
   let accessRevision = getAccessState?.()?.revision;
   let inputTokens = 0; // what the last model turn read: the size of the conversation
   let truncationRetries = 0; // the retries of a cut-off reply, in a row
@@ -63,7 +64,9 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
     }
 
     // A message waiting for the model goes to it now; the fast layer can wait a step.
-    if (fast && !steering?.waiting()) {
+    const skipFast = skipFastNextStep;
+    skipFastNextStep = false;
+    if (fast && !steering?.waiting() && !skipFast) {
       const started = Date.now();
       const outcome = await fast.step({ signal });
       throwIfAborted(signal);
@@ -81,8 +84,13 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
         continue;
       } else {
         if (outcome.reason) emit({ type: 'fast-handoff', reason: outcome.reason });
-        const note = escalationMessage({ fastActions, outcome, includePage: fastActions.length > 0 || !llmHasSeenPage });
+        const includePage = fastActions.length > 0 || !llmHasSeenPage;
+        if (includePage && outcome.snapshot?.generation != null) {
+          execute.noteSeenGeneration?.(outcome.snapshot.generation);
+        }
+        const note = escalationMessage({ fastActions, outcome, includePage });
         if (note) session.addUserMessage(note);
+        if (includePage && outcome.snapshot) llmHasSeenPage = true;
         fastActions = [];
       }
     }
@@ -169,6 +177,7 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
         }
         emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: !result.isError, summary: firstLine(result.output), ms: Date.now() - started });
         session.addToolResult(call.id, result.output, result.images ?? []);
+        if (result.staleGeneration) skipFastNextStep = true;
         fast?.recordLlmAction(call.name, call.args);
         llmHasSeenPage = true;
         // The rest of the turn waits for the model to look again when an action

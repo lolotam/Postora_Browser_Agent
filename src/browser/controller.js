@@ -783,7 +783,9 @@ export class BrowserController {
   }
 
   async snapshot({ maxElements = 250, maxTextChars = 3500, signal = null } = {}) {
-    const results = await this.injectFrames(snapshotPage, [maxElements, maxTextChars, SECRET_RULE], { signal });
+    const generation = (this.snapshotGeneration = (this.snapshotGeneration || 0) + 1);
+    this.currentGeneration = generation;
+    const results = await this.injectFrames(snapshotPage, [maxElements, maxTextChars, SECRET_RULE, generation], { signal });
     // The top document leads and owns the page text; every other frame joins
     // with its own numbered elements, their indexes shifted so one list covers
     // the whole page. The map is kept: an element action must run in the frame
@@ -794,7 +796,7 @@ export class BrowserController {
     const main = ordered.find((entry) => entry.frameId === 0)?.result ?? ordered[0]?.result;
     if (!main) {
       this.snapshotFrames = [];
-      return { url: '', title: '', scroll: { y: 0, viewport: 0, height: 0 }, elements: [], offscreen: 0, text: '', dates: [] };
+      return { url: '', title: '', generation, scroll: { y: 0, viewport: 0, height: 0 }, elements: [], offscreen: 0, text: '', dates: [] };
     }
     const frames = [];
     const lines = [];
@@ -822,7 +824,7 @@ export class BrowserController {
       }
     }
     this.snapshotFrames = frames;
-    return { ...main, elements: lines, text: text.slice(0, maxTextChars), dates: dates.slice(0, 60) };
+    return { ...main, generation, elements: lines, text: text.slice(0, maxTextChars), dates: dates.slice(0, 60) };
   }
 
   /** Scrolls an indexed element into view and returns its centre, label and box. */
@@ -838,17 +840,27 @@ export class BrowserController {
    * same script that acts, right before the focus, the selection or the value
    * is changed, so an index cannot be swapped while the action waits.
    */
-  async element(index, action, value = null, { guard = null, target = null, signal = null } = {}) {
+  async element(index, action, value = null, { guard = null, target = null, signal = null, generation = null } = {}) {
+    const wantedGen = generation ?? target?.generation ?? null;
+    if (wantedGen != null && this.currentGeneration != null && Number(wantedGen) !== this.currentGeneration) {
+      const err = new Error(`Element [${index}] belongs to stale snapshot generation ${wantedGen} (current is ${this.currentGeneration}).`);
+      err.staleGeneration = true;
+      throw err;
+    }
     const tab = await this.pinnedTab(target?.tabId ?? null);
     if (guard && !(await guard())) throw new Error(INPUT_CANCELLED);
     const frame = this.frameOf(index);
     const mutating = action !== 'locate';
     const result = await this.inject(
       elementAction,
-      [frame ? frame.local : index, action, value, this.overlay.enabled, SECRET_RULE, target ?? null],
+      [frame ? frame.local : index, action, value, this.overlay.enabled, SECRET_RULE, target ?? null, wantedGen],
       { tabId: tab.id, guard, frameId: frame ? frame.frameId : null, signal, mutating },
     );
-    if (result?.error) throw new Error(result.error);
+    if (result?.error) {
+      const err = new Error(result.error);
+      if (result.staleGeneration) err.staleGeneration = true;
+      throw err;
+    }
     return result;
   }
 
@@ -900,7 +912,7 @@ export class BrowserController {
    * A page that cannot be read (a blank page, a page of Chrome itself) still
    * gets a target: the tab is named, and a navigation may act on it.
    */
-  async captureTarget({ kind = 'focus', index = null, x = null, y = null, tabId = null } = {}) {
+  async captureTarget({ kind = 'focus', index = null, x = null, y = null, tabId = null, generation = null } = {}) {
     if (kind === 'tab') {
       // The tab is named, not taken: the session keeps the tab it works on.
       const tab = await this.pinnedTab(tabId);
@@ -930,10 +942,15 @@ export class BrowserController {
       tabId: tab.id,
       url: tab.url ?? '',
       documentId: null,
+      generation: this.currentGeneration ?? null,
       element: null,
       frameId: null,
       capturedAt: Date.now(),
     };
+    if (kind === 'element' && generation != null && this.currentGeneration != null && Number(generation) !== this.currentGeneration) {
+      target.staleGeneration = true;
+      return target;
+    }
     if (RESTRICTED.test(target.url)) return target;
     try {
       if (kind === 'focus') {
@@ -953,14 +970,25 @@ export class BrowserController {
         }
         if (picked) {
           target.documentId = picked.result.documentId ?? null;
+          target.generation = picked.result.generation ?? this.currentGeneration ?? null;
           target.element = picked.result.element ?? null;
           target.frameId = picked.frameId ? picked.frameId : null;
         }
       } else {
         const frame = kind === 'element' ? this.frameOf(index) : null;
-        const res = await this.inject(permissionTarget, ['capture', { kind, index: frame ? frame.local : index, x, y }, SECRET_RULE], { tabId: tab.id, frameId: frame ? frame.frameId : null });
+        const res = await this.inject(
+          permissionTarget,
+          ['capture', { kind, index: frame ? frame.local : index, x, y, ...(generation != null ? { generation: Number(generation) } : {}) }, SECRET_RULE],
+          { tabId: tab.id, frameId: frame ? frame.frameId : null },
+        );
+        if (res?.staleGeneration) {
+          target.staleGeneration = true;
+          target.generation = res.currentGeneration ?? this.currentGeneration ?? null;
+          return target;
+        }
         if (!res?.ok) return target;
         target.documentId = res.documentId ?? null;
+        target.generation = res.generation ?? this.currentGeneration ?? null;
         target.element = res.element ?? null;
         target.frameId = frame ? frame.frameId : null;
       }
