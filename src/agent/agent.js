@@ -22,6 +22,9 @@ const SUMMARY_PROMPT = 'You have reached the step limit. Stop using tools and wr
 // being cut off ends the task instead of looping.
 const TRUNCATED_MESSAGE = 'Your last reply was cut off before it was finished, so none of it was run. Answer again, briefly: one tool call at a time, and keep the reply short.';
 const TRUNCATED_RETRIES = 2;
+const STALL_NUDGE_REPEATS = 2;
+const STALL_STOP_REPEATS = 4;
+const STALL_NUDGE_NOTE = '[Stall warning: you have repeated the exact same action on the same page state. Choose a different tool, target, or approach.]';
 
 /**
  * `steering` (optional) delivers what the user sends while the task runs:
@@ -44,6 +47,8 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
   let accessRevision = getAccessState?.()?.revision;
   let inputTokens = 0; // what the last model turn read: the size of the conversation
   let truncationRetries = 0; // the retries of a cut-off reply, in a row
+  let pageFingerprint = 'initial';
+  const actionCounts = new Map();
 
   for (let step = 1; step <= maxSteps; step += 1) {
     throwIfAborted(signal);
@@ -91,6 +96,9 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
         const includePage = fastActions.length > 0 || !llmHasSeenPage;
         if (includePage && outcome.snapshot?.generation != null) {
           execute.noteSeenGeneration?.(outcome.snapshot.generation);
+        }
+        if (includePage && outcome.snapshot) {
+          pageFingerprint = fingerprintSnapshot(outcome.snapshot);
         }
         const note = escalationMessage({ fastActions, outcome, includePage });
         if (note) session.addUserMessage(note);
@@ -182,7 +190,36 @@ export async function runAgent({ session, execute, task, images = [], maxSteps, 
         const secret = Boolean(result.secret);
         const safeSummary = firstLine(redactSecretReadOutput(result.output));
         emit({ type: 'tool-end', step, callId: call.id, name: call.name, ok: !result.isError, summary: safeSummary, ...(secret ? { secret: true } : {}), ms: Date.now() - started });
-        session.addToolResult(call.id, result.output, result.images ?? [], { secret });
+        const observedFp = fingerprintOutput(result.output);
+        if (observedFp) pageFingerprint = observedFp;
+        let toolOutput = result.output;
+        if (kindOf(call.name) !== 'bookkeeping') {
+          const imageFp = Array.isArray(result.images) && result.images.length
+            ? `img:${hashText(result.images.join('|'))}`
+            : '';
+          const stateFp = observedFp
+            ? pageFingerprint
+            : imageFp
+              ? `${pageFingerprint}|${imageFp}`
+              : (pageFingerprint === 'initial' ? hashText(String(result.output ?? '').trim()) : pageFingerprint);
+          const actionHash = hashStallKey(call.name, call.args, stateFp);
+          const count = (actionCounts.get(actionHash) ?? 0) + 1;
+          actionCounts.set(actionHash, count);
+          if (count > STALL_STOP_REPEATS) {
+            session.addToolResult(call.id, toolOutput, result.images ?? [], { secret });
+            for (const skipped of pending.splice(0)) session.addToolResult(skipped.id, 'Not executed: the run stopped because the agent repeated the same action without progress.');
+            emit({
+              type: 'final',
+              report: `Stopped because the agent repeated the same action (${call.name}) on the same page state without making progress.`,
+              success: false,
+            });
+            return;
+          }
+          if (count > STALL_NUDGE_REPEATS) {
+            toolOutput = `${toolOutput ?? ''}\n\n${STALL_NUDGE_NOTE}`;
+          }
+        }
+        session.addToolResult(call.id, toolOutput, result.images ?? [], { secret });
         if (result.staleGeneration) skipFastNextStep = true;
         fast?.recordLlmAction(call.name, call.args, undefined, { secret });
         llmHasSeenPage = true;
@@ -231,4 +268,59 @@ function firstLine(text = '') {
 
 function throwIfAborted(signal) {
   if (signal?.aborted) throw new DOMException('Stopped by user', 'AbortError');
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value)
+      .sort()
+      .filter((k) => k !== 'generation' && value[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+export function hashStallKey(name, args, pageFingerprint) {
+  const raw = `${name}|${stableJson(args ?? {})}|${pageFingerprint ?? ''}`;
+  let h = 2166136261;
+  for (let i = 0; i < raw.length; i += 1) {
+    h ^= raw.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `${name}:${(h >>> 0).toString(16)}`;
+}
+
+function fingerprintSnapshot(snap) {
+  if (!snap || typeof snap !== 'object') return '';
+  const body = [
+    `URL: ${snap.url ?? ''}`,
+    `Title: ${snap.title ?? ''}`,
+    `Scroll: ${snap.scroll?.y ?? 0}/${snap.scroll?.height ?? 0}`,
+    ...(snap.elements ?? []),
+    (snap.text ?? '').slice(0, 1000),
+  ].join('\n');
+  return hashText(body);
+}
+
+function fingerprintOutput(output) {
+  const text = String(output ?? '');
+  const idx = text.indexOf('\nURL: ');
+  const start = idx >= 0 ? idx + 1 : (text.startsWith('URL: ') ? 0 : -1);
+  if (start < 0) return null;
+  const noteAt = text.indexOf('Your notes (', start);
+  const slice = (noteAt >= 0 ? text.slice(start, noteAt) : text.slice(start))
+    .replace(/^Generation:\s*\d+\r?\n/m, '')
+    .trim();
+  return hashText(slice);
+}
+
+function hashText(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
 }

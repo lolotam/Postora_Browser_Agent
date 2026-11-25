@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runAgent } from '../src/agent/agent.js';
+import { runAgent, hashStallKey } from '../src/agent/agent.js';
 import { createToolExecutor, formatSnapshot, normalizeUrl, toolDefinitions } from '../src/agent/tools.js';
 import { BrowserController } from '../src/browser/controller.js';
 import { AccessAuthority, FULL_ACCESS } from '../src/permissions/policy.js';
@@ -285,4 +285,85 @@ test('a batch stops when an action changes the page or fails, and every call sti
     assert.match(session.results[1].output, reason);
     assert.match(session.results[2].output, reason);
   }
+});
+
+test('stall detector nudges after two repeats and stops the task after four repeats on the same page state', async () => {
+  const samePage = [
+    'Clicked [3] <button>.',
+    '',
+    'URL: https://shop.test/cart',
+    'Title: Cart',
+    'Generation: 1',
+    'Scroll: 0px of 800px (100% down, viewport 800px)',
+    'Interactive elements:',
+    '[3] button "Checkout"',
+    '',
+    'Visible text (truncated; use get_text for more):',
+    'Empty cart',
+  ].join('\n');
+
+  const session = scriptedSession([
+    { text: '', toolCalls: [call('1', 'click', { index: 3, generation: 1 })] },
+    { text: '', toolCalls: [call('2', 'click', { index: 3, generation: 2 })] },
+    { text: '', toolCalls: [call('3', 'click', { index: 3, generation: 3 })] },
+    { text: '', toolCalls: [call('4', 'click', { index: 3, generation: 4 })] },
+    { text: '', toolCalls: [call('5', 'click', { index: 3, generation: 5 })] },
+    { text: '', toolCalls: [call('6', 'done', { report: 'should not reach', success: true })] },
+  ]);
+  const events = [];
+  await runAgent({
+    session,
+    task: 'checkout',
+    maxSteps: 10,
+    emit: (e) => events.push(e),
+    execute: async () => ({ output: samePage }),
+  });
+
+  // First 2 occurrences (1 initial + 1st repeat): no nudge.
+  assert.doesNotMatch(session.results[0].output, /Stall warning/);
+  assert.doesNotMatch(session.results[1].output, /Stall warning/);
+  // 3rd and 4th occurrences (2nd and 3rd repeats): nudged.
+  assert.match(session.results[2].output, /Stall warning/);
+  assert.match(session.results[3].output, /Stall warning/);
+  // 5th occurrence (4th repeat): task stops before step 6.
+  assert.equal(session.results.length, 5);
+  const final = events.at(-1);
+  assert.equal(final.type, 'final');
+  assert.equal(final.success, false);
+  assert.match(final.report, /repeated the same action/i);
+});
+
+test('stall detector does not trigger when the page fingerprint changes between actions', async () => {
+  let stepNum = 0;
+  const session = scriptedSession([
+    { text: '', toolCalls: [call('1', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('2', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('3', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('4', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('5', 'scroll', { direction: 'down' })] },
+    { text: '', toolCalls: [call('6', 'done', { report: 'finished scrolling', success: true })] },
+  ]);
+  const events = [];
+  await runAgent({
+    session,
+    task: 'scroll through feed',
+    maxSteps: 10,
+    emit: (e) => events.push(e),
+    execute: async () => {
+      stepNum += 1;
+      return {
+        output: `Scrolled down.\n\nURL: https://feed.test\nTitle: Feed\nScroll: ${stepNum * 500}px of 5000px (viewport 800px)\nInteractive elements:\n(none)\n\nVisible text (truncated; use get_text for more):\nSection ${stepNum}`,
+      };
+    },
+  });
+
+  for (const r of session.results) {
+    assert.doesNotMatch(r.output, /Stall warning/);
+  }
+  assert.deepEqual(events.at(-1), { type: 'final', report: 'finished scrolling', success: true });
+  assert.equal(
+    hashStallKey('click', { index: 1, generation: 2 }, 'fp1'),
+    hashStallKey('click', { generation: 9, index: 1 }, 'fp1'),
+    'generation differences and key order do not change the stall hash',
+  );
 });
