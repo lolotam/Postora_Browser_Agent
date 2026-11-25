@@ -211,11 +211,12 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
       const list = await request('list-models', { settings: draft });
       if (load !== latestLoad) return;
       models = list;
-      if (!f('modelInput').value && models[0]) f('modelInput').value = models[0].id;
+      const autoPicked = !f('modelInput').value && Boolean(models[0]);
+      if (autoPicked) f('modelInput').value = models[0].id;
       renderEfforts(f('effort').value || (models.find((m) => m.id === f('modelInput').value)?.defaultEffort ?? ''));
       f('modelInfo').textContent = '';
       listLoading = false;
-      onModels?.();
+      onModels?.({ autoPicked, signedIn: needsSignIn(draft), id: f('modelInput').value, effort: f('effort').value });
     } catch (err) {
       if (load !== latestLoad) return;
       listLoading = false;
