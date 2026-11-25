@@ -9,6 +9,7 @@ import { parseTextToolCalls } from './text-tool-calls.js';
 import { kindOf } from '../agent/tool-kinds.js';
 import { NOTEBOOK_HEADER, NOTE_SAVED_ARGS, trimKeepingNotebook, withoutNotebook } from '../agent/notebook.js';
 
+const SCREENSHOT_MESSAGE_PREFIX = 'Screenshot returned by the last tool call:';
 const KEEP_FULL_OBSERVATIONS = 2;
 const TRIMMED_OBSERVATION_CHARS = 400;
 // Gateways such as Vercel's list image, video and embedding models next to chat
@@ -94,7 +95,7 @@ export class CompatibleSession {
     if (this.pendingImages.length) {
       this.messages.push(this.textOnly
         ? userMessage('A screenshot was taken, but this model cannot read images. Use read_page or get_text instead.')
-        : userMessage('Screenshot returned by the last tool call:', this.pendingImages));
+        : userMessage(SCREENSHOT_MESSAGE_PREFIX, this.pendingImages));
       this.pendingImages = [];
     }
     compactMessages(this.messages);
@@ -415,10 +416,17 @@ export function compactMessages(messages) {
       if (tc.function?.name === 'note' && resultAt.get(tc.id) < lastNotebook) tc.function.arguments = NOTE_SAVED_ARGS;
     }
   }
-  const withImages = messages.filter((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((c) => c.type === 'image_url'));
+  const withImages = messages.filter((m) => isToolScreenshotMessage(m));
   for (const m of withImages.slice(0, -1)) {
     m.content = m.content.map((c) => (c.type === 'image_url' ? { type: 'text', text: '[older screenshot removed]' } : c));
   }
+}
+
+function isToolScreenshotMessage(m) {
+  if (!m || m.role !== 'user' || !Array.isArray(m.content)) return false;
+  if (!m.content.some((c) => c.type === 'image_url')) return false;
+  const textParts = m.content.filter((c) => c.type === 'text');
+  return textParts.length === 0 || textParts.some((c) => String(c.text ?? '').startsWith(SCREENSHOT_MESSAGE_PREFIX));
 }
 
 // A `<think>…</think>` block in an answer: a model whose thinking could not be

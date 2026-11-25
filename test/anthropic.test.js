@@ -331,20 +331,24 @@ test('only the newest screenshot of a tool result is kept', async () => {
   signedIn();
   stubFetch(() => answer());
   const session = new AnthropicSession({ auth: 'account', model: 'claude-opus-5-5', effort: '', systemPrompt: 'SYS', tools: [] });
-  session.addUserMessage('task');
+  session.addUserMessage('task', ['data:image/jpeg;base64,USER_ATTACH_1']);
   for (let n = 1; n <= 4; n += 1) session.addToolResult(`toolu_${n}`, 'The page', [`data:image/jpeg;base64,SHOT${n}`]);
+  session.addUserMessage('follow-up', ['data:image/jpeg;base64,USER_ATTACH_2']);
 
   await session.next({});
 
   const body = JSON.parse(calls[0].init.body);
   const images = [];
+  const userImages = [];
   for (const message of body.messages) {
     for (const block of message.content ?? []) {
+      if (block.type === 'image') userImages.push(block.source.data);
       if (block.type !== 'tool_result') continue;
       for (const part of block.content ?? []) if (part.type === 'image') images.push(part.source.data);
     }
   }
   assert.deepEqual(images, ['SHOT4']);
+  assert.deepEqual(userImages, ['USER_ATTACH_1', 'USER_ATTACH_2'], 'user-attached images are never removed by screenshot pruning');
 });
 
 test('thinking without a signature is not part of the answer', async () => {
