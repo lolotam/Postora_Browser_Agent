@@ -42,7 +42,7 @@ const __postoraModuleSecretRule = secretRule();
  * shows) and never the value of a field that holds a secret. The text of the
  * page leaves out the contents of the controls that hold a secret.
  */
-export function snapshotPage(maxElements, maxTextChars, rule) {
+export function snapshotPage(maxElements, maxTextChars, rule, generation) {
   // The rule the module keeps (src/voice/voice-safety.js). A script that is
   // injected into a page always gets it as an argument; the fallback is for a
   // script that is called directly.
@@ -50,6 +50,10 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
     ? rule
     : (typeof __postoraModuleSecretRule === 'undefined' ? null : __postoraModuleSecretRule);
   if (!R) return { error: 'The secret rule is missing: the page cannot be described safely.' };
+  const gen = Number.isInteger(generation) && generation > 0
+    ? generation
+    : ((Number(window.__agentGeneration) || 0) + 1);
+  window.__agentGeneration = gen;
 
   const INTERACTIVE = [
     'a[href]', 'button', 'input:not([type="hidden"])', 'select', 'textarea', 'summary',
@@ -373,6 +377,7 @@ export function snapshotPage(maxElements, maxTextChars, rule) {
   return {
     url: location.href,
     title: document.title,
+    generation: gen,
     scroll: { y: Math.round(window.scrollY), viewport: vh, height: scrollHeight },
     elements: lines,
     offscreen,
@@ -438,11 +443,18 @@ export function pointSnap(x, y) {
  * swapped while the action waits: the element must still be the element the
  * user approved, in the document the user approved it in.
  */
-export function elementAction(index, action, value, quiet, rule, target) {
+export function elementAction(index, action, value, quiet, rule, target, generation) {
   const R = rule && Array.isArray(rule.tokens) && Array.isArray(rule.words) && Array.isArray(rule.fragments)
     ? rule
     : (typeof __postoraModuleSecretRule === 'undefined' ? null : __postoraModuleSecretRule);
   if (!R) return { error: 'The secret rule is missing: the page cannot be acted on safely.' };
+  if (Number.isInteger(generation) && window.__agentGeneration != null && generation !== window.__agentGeneration) {
+    return {
+      error: `Element [${index}] belongs to stale snapshot generation ${generation} (current is ${window.__agentGeneration}). Call read_page to refresh the element list.`,
+      staleGeneration: true,
+      currentGeneration: window.__agentGeneration,
+    };
+  }
   // The elements of the latest snapshot, in the extension's own world of the
   // frame. The mark on an element is a display marker for the model: it is
   // never the identity of an element, and the page cannot write to it.
@@ -456,6 +468,9 @@ export function elementAction(index, action, value, quiet, rule, target) {
   const checkTarget = (node, wanted) => {
     const target = wanted?.element ?? null;
     if (!target || !target.token) return { ok: false, error: 'This action has no approved target.' };
+    if (Number.isInteger(wanted?.generation) && window.__agentGeneration != null && wanted.generation !== window.__agentGeneration) {
+      return { ok: false, error: 'The element list was rebuilt since the element was approved.', staleGeneration: true };
+    }
     const reg = globalThis.__postoraTargetElements;
     const known = reg && typeof reg.get === 'function' ? reg.get(target.token) : null;
     if (known !== node) return { ok: false, error: 'The element that was approved is not the element that would be used.' };
@@ -1139,6 +1154,9 @@ export function permissionTarget(kind, arg, rule) {
     let index = null;
     let point = null;
     if (what === 'element') {
+      if (Number.isInteger(arg?.generation) && window.__agentGeneration != null && arg.generation !== window.__agentGeneration) {
+        return { ok: false, reason: 'stale-generation', staleGeneration: true, currentGeneration: window.__agentGeneration };
+      }
       index = Number(arg?.index);
       const list = window.__agentElements || [];
       el = list[index];
@@ -1150,7 +1168,12 @@ export function permissionTarget(kind, arg, rule) {
     }
     if (!el) return { ok: false, reason: what === 'element' ? 'no-element' : 'nothing-focused' };
     const token = register(el);
-    return { ok: true, documentId: String(performance.timeOrigin), element: shape(el, what, token, index, point) };
+    return {
+      ok: true,
+      documentId: String(performance.timeOrigin),
+      generation: window.__agentGeneration ?? null,
+      element: shape(el, what, token, index, point),
+    };
   }
 
   if (kind === 'document') {
@@ -1172,6 +1195,9 @@ export function permissionTarget(kind, arg, rule) {
   // The element of the snapshot must still be the element that was approved:
   // a rebuilt list has other elements at that index.
   if (wanted.kind === 'element') {
+    if (Number.isInteger(target.generation) && window.__agentGeneration != null && target.generation !== window.__agentGeneration) {
+      return { ok: false, reason: 'reindexed', staleGeneration: true };
+    }
     const list = window.__agentElements || [];
     if (list[wanted.index] !== el) return { ok: false, reason: 'reindexed' };
   }

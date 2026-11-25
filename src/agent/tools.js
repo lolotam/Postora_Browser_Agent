@@ -31,19 +31,19 @@ export const DEFAULT_APPROVAL_TIMEOUT_MS = 300000;
 
 const DEFINITIONS = [
   { name: 'read_page', description: 'Get the current page URL, title, scroll position, the numbered list of interactive elements and the visible text. Call this before interacting with a page you have not seen yet.', parameters: obj({}) },
-  { name: 'read_field', description: 'Read the current value of ONE field, by its [index] from the latest read_page result. Use it when the value itself is needed (a one-time code, a token, a name of a saved card) and not for anything else: the ordinary snapshot already shows the values of ordinary fields. The value is read only after the user allowed this exact read.', parameters: obj({ index: int('Element index of the field to read') }, ['index']) },
+  { name: 'read_field', description: 'Read the current value of ONE field, by its [index] from the latest read_page result. Use it when the value itself is needed (a one-time code, a token, a name of a saved card) and not for anything else: the ordinary snapshot already shows the values of ordinary fields. The value is read only after the user allowed this exact read.', parameters: obj({ index: int('Element index of the field to read'), generation: int('Snapshot generation id from the latest read_page or page state') }, ['index']) },
   { name: 'navigate', description: 'Open a URL in the current tab.', parameters: obj({ url: str('Absolute URL, e.g. https://example.com') }, ['url']) },
   { name: 'web_search', description: 'Search the web with Google in the current tab and return the results page.', parameters: obj({ query: str('Search query') }, ['query']) },
-  { name: 'click', description: 'Click an element by its [index] from the latest read_page result.', parameters: obj({ index: int('Element index'), double: { type: 'boolean', description: 'Double-click instead of single click' } }, ['index']) },
+  { name: 'click', description: 'Click an element by its [index] from the latest read_page result.', parameters: obj({ index: int('Element index'), generation: int('Snapshot generation id from the latest read_page or page state'), double: { type: 'boolean', description: 'Double-click instead of single click' } }, ['index']) },
   { name: 'click_at', description: 'Click at viewport coordinates (CSS pixels) taken from the latest screenshot. Use only when the element has no index.', parameters: obj({ x: { type: 'number' }, y: { type: 'number' } }, ['x', 'y']) },
-  { name: 'type_text', description: 'Focus an input/textarea/editable element by index and type text into it.', parameters: obj({ index: int('Element index'), text: str('Text to type'), clear: { type: 'boolean', description: 'Replace existing content (default true)' }, submit: { type: 'boolean', description: 'Press Enter afterwards' } }, ['index', 'text']) },
+  { name: 'type_text', description: 'Focus an input/textarea/editable element by index and type text into it.', parameters: obj({ index: int('Element index'), generation: int('Snapshot generation id from the latest read_page or page state'), text: str('Text to type'), clear: { type: 'boolean', description: 'Replace existing content (default true)' }, submit: { type: 'boolean', description: 'Press Enter afterwards' } }, ['index', 'text']) },
   { name: 'insert_text', description: 'Type text into the field that has the focus right now, without naming it. Use it for a terminal or any helper field that takes the focus itself; use type_text for a field you can see. The text goes into that one focused field, or nowhere.', parameters: obj({ text: str('Text to type') }, ['text']) },
   { name: 'press_key', description: 'Press a key or chord on the focused element, e.g. "Enter", "Escape", "Tab", "ArrowDown", "Control+A".', parameters: obj({ key: str('Key or chord') }, ['key']) },
-  { name: 'select_option', description: 'Choose an option of a <select> element by its visible text or value.', parameters: obj({ index: int('Element index of the <select>'), option: str('Option text or value') }, ['index', 'option']) },
-  { name: 'choose_suggestion', description: 'Pick from an autocomplete field or custom dropdown (a list that appears while typing, like city, tag or subject pickers): types text into the field, waits for its list, and clicks the one option that reads exactly `option` (default: the typed text). Never presses Enter.', parameters: obj({ index: int('Element index of the field'), text: str('Text to type to open or filter the list'), option: str('Exact text of the option to pick, when it differs from the typed text') }, ['index', 'text']) },
+  { name: 'select_option', description: 'Choose an option of a <select> element by its visible text or value.', parameters: obj({ index: int('Element index of the <select>'), generation: int('Snapshot generation id from the latest read_page or page state'), option: str('Option text or value') }, ['index', 'option']) },
+  { name: 'choose_suggestion', description: 'Pick from an autocomplete field or custom dropdown (a list that appears while typing, like city, tag or subject pickers): types text into the field, waits for its list, and clicks the one option that reads exactly `option` (default: the typed text). Never presses Enter.', parameters: obj({ index: int('Element index of the field'), generation: int('Snapshot generation id from the latest read_page or page state'), text: str('Text to type to open or filter the list'), option: str('Exact text of the option to pick, when it differs from the typed text') }, ['index', 'text']) },
   { name: 'dialog', description: 'Answer an open page dialog (alert, confirm or prompt) on the current page. Dismissing needs no approval; accepting a confirm or answering a prompt requires approval in Ask first.', parameters: obj({ accept: { type: 'boolean', description: 'true to accept (OK), false to dismiss (Cancel)' }, prompt_text: str('Text to enter into a prompt dialog when accepting') }, ['accept']) },
-  { name: 'hover', description: 'Move the mouse over an element (opens hover menus).', parameters: obj({ index: int('Element index') }, ['index']) },
-  { name: 'scroll', description: 'Scroll the page (or the scrollable area under an element) up or down by about one screen.', parameters: obj({ direction: { type: 'string', enum: ['up', 'down'] }, index: int('Optional element index to scroll inside'), screens: { type: 'number', description: 'How many screens (default 1)' } }, ['direction']) },
+  { name: 'hover', description: 'Move the mouse over an element (opens hover menus).', parameters: obj({ index: int('Element index'), generation: int('Snapshot generation id from the latest read_page or page state') }, ['index']) },
+  { name: 'scroll', description: 'Scroll the page (or the scrollable area under an element) up or down by about one screen.', parameters: obj({ direction: { type: 'string', enum: ['up', 'down'] }, index: int('Optional element index to scroll inside'), generation: int('Snapshot generation id from the latest read_page or page state'), screens: { type: 'number', description: 'How many screens (default 1)' } }, ['direction']) },
   { name: 'scroll_at', description: 'Scroll the scrollable area under viewport coordinates (a chat transcript, a feed, an inner pane) up or down. Use when page scrolling does not move the area you want, taking the point from the latest screenshot.', parameters: obj({ x: { type: 'number' }, y: { type: 'number' }, direction: { type: 'string', enum: ['up', 'down'] }, screens: { type: 'number', description: 'How many screens (default 1)' } }, ['x', 'y', 'direction']) },
   { name: 'get_text', description: 'Read more of the page text, for collecting information from long pages.', parameters: obj({ start: int('Character offset (default 0)'), length: int('Characters to read (default 6000, max 15000)') }) },
   { name: 'screenshot', description: 'Take a screenshot of the visible viewport to see layout, images, canvases or anything the element list does not capture.', parameters: obj({}), vision: true },
@@ -81,6 +81,7 @@ export function formatSnapshot(snap) {
   return [
     `URL: ${snap.url}`,
     `Title: ${snap.title}`,
+    ...(snap.generation != null ? [`Generation: ${snap.generation}`] : []),
     `Scroll: ${y}px of ${height}px (${pct}% down, viewport ${viewport}px)`,
     `Interactive elements${snap.offscreen ? ` (${snap.offscreen} more further down/offscreen — scroll to reveal)` : ''}:`,
     snap.elements.length ? snap.elements.join('\n') : '(none)',
@@ -103,6 +104,24 @@ export function createToolExecutor(rawBrowser, {
   approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
 } = {}) {
   const overlay = rawBrowser.overlay;
+  let modelSeenGeneration = null;
+  if (typeof rawBrowser?.snapshot === 'function' && !rawBrowser.__postoraGenerationWrapped) {
+    const origSnapshot = rawBrowser.snapshot.bind(rawBrowser);
+    rawBrowser.snapshot = async (...args) => {
+      const prevGen = rawBrowser.currentGeneration ?? null;
+      const snap = await origSnapshot(...args);
+      if (snap && typeof snap === 'object') {
+        let gen = Number.isInteger(snap.generation) && snap.generation > 0 ? snap.generation : null;
+        if (gen === null || (prevGen !== null && gen === prevGen && rawBrowser.snapshotGeneration == null)) {
+          gen = (Number(prevGen) || 0) + 1;
+        }
+        rawBrowser.currentGeneration = gen;
+        return snap.generation === gen ? snap : { ...snap, generation: gen };
+      }
+      return snap;
+    };
+    Object.defineProperty(rawBrowser, '__postoraGenerationWrapped', { value: true, configurable: true });
+  }
   // The worker's own authority for this session. It is the only thing that may
   // allow an action: a session without one may still read the page, because
   // reading changes nothing, but nothing that changes a page runs at all.
@@ -152,7 +171,9 @@ export function createToolExecutor(rawBrowser, {
       ctx.pageChanged = true;
     }
     try {
-      const page = `${fullPrefix}\n\n${formatSnapshot(await ctx.browser.snapshot({ signal: ctx.signal }))}`;
+      const snap = await ctx.browser.snapshot({ signal: ctx.signal });
+      if (!ctx.fast && snap?.generation != null) modelSeenGeneration = snap.generation;
+      const page = `${fullPrefix}\n\n${formatSnapshot(snap)}`;
       ctx.notes = true; // execute adds the notebook after this; compaction keeps only its latest copy
       return page;
     } catch (err) {
@@ -259,12 +280,46 @@ export function createToolExecutor(rawBrowser, {
   /** The tab this session works on, when it can be named. */
   const currentTabId = async (ctx) => (await currentTab(ctx))?.id ?? null;
 
+  const makeStaleGenerationError = async (index, seenGeneration, currentGen, ctx) => {
+    const fresh = await ctx.browser.snapshot({ signal: ctx.signal });
+    if (!ctx.fast && fresh?.generation != null) modelSeenGeneration = fresh.generation;
+    const nowGen = fresh?.generation ?? currentGen;
+    const err = new Error(
+      `Refused: element [${index}] uses stale snapshot generation ${seenGeneration} (current generation is ${nowGen}); the page was re-indexed, so nothing was acted on.\n\nCurrent page state:\n${formatSnapshot(fresh)}`,
+    );
+    err.staleGeneration = true;
+    err.pageChanged = true;
+    return err;
+  };
+
+  const verifyGeneration = async (index, generationArg, ctx) => {
+    const currentGen = ctx.browser.currentGeneration ?? null;
+    const passedGen = generationArg !== undefined && generationArg !== null ? Number(generationArg) : null;
+    if (passedGen !== null && (!Number.isInteger(passedGen) || passedGen < 1)) {
+      throw new Error(`Invalid generation ${JSON.stringify(generationArg)}; provide the positive integer generation from read_page.`);
+    }
+    const staleExplicit = passedGen !== null && currentGen !== null && passedGen !== currentGen;
+    const staleImplicit = !ctx.fast && passedGen === null && modelSeenGeneration !== null && currentGen !== null && modelSeenGeneration !== currentGen;
+    if (staleExplicit || staleImplicit) {
+      throw await makeStaleGenerationError(index, passedGen ?? modelSeenGeneration, currentGen, ctx);
+    }
+    return passedGen ?? (ctx.fast ? currentGen : modelSeenGeneration) ?? currentGen;
+  };
+
   /**
    * The identity of an element of the latest snapshot, captured before
    * anything is asked: nothing is scrolled, focused, flashed or read.
    */
-  const elementTarget = async (index, ctx) => {
-    const target = await ctx.browser.captureTarget({ kind: 'element', index });
+  const elementTarget = async (index, ctx, generationArg) => {
+    const gen = await verifyGeneration(index, generationArg, ctx);
+    const target = await ctx.browser.captureTarget({
+      kind: 'element',
+      index,
+      ...(gen != null ? { generation: gen } : {}),
+    });
+    if (target?.staleGeneration) {
+      throw await makeStaleGenerationError(index, gen, target.generation ?? ctx.browser.currentGeneration, ctx);
+    }
     if (!target?.element) throw new Error(`Element [${index}] is not on the page any more. Call read_page to refresh the element list.`);
     return target;
   };
@@ -350,9 +405,9 @@ export function createToolExecutor(rawBrowser, {
       await permitRead({ action: 'read_page', tabId: await currentTabId(ctx), describe: 'Read the page' }, ctx);
       return observe('Page state:', ctx);
     },
-    read_field: async ({ index }, ctx) => {
+    read_field: async ({ index, generation }, ctx) => {
       const at = indexOf(index);
-      const target = await elementTarget(at, ctx);
+      const target = await elementTarget(at, ctx, generation);
       const { guard } = await approve({
         action: 'read_field',
         args: { index: at },
@@ -390,9 +445,9 @@ export function createToolExecutor(rawBrowser, {
       await ctx.browser.navigate(place, { guard, tabId: scope.tabId, signal: ctx.signal });
       return observe(`Searched for "${query}".`, ctx);
     },
-    click: async ({ index, double }, ctx) => {
+    click: async ({ index, double, generation }, ctx) => {
       const at = indexOf(index);
-      const target = await elementTarget(at, ctx);
+      const target = await elementTarget(at, ctx, generation);
       const { guard } = await approve({
         action: 'click',
         args: { index: at, double: Boolean(double) },
@@ -433,9 +488,9 @@ export function createToolExecutor(rawBrowser, {
       await ctx.browser.clickAt(at.x, at.y, { guard, target, tabId: target.tabId, signal: ctx.signal });
       return observe(`Clicked at (${at.x}, ${at.y}).`, ctx);
     },
-    type_text: async ({ index, text, clear = true, submit = false }, ctx) => {
+    type_text: async ({ index, text, clear = true, submit = false, generation }, ctx) => {
       const at = indexOf(index);
-      const target = await elementTarget(at, ctx);
+      const target = await elementTarget(at, ctx, generation);
       const { guard } = await approve({
         action: 'type_text',
         args: { index: at, text: String(text), clear: Boolean(clear), submit: Boolean(submit) },
@@ -487,9 +542,9 @@ export function createToolExecutor(rawBrowser, {
       await ctx.browser.pressKey(String(key), { guard, target, tabId: target.tabId, signal: ctx.signal });
       return observe(`Pressed ${key}.`, ctx);
     },
-    select_option: async ({ index, option }, ctx) => {
+    select_option: async ({ index, option, generation }, ctx) => {
       const at = indexOf(index);
-      const target = await elementTarget(at, ctx);
+      const target = await elementTarget(at, ctx, generation);
       const { guard } = await approve({
         action: 'select_option',
         args: { index: at, option: String(option) },
@@ -502,10 +557,10 @@ export function createToolExecutor(rawBrowser, {
       const { selected } = await ctx.browser.element(at, 'select-option', option, { guard, target, signal: ctx.signal });
       return observe(`Selected "${selected}" in [${at}].`, ctx);
     },
-    choose_suggestion: async ({ index, text, option }, ctx) => {
+    choose_suggestion: async ({ index, text, option, generation }, ctx) => {
       const at = indexOf(index);
       const wanted = String(option ?? text);
-      const target = await elementTarget(at, ctx);
+      const target = await elementTarget(at, ctx, generation);
       const { guard, granted } = await approve({
         action: 'choose_suggestion',
         args: { index: at, text: String(text), option: option === undefined ? null : String(option) },
@@ -623,9 +678,9 @@ export function createToolExecutor(rawBrowser, {
         : `Dismissed ${answered.type} dialog`;
       return observe(`${verb} ("${preview(answered.message)}").`, ctx);
     },
-    hover: async ({ index }, ctx) => {
+    hover: async ({ index, generation }, ctx) => {
       const at = indexOf(index);
-      const target = await elementTarget(at, ctx);
+      const target = await elementTarget(at, ctx, generation);
       const { guard } = await approve({
         action: 'hover',
         args: { index: at },
@@ -642,10 +697,10 @@ export function createToolExecutor(rawBrowser, {
       await ctx.browser.hoverAt(spot.x, spot.y, { guard, target, tabId: target.tabId, signal: ctx.signal });
       return observe(`Hovering [${at}].`, ctx);
     },
-    scroll: async ({ direction, index, screens = 1 }, ctx) => {
+    scroll: async ({ direction, index, screens = 1, generation }, ctx) => {
       const at = Number.isInteger(index) ? index : null;
       const howMany = Number.isFinite(Number(screens)) ? Number(screens) : 1;
-      const target = at === null ? await tabScope(ctx) : await elementTarget(at, ctx);
+      const target = at === null ? await tabScope(ctx) : await elementTarget(at, ctx, generation);
       const { guard } = await approve({
         action: 'scroll',
         args: { direction: String(direction), index: at, screens: howMany },
@@ -821,7 +876,7 @@ export function createToolExecutor(rawBrowser, {
   // @store-strip-end
 
   /** `observe: false` marks an action that is not the last of its turn's batch. */
-  return async function execute(name, args, { observe: full = true } = {}) {
+  const execute = async function execute(name, args, { observe: full = true, fast = false } = {}) {
     // Only tools offered in this session run, even when restored history asks for another.
     const handler = !allowed || allowed.has(name) ? handlers[name] : null;
     if (!handler) return { output: `Unknown tool "${name}".`, isError: true };
@@ -837,6 +892,7 @@ export function createToolExecutor(rawBrowser, {
     const ctx = {
       name,
       brief,
+      fast: Boolean(fast),
       at: null,
       pageChanged: false,
       notes: false,
@@ -895,6 +951,7 @@ export function createToolExecutor(rawBrowser, {
       return {
         output: `Error: ${err.message}`,
         isError: true,
+        ...(err?.staleGeneration ? { staleGeneration: true, pageChanged: true } : {}),
         ...(outcome ? { outcome } : {}),
       };
     } finally {
@@ -902,6 +959,11 @@ export function createToolExecutor(rawBrowser, {
       signal?.removeEventListener('abort', onTaskAbort);
     }
   };
+  execute.noteSeenGeneration = (gen) => {
+    if (Number.isInteger(gen) && gen > 0) modelSeenGeneration = gen;
+  };
+  execute.getSeenGeneration = () => modelSeenGeneration;
+  return execute;
 }
 
 function formatDialogPending(actionName, dialog) {

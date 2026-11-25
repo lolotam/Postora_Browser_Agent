@@ -227,7 +227,7 @@ export function createFastLayer({ config, browser, execute, task, ask = askJev }
         return { kind: 'escalate', reason: 'periodic check-in', snapshot, hints, usage };
       }
 
-      const result = await execute(decision.tool, decision.args);
+      const result = await execute(decision.tool, decision.args, { fast: true });
       streak += 1;
       idle = 0;
       recent.push(`${decision.label} on ${snapshot.url}`);
