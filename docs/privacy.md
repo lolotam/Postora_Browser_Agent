@@ -25,7 +25,7 @@ The extension does not collect analytics or telemetry, does not show ads, and do
 
 To work, the extension sends your task and the content of the pages it is working on to the AI provider **you** select in settings. The available providers are OpenAI (API key or ChatGPT account), Anthropic Claude (Anthropic API key or Claude account), xAI Grok (xAI API key or Grok account), Google Gemini (API key), Kimi (Moonshot API key or eligible Kimi Code subscription), DeepSeek, NVIDIA, OpenRouter, OpenCode, Z.ai, MiniMax (pay-as-you-go or Coding Plan), and any compatible address you enter yourself. For the optional fast layer, they are TypeSafe, Vercel AI Gateway, OpenCode and OpenRouter. If you turn on a backup provider, it receives the same data when the main provider fails.
 
-Named Gemini requests go directly to `generativelanguage.googleapis.com`. Kimi API-key requests use the international Moonshot service at `api.moonshot.ai`; subscription sign-in uses `auth.kimi.com` and subscription inference uses `api.kimi.com`. These credentials are not interchangeable, and the extension does not read consumer-site cookies or reuse Kimi chat sessions.
+Named Gemini requests go directly to `generativelanguage.googleapis.com`. Kimi API-key requests use the international Moonshot service at `api.moonshot.ai`; subscription sign-in uses `auth.kimi.ai` and subscription inference uses `api.kimi.ai`. These credentials are not interchangeable, and the extension does not read consumer-site cookies or reuse Kimi chat sessions.
 
 What each provider does with that data is governed by its own privacy policy and your agreement with it. Do not give the agent tasks on pages whose content you are not willing to share with your provider.
 

@@ -3,8 +3,55 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const HIDDEN = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.venv', 'vendor']);
-const secret = (name) => /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$|\.postora-write\.lock$/i.test(name);
+// A secret name, with or without a leading dot: `.secrets`, `.secrets.json`,
+// `.token` and `auth.json` are all names a secret file has. The context the
+// model reads must not carry them.
+const secret = (name) => /^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$|\.postora-write\.lock$|^\.?(?:auth|credentials|secrets?|tokens?)(?:\.|$)|^\.npmrc$|^\.git-credentials$/i.test(name);
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+/** Bounded initial context: recursive inventory and text, with explicit limits. */
+async function projectContext(root) {
+  const paths = [], directories = ['.'], files = [], errors = [];
+  let truncated = false, characters = 0, pathCharacters = 0;
+  for (let index = 0; index < directories.length; index++) {
+    const relative = directories[index];
+    let entries;
+    try { entries = await fs.readdir(await projectPath(root, relative), { withFileTypes: true }); }
+    catch { errors.push(relative); continue; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (HIDDEN.has(entry.name) || secret(entry.name) || entry.isSymbolicLink()) continue;
+      if (paths.length >= 1000) { truncated = true; break; }
+      const name = relative === '.' ? entry.name : `${relative}/${entry.name}`;
+      if (pathCharacters + name.length > 64000) { truncated = true; break; }
+      pathCharacters += name.length;
+      paths.push({ path: name, directory: entry.isDirectory() });
+      if (entry.isDirectory()) {
+        if (name.split('/').length < 12) directories.push(name);
+        else truncated = true;
+      } else if (entry.isFile()) files.push(name);
+    }
+    if (paths.length >= 1000) break;
+  }
+  files.sort((a, b) => Number(!/(^|\/)(AGENTS\.md|README[^/]*|package\.json)$/i.test(a)) - Number(!/(^|\/)(AGENTS\.md|README[^/]*|package\.json)$/i.test(b)) || a.localeCompare(b));
+  const documents = [];
+  for (const file of files) {
+    if (characters >= 48000) { truncated = true; break; }
+    if (!/\.(md|txt|json|ya?ml|toml|ini|csv|ts|tsx|js|jsx|mjs|cjs|py|html|css|sql|sh|ps1|go|rs|java|cs|php|xml|vue|svelte)$/i.test(file)) continue;
+    try {
+      const target = await projectPath(root, file);
+      const stat = await fs.stat(target);
+      if (!stat.isFile() || stat.size > 1024 * 1024) continue;
+      const bytes = await fs.readFile(target);
+      if (bytes.includes(0)) continue;
+      const content = bytes.toString('utf8');
+      const text = content.slice(0, Math.min(8000, 48000 - characters));
+      characters += text.length;
+      documents.push({ path: file, text, total: content.length, truncated: text.length < content.length });
+    } catch { errors.push(file); }
+  }
+  return { paths, documents, characters, truncated, errors, limits: { entries: 1000, depth: 12, characters: 48000, charactersPerFile: 8000, pathCharacters: 64000 }, omitted: 'Dependencies, build output, symlinks, common secret files and binary files are omitted. Use project_list/project_read for more context.' };
+}
 
 export async function projectInfo(root) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('Select an absolute project directory.');
@@ -38,6 +85,7 @@ export async function projectPath(root, relative = '.', { create = false } = {})
 export async function projectOperation(message) {
   const project = await projectInfo(message.root);
   if (message.type === 'project-info') return { ...project };
+  if (message.type === 'project-context') return projectContext(project.root);
   const relative = message.path ?? '.';
   const target = await projectPath(project.root, relative, { create: message.type === 'project-write' });
   if (message.type === 'project-list') {

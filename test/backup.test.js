@@ -27,7 +27,7 @@ test('a backup carries the settings and the signed-in accounts back after a rein
   store['accountAuth.claude'] = { generation: 1, credential: null }; // signed out
   const file = JSON.parse(JSON.stringify(await exportBackup()));
 
-  assert.equal(file.version, 2);
+  assert.equal(file.version, 3);
   assert.deepEqual(file.accounts, { chatgpt: credential('at') }, 'only the signed-in providers, without the generation');
 
   for (const k of Object.keys(store)) delete store[k];

@@ -23,6 +23,7 @@ export const TOOL_KINDS = {
   select_option: 'observe',
   hover: 'observe',
   scroll: 'observe',
+  scroll_at: 'observe',
   history: 'observe',
   wait: 'observe',
   switch_tab: 'observe',
@@ -33,6 +34,7 @@ export const TOOL_KINDS = {
   close_tab: 'reader',
   // @store-strip-start
   project_list: 'reader',
+  project_context: 'reader',
   project_read: 'reader',
   project_write: 'boundary',
   project_run: 'boundary',

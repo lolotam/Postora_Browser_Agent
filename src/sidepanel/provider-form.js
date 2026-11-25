@@ -7,7 +7,7 @@ import { t } from './i18n.js';
 import { escapeAttr } from './model-picker.js';
 import { bindTestButton } from './test-button.js';
 import { ANTHROPIC_GROUP } from '../lib/keys.js';
-import { ACCOUNT_PROVIDERS, kimiEfforts, slotSettings as slotOf } from '../lib/settings.js';
+import { ACCOUNT_PROVIDERS, kimiEfforts, mergeSettings, slotSettings as slotOf } from '../lib/settings.js';
 import { CONNECTION_ROUTES, connectionRoute, routeForSettings } from './provider-routes.js';
 
 const TRANSLATED_EFFORTS = { '': 'effort.default', off: 'effort.off', on: 'effort.on' };
@@ -31,7 +31,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   const route = () => connectionRoute(f('provider').value);
   const provider = () => route().provider;
   function renderRoutes(selected) {
-    f('provider').innerHTML = ['auth', 'api'].map((group) => `<optgroup label="${escapeAttr(t(`connection.${group}`))}">${CONNECTION_ROUTES.filter((r) => r.group === group).map((r) => `<option value="${r.id}">${escapeAttr(r.labelKey ? t(r.labelKey) : r.label || getPresets()[r.preset].label)}</option>`).join('')}</optgroup>`).join('');
+    f('provider').innerHTML = ['auth', 'plans', 'api'].map((group) => `<optgroup label="${escapeAttr(t(`connection.${group}`))}">${CONNECTION_ROUTES.filter((r) => r.group === group).map((r) => `<option value="${r.id}"${r.preset && !getPresets()[r.preset] ? ' disabled' : ''}>${escapeAttr(r.labelKey ? t(r.labelKey) : r.label || getPresets()[r.preset]?.label || r.preset)}</option>`).join('')}</optgroup>`).join('');
     f('provider').value = selected;
   }
   // Hides a field this form does not have: the backup frame has no sign-in
@@ -51,6 +51,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   let keyReload = null;
 
   function fill(s) {
+    s = mergeSettings(s ?? {});
     clearTimeout(keyReload);
     latestLoad += 1; // a model list still loading belongs to the values being replaced
     listLoading = false;
@@ -126,7 +127,26 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     f('kimiAuth')?.closest?.('label')?.setAttribute('hidden', '');
     const claudeKeyLabel = f('claudeApiKey')?.closest?.('label');
     if (claudeKeyLabel) claudeKeyLabel.hidden = claudeFields().auth === 'account';
-    hide('openrouterLogin', route().id !== 'openrouter-auth');
+    const oauth = route().id === 'openrouter-auth';
+    const account = route().accountProvider;
+    // The plan preset that is in force: its key is a plan key and its endpoint
+    // is the plan's, so the key field says so.
+    const plan = ['minimax-coding-plan', 'zai-coding'].includes(f('preset').value);
+    // What the chosen route is decides what is hidden, not the preset that is
+    // still in the dropdown. A plan route has a fixed endpoint, so the endpoint
+    // and the preset are its own. On the custom route they are the user's to
+    // change, even when a plan preset is the one still selected.
+    const planRoute = ['minimax-plan', 'zai-plan'].includes(route().id);
+    hide('openrouterLogin', !oauth);
+    hide('presetField', Boolean(oauth || planRoute || account));
+    hide('baseUrlField', Boolean(oauth || planRoute || account));
+    hide('apiKeyField', Boolean(oauth || account));
+    for (const name of ['minimax', 'zai']) hide(`${name}OAuthAccount`, account !== name);
+    if (f('apiKeyLabel')) f('apiKeyLabel').textContent = plan ? t('connection.planKey') : 'API Key';
+    if (f('openrouterStatus')) f('openrouterStatus').textContent = f('apiKey').value.trim() ? t('connection.connected') : t('auth.disconnected');
+    hide('planHelp', !plan || Boolean(account));
+    hide('planAccount', f('preset').value !== 'minimax-coding-plan' || Boolean(account));
+    hide('zaiAccount', f('preset').value !== 'zai-coding' || Boolean(account));
     hide('kimiAccount', kimiFields().auth !== 'account');
     hide('kimiKeyField', kimiFields().auth === 'account');
   }
@@ -135,7 +155,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
   function renderEfforts(selected) {
     const model = models.find((m) => m.id === f('modelInput').value.trim());
     const levels = effortStyle() === 'kimi' ? kimiEfforts(f('modelInput').value.trim(), kimiFields().auth)
-      : model?.efforts?.length ? model.efforts : FALLBACK_EFFORTS[effortStyle()];
+      : model?.efforts?.length ? model.efforts : FALLBACK_EFFORTS[effortStyle()] ?? [];
     const options = ['', ...levels];
     f('effort').innerHTML = options.map((e) => `<option value="${escapeAttr(e)}">${escapeAttr(TRANSLATED_EFFORTS[e] ? t(TRANSLATED_EFFORTS[e]) : e)}${model?.defaultEffort === e ? t('effort.defaultMark') : ''}</option>`).join('');
     f('effort').value = options.includes(selected) ? selected : '';
@@ -150,6 +170,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
 
   /** A provider that signs in with an account needs one before it lists models. */
   function needsSignIn(draft) {
+    if (connectionRoute(draft.connectionRoute).accountProvider) return true;
     if (ACCOUNT_PROVIDERS.includes(draft.provider)) {
       // A Claude slot that pays with an API key needs no sign-in.
       if (draft.provider === 'claude' && draft.claude.auth === 'apiKey') return false;
@@ -177,7 +198,7 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
         return;
       }
       if (needsSignIn(draft)) {
-        const status = await request('auth-status', { provider: draft.provider });
+        const status = await request('auth-status', { provider: connectionRoute(draft.connectionRoute).accountProvider ?? draft.provider });
         if (load !== latestLoad) return;
         if (!status.connected) {
           models = [];
@@ -344,6 +365,9 @@ export function createProviderForm(root, { request, getPresets, keyStore, onChan
     /** How the Claude slot connects: its account or an Anthropic key. */
     claude: () => claudeFields(),
     kimi: () => kimiFields(),
+    accountProvider: () => route().accountProvider ?? (ACCOUNT_PROVIDERS.includes(provider())
+      && !(provider() === 'claude' && claudeFields().auth === 'apiKey')
+      && !(provider() === 'kimi' && kimiFields().auth !== 'account') ? provider() : null),
     rerender() {
       renderRoutes(f('provider').value);
       renderEfforts(f('effort').value);

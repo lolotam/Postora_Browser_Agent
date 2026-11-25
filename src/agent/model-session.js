@@ -12,8 +12,17 @@ import { ChatgptSession } from '../providers/chatgpt.js';
 import { CompatibleSession } from '../providers/openai-compatible.js';
 import { GrokAccountSession } from '../providers/responses.js';
 import { KimiSession } from '../providers/kimi.js';
+import { planAccountProvider, PlanAccountSession } from '../providers/plan-account.js';
 
 export { createFastAsk };
+
+/**
+ * The access mode a session is built with. It may be a snapshot or a getter:
+ * a session that is built later (after a compaction, or after the main model
+ * failed) must describe the mode that is in force then, not the one that was
+ * in force when the session started.
+ */
+const accessOf = (state) => (typeof state === 'function' ? state() : state);
 
 /**
  * A provider session for one model slot: the main one or settings.fallback.
@@ -51,6 +60,11 @@ function createProviderSession(slot, settings, conversationId, notify = null, ac
   const c = slot.compatible;
   if (!c.model) throw new Error('Choose a model in settings first.');
   const preset = COMPATIBLE_PRESETS[c.preset] ?? COMPATIBLE_PRESETS.custom;
+  const accountProvider = planAccountProvider(slot);
+  // The account route uses the preset of the route, so it keeps the preset's
+  // usage setting: without it the stream reports no tokens, and a conversation
+  // that never reports its size is never compacted.
+  if (accountProvider) return new PlanAccountSession({ ...c, accountProvider, thinkingStyle: accountProvider === 'minimax' ? 'minimax' : 'glm', systemPrompt, tools, sessionId: conversationId, notify, usage: Boolean(preset.usage) });
   return new CompatibleSession({ ...c, thinkingStyle: preset.thinkingStyle, systemPrompt, tools, sessionId: conversationId, notify, textToolCalls: Boolean(preset.textToolCalls), usage: Boolean(preset.usage) });
 }
 
@@ -93,22 +107,26 @@ function slotLabel(slot) {
  * reaches the new primary as a handoff message: after a task the backup
  * finished, after a settings change, or when a saved session is reopened.
  *
- * `accessState` is the worker's runtime snapshot of the access mode. Both
- * slots get it, so the backup cannot describe a different mode than the main
- * model. Without a snapshot the prompt says Ask first, the mode a session
- * starts in.
+ * `accessState` is the worker's runtime snapshot of the access mode, or a
+ * getter that reads it when a session is built. Both slots get it, so the
+ * backup cannot describe a different mode than the main model, and a session
+ * built later describes the mode that is in force then. Without a snapshot the
+ * prompt says Ask first, the mode a session starts in.
  */
-export function createModelSession(settings, { notify, seed = null, conversationId, notebook = null, accessState = null } = {}) {
-  const primary = createProviderSession(settings, settings, conversationId, notify, accessState);
+export function createModelSession(settings, { notify, seed = null, conversationId, notebook = null, accessState = null, history = '' } = {}) {
+  const primary = createProviderSession(settings, settings, conversationId, notify, accessOf(accessState));
+  if (history) primary.addUserMessage(history);
   if (seed?.log?.task) primary.addUserMessage(handoffMessage(seed.log, seed.reason, notebook));
   const backupEnabled = settings.fallback.enabled;
   return new FallbackSession({
     primary,
-    createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify, accessState) : null,
+    createPrimary: (current = accessState) => createProviderSession(settings, settings, conversationId, notify, accessOf(current)),
+    createBackup: backupEnabled ? () => createProviderSession(settings.fallback, settings, conversationId, notify, accessOf(accessState)) : null,
     labels: { primary: slotLabel(settings), backup: backupEnabled ? slotLabel(settings.fallback) : '' },
     notify,
     log: seed?.log ?? emptyLog(),
     notebook,
+    history,
   });
 }
 
@@ -122,5 +140,5 @@ export function createModelSession(settings, { notify, seed = null, conversation
  * can never be anything else.
  */
 export function modelSessionKey(settings, { accessState } = {}) {
-  return JSON.stringify([settings.provider, settings.chatgpt, settings.claude, settings.grok, settings.gemini, settings.kimi, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage, normalizeMode(accessState?.mode)]);
+  return JSON.stringify([settings.provider, settings.connectionRoute, settings.chatgpt, settings.claude, settings.grok, settings.gemini, settings.kimi, settings.compatible, settings.fallback, settings.vision, settings.allowJavascript, settings.replyLanguage, normalizeMode(accessState?.mode)]);
 }

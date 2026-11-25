@@ -125,6 +125,7 @@ function fakeBrowser(page = fakePage()) {
       say: async (...caption) => { captions.push(caption); },
     },
     currentTab: async () => ({ id: page.tabId, url: page.url }),
+    elementFrame: () => null,
     documentId: async () => page.document,
     snapshot: async () => ({
       url: page.url,

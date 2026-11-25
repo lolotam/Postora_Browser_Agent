@@ -23,7 +23,7 @@ function resetChrome({ granted = true, focusedTab = 99, focusedGroup = -1, tabs 
       update: async (id) => { state.activated.push(id); },
       onRemoved: { addListener() {} },
     },
-    sidePanel: { open: async ({ tabId }) => { if (!panelOpens) throw new Error('needs a user gesture'); state.panels.push(tabId); } },
+    sidePanel: { setOptions: async () => {}, open: async ({ tabId }) => { if (!panelOpens) throw new Error('needs a user gesture'); state.panels.push(tabId); } },
     debugger: { onDetach: { addListener() {} }, detach: async () => {} },
     storage: {
       session: {

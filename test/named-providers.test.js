@@ -1,6 +1,6 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GEMINI_API_URL, KIMI_CODE_URL, MOONSHOT_API_URL, mergeSettings, modelListRoute, settingsProblem, slotSettings } from '../src/lib/settings.js';
+import { GEMINI_API_URL, KIMI_CODE_URL, KIMI_OAUTH_URL, MOONSHOT_API_URL, mergeSettings, modelListRoute, settingsProblem, slotSettings } from '../src/lib/settings.js';
 import { createModelSession, modelSessionKey } from '../src/agent/model-session.js';
 import { listGeminiModels } from '../src/providers/named-api.js';
 import { KimiSession, listKimiModels } from '../src/providers/kimi.js';
@@ -13,7 +13,7 @@ globalThis.chrome = { storage: { local: {
 } } };
 let calls;
 let handler;
-const credential = () => ({ type: 'oauth', access: 'SUBSCRIPTION-ACCESS', refresh: 'SUBSCRIPTION-REFRESH', expires: Date.now() + 3600000 });
+const credential = () => ({ kimiAuthority: KIMI_OAUTH_URL, type: 'oauth', access: 'SUBSCRIPTION-ACCESS', refresh: 'SUBSCRIPTION-REFRESH', expires: Date.now() + 3600000 });
 const stream = (delta, finish = 'stop') => new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
 beforeEach(() => {
   for (const key of Object.keys(store)) delete store[key];
@@ -101,7 +101,7 @@ test('older Moonshot models never receive K3-only reasoning effort parameters', 
   assert.equal(JSON.parse(calls.at(-1).options.body).reasoning_effort, undefined);
 });
 
-test('Kimi Code catalog and execution use separate account credentials and a fixed .com endpoint', async () => {
+test('Kimi Code catalog and execution use separate account credentials and a fixed .ai endpoint', async () => {
   store['accountAuth.kimi'] = { generation: 1, credential: credential() };
   handler = (url) => url.endsWith('/models') ? Response.json({ data: [{ id: 'kimi-for-coding' }] }) : stream({ content: 'account answer' });
   const config = { auth: 'account', apiKey: 'DO-NOT-SEND-MOONSHOT-KEY', model: 'kimi-for-coding' };
@@ -152,5 +152,5 @@ test('the real Kimi refresh receives a timeout signal even when its caller provi
   };
   assert.equal((await getValidCredential('kimi')).access, 'ROTATED-REAL-FLOW');
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://auth.kimi.com/api/oauth/token');
+  assert.equal(calls[0].url, 'https://auth.kimi.ai/api/oauth/token');
 });

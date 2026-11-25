@@ -56,7 +56,7 @@ export function authView(provider, state, attempt = null, note = '') {
     attempt: nextAttempt,
     running,
     deviceCode: running ? (login.deviceCode ?? null) : null,
-    verificationUrl: login?.verificationUrl ?? null,
+    verificationUrl: running ? (login.verificationUrl ?? null) : null,
     needsCode: Boolean(login?.needsCode),
   };
 }

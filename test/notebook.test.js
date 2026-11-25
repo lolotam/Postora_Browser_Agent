@@ -33,6 +33,7 @@ function fakeBrowser() {
   return {
     overlay: { pointTo: async () => {}, say: async () => {} },
     currentTab: async () => ({ id: 1, url: 'https://shop.test/page-2' }),
+    elementFrame: () => null,
     snapshot: async () => ({ url: 'https://shop.test/page-2', title: 'T', scroll: { y: 0, viewport: 100, height: 100 }, elements: [], offscreen: 0, text: 'page text' }),
     pressKey: async () => {},
   };
