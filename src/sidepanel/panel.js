@@ -2545,8 +2545,29 @@ function renderDriveState(state = driveState) {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.driveBackup) renderDriveState(changes.driveBackup.newValue);
+  if (area === 'local' && changes.driveBackupIncludeCredentials && $('backupCredentials')) {
+    $('backupCredentials').checked = changes.driveBackupIncludeCredentials.newValue === true;
+  }
 });
-chrome.storage.local.get('driveBackup').then(({ driveBackup }) => renderDriveState(driveBackup));
+chrome.storage.local.get(['driveBackup', 'driveBackupIncludeCredentials']).then(({ driveBackup, driveBackupIncludeCredentials }) => {
+  if ($('backupCredentials')) $('backupCredentials').checked = driveBackupIncludeCredentials === true;
+  renderDriveState(driveBackup);
+});
+$('backupCredentials')?.addEventListener('change', async (event) => {
+  const box = event.target;
+  const wanted = box.checked === true;
+  if (wanted && !window.confirm(t('backup.credentialsConfirm'))) {
+    box.checked = false;
+    return;
+  }
+  try {
+    const res = await request('drive-credentials-consent-set', { includeCredentials: wanted });
+    box.checked = res?.includeCredentials === true;
+  } catch (err) {
+    box.checked = !wanted;
+    showBackupStatus('fail', `✗ ${err.message}`);
+  }
+});
 
 /**
  * What the Drive backup holds. The conversations are in it only when the user
@@ -2993,7 +3014,7 @@ let settingsDirty = false;
 
 // Fields that hold transient secrets, not settings: typing into them never
 // invents a draft.
-const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field, #rememberAccessMode';
+const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field, #rememberAccessMode, #backupCredentials';
 
 // Any edit in any page marks the draft, wherever the user walks afterwards.
 $('settingsView').addEventListener('input', (e) => {

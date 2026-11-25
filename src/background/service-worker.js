@@ -26,7 +26,14 @@ import * as store from '../sessions/store.js';
 import * as tabSessions from '../sessions/tab-sessions.js';
 import * as voiceClaims from '../sessions/voice-claims.js';
 import { createVoiceAccess } from './voice-access.js';
-import { afterGoogleSignIn, backUpToDrive, restoreFromDrive } from '../lib/drive-backup.js';
+import {
+  DRIVE_CREDENTIALS_CONSENT_KEY,
+  afterGoogleSignIn,
+  backUpToDrive,
+  getDriveCredentialsConsent,
+  restoreFromDrive,
+  setDriveCredentialsConsent,
+} from '../lib/drive-backup.js';
 import { googleAccount } from '../lib/google-account.js';
 import { forgetNotification, openFromNotification } from './notifications.js';
 import { isMicRelay } from '../sidepanel/voice.js';
@@ -94,8 +101,24 @@ chrome.tabs.onRemoved.addListener((tabId) => tabSessions.unbindTab(tabId));
 listenToNotifications();
 chrome.permissions.onAdded.addListener(listenToNotifications);
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !(changes.settings || changes.sessions || ACCOUNT_STORAGE_KEYS.some((key) => changes[key]))) return;
+  if (
+    area !== 'local'
+    || !(
+      changes.settings
+      || changes.sessions
+      || changes[DRIVE_CREDENTIALS_CONSENT_KEY]
+      || ACCOUNT_STORAGE_KEYS.some((key) => changes[key])
+    )
+  ) return;
   clearTimeout(driveBackupTimer);
+  // Turning credential consent off replaces the current Drive file with a
+  // credential-free one at once instead of waiting for the debounce timer.
+  if (changes[DRIVE_CREDENTIALS_CONSENT_KEY] && changes[DRIVE_CREDENTIALS_CONSENT_KEY].newValue !== true) {
+    void (async () => {
+      if (await googleAccount()) await backUpToDrive({ force: true });
+    })();
+    return;
+  }
   driveBackupTimer = setTimeout(async () => {
     if (await googleAccount()) await backUpToDrive();
   }, DRIVE_BACKUP_DELAY_MS);
@@ -401,6 +424,16 @@ async function handleRequest(msg, sender) {
       return null;
     case 'session-delete':
       return deleteSession(msg.id);
+    case 'drive-credentials-consent-get':
+      return { includeCredentials: await getDriveCredentialsConsent() };
+    case 'drive-credentials-consent-set': {
+      const includeCredentials = await setDriveCredentialsConsent(msg.includeCredentials === true);
+      if (!includeCredentials && await googleAccount()) {
+        clearTimeout(driveBackupTimer);
+        await backUpToDrive({ force: true });
+      }
+      return { includeCredentials };
+    }
     case 'drive-after-sign-in':
       return afterGoogleSignIn();
     case 'drive-backup-now':

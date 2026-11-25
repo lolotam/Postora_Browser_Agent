@@ -840,6 +840,13 @@
           <span class="grow"><strong data-i18n="backup.chats"></strong><small class="muted" data-i18n="backup.chatsDesc"></small></span>
           <input type="checkbox" id="backupChats" role="switch" />
         </label>
+        <!-- A profile-local consent, stored outside settings: never exported,
+             imported or restored. Turning it off replaces the current Drive
+             file with a credential-free one at once. -->
+        <label class="switch-row">
+          <span class="grow"><strong data-i18n="backup.credentials"></strong><small class="muted" data-i18n="backup.credentialsDesc"></small></span>
+          <input type="checkbox" id="backupCredentials" role="switch" />
+        </label>
         <small class="muted" id="backupResult"></small>
       </div>
     </div>
