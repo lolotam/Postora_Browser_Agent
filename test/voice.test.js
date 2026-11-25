@@ -4,10 +4,13 @@ import { heardText, isMicRelay, micListenTarget, speechLang, voiceErrorKey } fro
 
 const phrase = (transcript, isFinal = true) => Object.assign([{ transcript }], { isFinal });
 
-test('Arabic listens in Egyptian Arabic, anything else in English', () => {
+test('Arabic listens in Egyptian Arabic, anything else in English, and explicit speech preference wins', () => {
   assert.equal(speechLang('ar'), 'ar-EG');
   assert.equal(speechLang('en'), 'en-US');
   assert.equal(speechLang('auto'), 'en-US');
+  assert.equal(speechLang('en', 'ar'), 'ar-EG');
+  assert.equal(speechLang('ar', 'en'), 'en-US');
+  assert.equal(speechLang('ar', 'auto'), 'ar-EG');
 });
 
 test('heard words keep the latest unfinished phrase', () => {

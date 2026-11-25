@@ -11,7 +11,7 @@ export const TRANSCRIPTION_SERVICES = {
 };
 
 export const DEFAULT_TRANSCRIPTION = {
-  mode: 'auto', provider: 'openai', ...TRANSCRIPTION_SERVICES.openai, apiKey: '', services: {},
+  mode: 'auto', language: 'auto', provider: 'openai', ...TRANSCRIPTION_SERVICES.openai, apiKey: '', services: {},
 };
 
 export function speechLocale(text) {
@@ -40,10 +40,15 @@ export async function transcribeAudio(blob, config = {}, { fetcher = fetch, sign
   if (settings.provider === 'deepgram') {
     const endpoint = new URL(settings.endpoint);
     endpoint.searchParams.set('model', settings.model);
-    endpoint.searchParams.set('language', 'multi');
-    endpoint.searchParams.delete('language_hint');
-    endpoint.searchParams.append('language_hint', 'ar');
-    endpoint.searchParams.append('language_hint', 'en');
+    if (settings.language === 'ar' || settings.language === 'en') {
+      endpoint.searchParams.set('language', settings.language);
+      endpoint.searchParams.delete('language_hint');
+    } else {
+      endpoint.searchParams.set('language', 'multi');
+      endpoint.searchParams.delete('language_hint');
+      endpoint.searchParams.append('language_hint', 'ar');
+      endpoint.searchParams.append('language_hint', 'en');
+    }
     const response = await fetcher(endpoint, { method: 'POST', headers: { Authorization: `Token ${settings.apiKey}`, 'Content-Type': blob.type || 'audio/webm' }, body: blob, signal, credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer' });
     if (!response.ok) throw new Error(`Speech transcription failed (${response.status}).`);
     return response.json().then(readTranscript);
@@ -51,7 +56,9 @@ export async function transcribeAudio(blob, config = {}, { fetcher = fetch, sign
   const form = new FormData();
   form.set('file', blob, `speech.${blob.type?.split('/')[1] || 'webm'}`);
   form.set('model', settings.model);
-  // No forced language: keep Arabic speech in Arabic and let English come through.
+  if (settings.language === 'ar' || settings.language === 'en') {
+    form.set('language', settings.language);
+  }
   const response = await fetcher(settings.endpoint, { method: 'POST', headers: { Authorization: `Bearer ${settings.apiKey}` }, body: form, signal, credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer' });
   if (!response.ok) throw new Error(`Speech transcription failed (${response.status}).`);
   return response.json().then(readTranscript);

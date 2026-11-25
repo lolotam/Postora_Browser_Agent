@@ -676,16 +676,15 @@ function onEvent(event) {
         add('msg ask', event.question);
         break;
       }
-      // The question has to be answered: the chat is shown, so it is never
-      // hidden behind the voice screen.
-      showChat();
-      setQuestion(event.question);
       // The task waits for the answer, but the command that started it is
       // over: the screen is free again, so the answer may be given by voice,
       // and no new task is started for it. The entry of the command keeps
       // the events of the task.
+      const askVoiceEntry = voiceEntryFor(event);
       settleVoiceCommand();
-      voiceEntryFor(event)?.setStatus(t('status.waiting'), 'thinking');
+      showChat();
+      setQuestion(event.question);
+      askVoiceEntry?.setStatus(t('status.waiting'), 'thinking');
       break;
     case 'final': {
       ui.liveText?.remove();
@@ -1750,9 +1749,14 @@ function voiceLogEntry(command) {
   detail.append(status);
   li.append(cmd, detail);
   log.prepend(li);
+  let entryState = 'executing';
   return {
     node: li,
+    isTerminal() {
+      return entryState === 'err' || entryState === 'ok' || entryState === 'thinking';
+    },
     setStatus(text, state) {
+      entryState = state || 'executing';
       status.textContent = text;
       li.className = `voice-entry${state ? ` ${state}` : ''}`;
     },
@@ -1770,6 +1774,7 @@ function voiceLogEntry(command) {
       detail.append(note);
     },
     setOk(text, ms) {
+      entryState = 'ok';
       status.textContent = `✓ ${text}`;
       li.className = 'voice-entry ok';
       if (Number.isFinite(ms)) {
@@ -1780,6 +1785,7 @@ function voiceLogEntry(command) {
       }
     },
     setErr(text) {
+      entryState = 'err';
       status.textContent = `✗ ${text}`;
       li.className = 'voice-entry err';
     },
@@ -1845,7 +1851,7 @@ function createVoice() {
         const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!Ctor) return null;
         const rec = new Ctor();
-        rec.lang = speechLang(currentLanguage());
+        rec.lang = speechLang(currentLanguage(), settings?.transcription?.language);
         return rec;
       },
     }),

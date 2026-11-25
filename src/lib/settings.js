@@ -152,7 +152,7 @@ export const DEFAULT_SETTINGS = {
   // screen's own preferences (hands-free, spoken replies) live in their own
   // storage keys, so they are saved without touching these settings.
   voiceEngine: 'postora',
-  transcription: { mode: 'browser', provider: 'openai', endpoint: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-transcribe', apiKey: '', services: {} },
+  transcription: { mode: 'browser', language: 'auto', provider: 'openai', endpoint: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-transcribe', apiKey: '', services: {} },
   // Off: the agent replies in the language the task is written in.
   replyLanguage: { enabled: false, language: '' },
   // One API key per provider for every slot (see shareKeys).
