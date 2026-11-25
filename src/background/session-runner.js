@@ -358,7 +358,6 @@ export class SessionRunner {
   async changeProfileMode(msg, mode) {
     const before = this.access.mode;
     let result;
-    this.suppressAccessBroadcast = mode === FULL_ACCESS;
     try {
       result = await this.onAccessModeChange({
         runner: this,
@@ -369,8 +368,6 @@ export class SessionRunner {
       });
     } catch {
       result = { ok: false, changed: false, reason: 'storage-failed' };
-    } finally {
-      this.suppressAccessBroadcast = false;
     }
     if (this.disposed) return result;
     // The mode in force comes first: the panel clears its notice when it is
@@ -535,7 +532,7 @@ export class SessionRunner {
     // setMode already withdrew old approvals and permits. An explicit upgrade
     // must not abort the task whose pending action the user wants to release.
     if (this.access.mode !== FULL_ACCESS) this.stop();
-    if (!this.suppressAccessBroadcast) this.broadcastAccess();
+    this.broadcastAccess();
   }
 
   /** The mode that is really in force, to every panel of this session. */

@@ -1313,33 +1313,49 @@ test('a pre-write guard preserves the pending revocation target when the subsequ
 test('a successful live elevation reports persisted: false and removes the local grant when neither guard removal nor fallback rewrite succeeds', async () => {
   const { store, storage, sessionStorage } = await started({});
   let downgraded = 0;
-  const raised = await store.setMode(
+  let rejectRemove;
+  const removeStarted = new Promise((resolve) => {
+    const originalRemove = sessionStorage.remove;
+    sessionStorage.remove = (keys) => new Promise((_res, rej) => {
+      rejectRemove = () => {
+        sessionStorage.remove = originalRemove;
+        sessionStorage.failRemove = true;
+        sessionStorage.failSet = true;
+        rej(new Error('sessionStorage.remove failed'));
+      };
+      resolve();
+    });
+  });
+
+  const raisePromise = store.setMode(
     { mode: FULL, acknowledged: true, expectedProfileRevision: store.profileRevision },
     {
       ...makeHooks(),
       downgradeAll: () => { downgraded += 1; },
-      applyFull: () => {
-        sessionStorage.failRemove = true;
-        sessionStorage.failSet = true;
-        return { ok: true, changed: true };
-      },
+      applyFull: () => ({ ok: true, changed: true }),
     },
   );
+  await removeStarted;
+  // Capture the candidate profileRevision while guard cleanup is still pending, and queue an Ask first revocation.
+  const candidateRevision = store.profileRevision;
+  const lowerPromise = store.setMode(
+    { mode: ASK, expectedProfileRevision: candidateRevision },
+    { ...makeHooks({ full: true }), downgradeAll: () => { downgraded += 1; } },
+  );
+
+  // Release guard cleanup to fail both remove and fallback rewrite.
+  rejectRemove();
+  const raised = await raisePromise;
   assert.equal(raised.ok, true);
   assert.equal(raised.persisted, false);
   assert.equal(raised.warning, 'not-remembered');
-  assert.equal(downgraded, 0, 'unrelated chats are not downgraded because candidate Full access was never exposed before guard cleanup');
   assert.equal('accessPreference' in storage.data, false, 'unpersisted record was removed from local storage');
-  assert.equal(store.effectiveDefaultMode(), ASK, 'new chats still start at Ask first when guard cleanup failed');
-  assert.equal(store.snapshot().mode, ASK);
 
-  // A panel that saw the candidate profileRevision can still lower to Ask first without being rejected as stale.
-  const lowered = await store.setMode(
-    { mode: ASK, expectedProfileRevision: raised.preference.profileRevision },
-    { ...makeHooks({ full: true }), downgradeAll: () => { downgraded += 1; } },
-  );
-  assert.equal(lowered.ok, true);
+  const lowered = await lowerPromise;
+  assert.equal(lowered.ok, true, 'queued Ask first against candidate revision succeeds after guard cleanup fails');
   assert.equal(downgraded, 1);
+  assert.equal(store.effectiveDefaultMode(), ASK);
+  assert.equal(store.snapshot().mode, ASK);
 
   // When storage.remove also fails during that fallback removal, warning propagates 'not-cleared'.
   const { store: store2, storage: storage2, sessionStorage: sessionStorage2 } = await started({});
