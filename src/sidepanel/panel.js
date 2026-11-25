@@ -19,7 +19,7 @@ import { createProviderForm } from './provider-form.js';
 import { stampProviderSlots } from './provider-slot-template.js';
 import { request } from './request.js';
 import { bindTestButton } from './test-button.js';
-import { FEEDBACK_FORM_ID, afterDismissal, afterRating, sendFeedback, shouldAskForRating } from '../lib/feedback.js';
+import { createFeedbackUi } from './feedback-ui.js';
 import { googleAccount, signInWithGoogle, signOutOfGoogle } from '../lib/google-account.js';
 import { ACCOUNT_PROVIDERS, PROVIDER_LABELS, RECOMMENDED_SETUP, recommendedSlots, settingsProblem, slotSettings } from '../lib/settings.js';
 import { STORE_BUILD } from '../lib/build.js';
@@ -2790,134 +2790,18 @@ googleAccount().then((saved) => {
 
 // ---------- feedback and ratings ----------
 
-const STORE_REVIEWS_URL = `https://chromewebstore.google.com/detail/${chrome.runtime.id}/reviews`;
-// Store installs carry update_url; an unpacked copy has no store page to review.
-const fromStore = Boolean(chrome.runtime.getManifest().update_url);
-let feedbackRating = 0;
-
-async function ratingState() {
-  try {
-    return (await chrome.storage.local.get('reviewPrompt')).reviewPrompt ?? {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveRatingState(change) {
-  await chrome.storage.local.set({ reviewPrompt: change(await ratingState()) });
-}
-
-/** Five star buttons; picking one calls onPick(n) and lights the stars up to n. */
-function starRow(onPick) {
-  const row = document.createElement('div');
-  row.className = 'stars';
-  for (let n = 1; n <= 5; n += 1) {
-    const star = document.createElement('button');
-    star.type = 'button';
-    star.className = 'star';
-    star.textContent = '★';
-    star.setAttribute('aria-label', t('rate.star', { n }));
-    star.addEventListener('click', () => {
-      row.querySelectorAll('.star').forEach((s, i) => s.classList.toggle('on', i < n));
-      onPick(n);
-    });
-    row.append(star);
-  }
-  return row;
-}
-
-/** A signed-in user's feedback carries their Google email unless they typed another. */
-function feedbackFields(message, rating, email = '') {
-  return { message, rating, email: email || account?.email || '', version: chrome.runtime.getManifest().version, language: currentLanguage() };
-}
-
-async function askForRating() {
-  if (!shouldAskForRating(await ratingState())) return;
-  const card = add('msg rate-card', '');
-  const question = document.createElement('span');
-  question.textContent = t('rate.question');
-  const close = iconButton(ICONS.close, t('rate.dismiss'), async () => {
-    card.remove();
-    await saveRatingState(afterDismissal);
-  });
-  const head = document.createElement('div');
-  head.className = 'row between';
-  head.append(question, close);
-  const body = document.createElement('div');
-  body.className = 'fields';
-  card.append(head, starRow((n) => rated(n, body, close)), body);
-}
-
-async function rated(stars, body, close) {
-  close.remove();
-  await saveRatingState(afterRating);
-  if (stars === 5) {
-    body.replaceChildren(textLine(t('rate.thanks')));
-    if (fromStore) {
-      const link = Object.assign(document.createElement('a'), { href: STORE_REVIEWS_URL, target: '_blank', rel: 'noopener', textContent: t('rate.store') });
-      body.append(link);
-    }
-    if (FEEDBACK_FORM_ID) sendFeedback(feedbackFields('', 5)).catch(() => {}); // a bare 5★ is a nice-to-know, not worth an error
-    return;
-  }
-  const text = Object.assign(document.createElement('textarea'), { rows: 3, dir: 'auto', placeholder: t('rate.better') });
-  const status = Object.assign(document.createElement('small'), { className: 'muted' });
-  const send = Object.assign(document.createElement('button'), { type: 'button', className: 'primary', textContent: t('feedback.send') });
-  send.addEventListener('click', () => submitFeedback({ message: text.value.trim(), rating: stars }, status, () => body.replaceChildren(textLine(t('feedback.sent')))));
-  const actions = document.createElement('div');
-  actions.className = 'row between';
-  actions.append(status, send);
-  body.replaceChildren(text, actions);
-  text.focus();
-}
-
-function textLine(text) {
-  return Object.assign(document.createElement('span'), { textContent: text });
-}
-
-async function submitFeedback({ message, rating, email = '' }, status, onSent) {
-  if (!message && !rating) {
-    status.textContent = t('feedback.empty');
-    return;
-  }
-  if (!FEEDBACK_FORM_ID) {
-    status.textContent = t('feedback.notConfigured');
-    return;
-  }
-  status.textContent = t('feedback.sending');
-  try {
-    await sendFeedback(feedbackFields(message, rating, email));
-    onSent();
-  } catch (err) {
-    status.textContent = `✗ ${err.message}`;
-  }
-}
-
-function toggleFeedbackMenu() {
-  const opening = $('feedbackMenu').hidden;
-  closeSessionMenu();
-  closeOverflowMenu();
-  $('accountMenu').hidden = true;
-  $('feedbackMenu').hidden = !opening;
-  if (!opening) return;
-  feedbackRating = 0;
-  $('feedbackStars').replaceWith(Object.assign(starRow((n) => { feedbackRating = n; }), { id: 'feedbackStars' }));
-  $('feedbackStatus').textContent = '';
-  if (account && !$('feedbackEmail').value) $('feedbackEmail').value = account.email;
-  $('feedbackText').focus();
-}
-
-$('feedbackBtn').addEventListener('click', toggleFeedbackMenu);
-$('feedbackSend').addEventListener('click', () => submitFeedback(
-  { message: $('feedbackText').value.trim(), rating: feedbackRating, email: $('feedbackEmail').value.trim() },
-  $('feedbackStatus'),
-  () => {
-    $('feedbackText').value = '';
-    $('feedbackStatus').textContent = t('feedback.sent');
+const { askForRating } = createFeedbackUi({
+  $,
+  t,
+  currentLanguage,
+  getAccount: () => account,
+  addCard: add,
+  closeIconButton: (label, onClick) => iconButton(ICONS.close, label, onClick),
+  closeOtherMenus: () => {
+    closeSessionMenu();
+    closeOverflowMenu();
+    $('accountMenu').hidden = true;
   },
-));
-document.addEventListener('click', (e) => {
-  if (!$('feedbackMenu').hidden && !$('feedbackMenu').contains(e.target) && !$('feedbackBtn').contains(e.target)) $('feedbackMenu').hidden = true;
 });
 
 // ---------- language ----------
