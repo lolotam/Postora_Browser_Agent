@@ -11,7 +11,7 @@ import { ASK_FIRST, FULL_ACCESS } from '../permissions/policy.js';
 import { escapeAttr } from './model-picker.js';
 import { createModelDialog } from './model-dialog.js';
 import { createSettingsNav } from './settings-nav.js';
-import { createSettingsSaver, settingsEdits } from './settings-save.js';
+import { createSettingsSaver, settingsEdits, settingsFieldEdit } from './settings-save.js';
 import { authMessage, authView, changedProviders, withLoginEvent } from './auth-ui.js';
 import { createKeyStore } from './key-store.js';
 import { createProviderForm } from './provider-form.js';
@@ -3192,17 +3192,30 @@ let settingsDirty = false;
 // Fields that hold transient secrets, not settings: typing into them never
 // invents a draft.
 const NOT_A_SETTING_EDIT = '[data-auth], #authJson, #backupAuthJson, .search-field, #rememberAccessMode, #backupCredentials';
+const AUTO_SAVE_SETTING_CONTROLS = '#vision, #allowJavascript, #showCursor, #steerMode, #backupChats, #notify, #voiceEngine';
+
+async function autoSaveControlField(key, readValue) {
+  if (!settings) return;
+  try {
+    await saveSettings(settingsFieldEdit(key, readValue()));
+    renderSettingsSummaries();
+  } catch (err) {
+    showSettingsError(err.message);
+  }
+}
 
 // Any edit in any page marks the draft, wherever the user walks afterwards.
 $('settingsView').addEventListener('input', (e) => {
   if (e.target.id === 'uiLanguage') return;
   if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
+  if (e.target.closest?.(AUTO_SAVE_SETTING_CONTROLS)) return;
   markDirty();
   renderSettingsSummaries();
 });
 $('settingsView').addEventListener('change', (e) => {
   if (e.target.id === 'uiLanguage') return;
   if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
+  if (e.target.closest?.(AUTO_SAVE_SETTING_CONTROLS)) return;
   markDirty();
   renderSettingsSummaries();
 });
@@ -3470,11 +3483,24 @@ $('notify').addEventListener('change', async () => {
     if (!granted) {
       box.checked = false;
       $('notifyNote').hidden = false;
+      return;
     }
   } else {
-    // Given back only once the switch is saved off (see toggleSettings), like the rest of this form.
+    chrome.permissions.remove({ permissions: ['notifications'] }).catch(() => {});
   }
+  await autoSaveControlField('notify', () => box.checked);
 });
+
+for (const [id, key, readValue] of [
+  ['vision', 'vision', () => $('vision').checked],
+  ['allowJavascript', 'allowJavascript', () => $('allowJavascript').checked],
+  ['showCursor', 'showCursor', () => $('showCursor').checked],
+  ['steerMode', 'steerMode', () => $('steerMode').value],
+  ['backupChats', 'backupChats', () => $('backupChats').checked === true],
+  ['voiceEngine', 'voiceEngine', () => $('voiceEngine')?.value || 'postora'],
+]) {
+  $(id)?.addEventListener('change', () => autoSaveControlField(key, readValue));
+}
 
 function syncFallback() {
   // The backup page stays reachable either way; the row that opens it only
