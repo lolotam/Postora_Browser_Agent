@@ -65,6 +65,7 @@ try {
   await panel.waitForFunction(() => document.getElementById('modelQuickLabel').textContent.includes('workspace-model'));
   await panel.click('#newChatBtn');
   await panel.waitForTimeout(200);
+  if (await panel.isHidden('#projectBtn')) await panel.click('#attachBtn');
   await panel.click('#projectBtn');
   await panel.fill('#projectRoot', project);
   await panel.click('#projectSave');

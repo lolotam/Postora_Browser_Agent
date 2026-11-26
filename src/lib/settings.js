@@ -148,6 +148,7 @@ export const DEFAULT_SETTINGS = {
   // The /compact command always works, whatever this says.
   autoCompact: { enabled: true, thresholdTokens: 80000 },
   uiLanguage: 'auto',
+  uiTheme: 'claude',
   // Voice control execution engine: 'postora' or 'fast_only'. The voice
   // screen's own preferences (hands-free, spoken replies) live in their own
   // storage keys, so they are saved without touching these settings.
@@ -269,6 +270,7 @@ export function mergeSettings(stored = {}) {
       kimi: { ...DEFAULT_SETTINGS.fallback.kimi, ...(stored.fallback?.kimi ?? {}) },
       compatible: { ...DEFAULT_SETTINGS.fallback.compatible, ...(stored.fallback?.compatible ?? {}) },
     },
+    uiTheme: stored?.uiTheme === 'classic' ? 'classic' : 'claude',
     keys: { ...(stored.keys ?? {}) },
   });
 }

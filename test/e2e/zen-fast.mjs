@@ -44,6 +44,7 @@ export async function runZenFastScenario(context, extensionId) {
     await panel.reload();
     await panel.bringToFront();
     await panel.waitForFunction(() => document.getElementById('modelQuickLabel').textContent === 'mock-model');
+    if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
     await panel.click('#settingsBtn');
     await panel.click('#settingsRowFast');
     await panel.selectOption('#fastProvider', 'opencode-zen');

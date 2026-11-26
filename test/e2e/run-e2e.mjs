@@ -589,7 +589,10 @@ async function runScenario(context, extensionId, { name, task, handlers, fast, e
       // The quick label is filled just before init() auto-opens, so waiting
       // for it makes the startup state deterministic.
       await panel.waitForFunction(() => (document.getElementById('modelQuickLabel')?.textContent ?? '') !== '');
-      if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+      if (await panel.isHidden('#settingsView')) {
+        if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
+        await panel.click('#settingsBtn');
+      }
       await panel.waitForSelector('#settingsView:not([hidden])');
       for (let i = 0; i < 4 && await panel.isHidden('#settingsIndex'); i += 1) await panel.click('#closeSettingsBtn');
       await panel.waitForSelector('#settingsIndex:not([hidden])');
@@ -846,9 +849,15 @@ async function runSignInAfterRestartScenario(context, extensionId) {
     // page. The quick label is filled by init() just before it auto-opens the
     // settings, so waiting for it makes the startup state deterministic.
     await panel.waitForFunction(() => (document.getElementById('modelQuickLabel')?.textContent ?? '') !== '');
-    if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+    if (await panel.isHidden('#settingsView')) {
+      if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
+      await panel.click('#settingsBtn');
+    }
     for (let i = 0; i < 4; i += 1) {
-      if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+      if (await panel.isHidden('#settingsView')) {
+        if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
+        await panel.click('#settingsBtn');
+      }
       if (!(await panel.isHidden('#settingsIndex'))) break;
       await panel.click('#closeSettingsBtn');
     }
@@ -870,6 +879,7 @@ async function runSignInAfterRestartScenario(context, extensionId) {
     if (pageErrors.length) failures.push(`side panel errors: ${pageErrors.join(' | ')}`);
     return failures;
   } finally {
+    for (const page of context.pages()) if (page.url().startsWith('https://auth.openai.com/')) await page.close();
     for (const url of Object.keys(routes)) await context.unroute(url);
     await panel.close();
   }
@@ -1767,7 +1777,10 @@ async function runUiLayoutScenario(context, extensionId) {
     // settings, so waiting for it makes the startup state deterministic.)
     await panel.waitForFunction(() => document.querySelectorAll('#preset option').length > 0);
     await panel.waitForFunction(() => (document.getElementById('modelQuickLabel')?.textContent ?? '') !== '');
-    if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+    if (await panel.isHidden('#settingsView')) {
+      if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
+      await panel.click('#settingsBtn');
+    }
     await panel.waitForSelector('#settingsView:not([hidden])');
     if (await panel.isHidden('#page-provider-main')) {
       if (await panel.isHidden('#page-models')) {
@@ -1801,6 +1814,7 @@ async function runUiLayoutScenario(context, extensionId) {
     await shot(panel, 'ui-chat-360-light.png');
 
     // The settings index and two of its pages.
+    if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
     await panel.click('#settingsBtn');
     await panel.waitForSelector('#settingsIndex:not([hidden])');
     await panel.fill('#settingsSearch', 'voice');
@@ -1820,8 +1834,9 @@ async function runUiLayoutScenario(context, extensionId) {
     // A real approval card, in the bounded region above the composer.
     target = await context.newPage();
     await target.goto(`${base}/page`);
-    await target.bringToFront();
+    await panel.bringToFront();
     await panel.fill('#input', 'Click the Go button and report the result\n\nUse the visible page.\nReport the outcome.\nDo not skip consent.');
+    await target.bringToFront();
     await panel.press('#input', 'Enter');
     await panel.waitForSelector('#approvals .permission-request', { timeout: 30000 });
     if (await panel.isVisible('#voiceToggle')) failures.push('the busy toolbar did not replace Voice with Stop');
@@ -1851,6 +1866,7 @@ async function runUiLayoutScenario(context, extensionId) {
     if (bounded.dock !== 'approvalsChatDock' || !bounded.aboveComposer) failures.push('the approval is not docked above the composer');
     await overflows('the chat with an approval');
     await shot(panel, 'ui-approval-360-light.png');
+    if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
     await panel.click('#settingsBtn');
     if (!(await panel.isVisible('#workspaceStopBtn'))) failures.push('settings hid Stop during a live task');
     if (!(await panel.isVisible('#approvals .permission-request'))) failures.push('settings hid a live approval');
@@ -1877,6 +1893,7 @@ async function runUiLayoutScenario(context, extensionId) {
     await panel.setViewportSize({ width: 360, height: 720 });
     await panel.emulateMedia({ colorScheme: 'dark' });
     await panel.waitForTimeout(300);
+    if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
     await panel.click('#settingsBtn');
     await panel.waitForSelector('#settingsIndex:not([hidden])');
     await panel.click('#overflowBtn');

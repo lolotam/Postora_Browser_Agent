@@ -41,7 +41,7 @@ export async function runComposerScenario(context, extensionId) {
           await panel.setViewportSize({ width, height: 640 });
           const geometry = await panel.evaluate(() => {
             const rect = (id) => document.getElementById(id).getBoundingClientRect().toJSON();
-            const ids = ['modelQuickBtn', 'accessSelect', 'attachBtn', 'voiceToggle', 'sendBtn'];
+            const ids = ['attachBtn', 'accessSelect', 'modelQuickBtn', 'voiceToggle', 'sendBtn'];
             return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
               box: rect('composerBox'), input: rect('input'), items: ids.map(rect),
               nested: ids.every((id) => document.getElementById('composerBox').contains(document.getElementById(id))),
@@ -52,7 +52,7 @@ export async function runComposerScenario(context, extensionId) {
           assert.ok(geometry.nested, `${state}: a control escaped the composer`);
           assert.ok(geometry.sw <= geometry.cw + 1, `${state}: horizontal overflow`);
           assert.equal(geometry.radius, '50%');
-          const [model, access, attach, voice, send] = geometry.items;
+          const [attach, access, model, voice, send] = geometry.items;
           for (const item of geometry.items) {
             assert.ok(item.width > 0 && item.left >= geometry.box.left && item.right <= geometry.box.right, `${state}: clipped control`);
             assert.ok(Math.abs(item.top - send.top) <= 1, `${state}: toolbar wrapped`);
@@ -60,8 +60,8 @@ export async function runComposerScenario(context, extensionId) {
           }
           const ordered = [...geometry.items].sort((a, b) => a.left - b.left);
           assert.ok(ordered.every((item, index) => !index || item.left >= ordered[index - 1].right), `${state}: overlapping controls`);
-          assert.ok(geometry.rtl ? model.left > access.left && attach.left > voice.left && voice.left > send.left
-            : model.left < access.left && attach.left < voice.left && voice.left < send.left, `${state}: wrong logical order`);
+          assert.ok(geometry.rtl ? attach.left > access.left && access.left > model.left && model.left > voice.left && voice.left > send.left
+            : attach.left < access.left && access.left < model.left && model.left < voice.left && voice.left < send.left, `${state}: wrong logical order`);
           if (process.env.E2E_SCREENSHOTS) {
             fs.mkdirSync(process.env.E2E_SCREENSHOTS, { recursive: true });
             await panel.bringToFront();
@@ -135,6 +135,36 @@ export async function runComposerScenario(context, extensionId) {
       document.getElementById('input').dispatchEvent(event);
       return event.defaultPrevented;
     }), false, 'ordinary text paste is not intercepted');
+    // Switching between Claude Minimal and Postora Classic in Settings updates
+    // the live layout, reveals the classic brand/empty state, and persists.
+    await panel.click('#newChatBtn');
+    await panel.waitForSelector('#emptyState:not([hidden])');
+    assert.equal(await panel.isVisible('.empty-watermark'), true, 'claude theme shows the minimal watermark on empty chat');
+    await panel.click('#overflowBtn');
+    await panel.click('#settingsBtn');
+    await panel.waitForSelector('#settingsIndex:not([hidden])');
+    await panel.selectOption('#uiTheme', 'classic');
+    await panel.waitForFunction(() => document.documentElement.dataset.uiTheme === 'classic');
+    await panel.waitForFunction(async () => (await chrome.storage.local.get('settings')).settings?.uiTheme === 'classic');
+    await panel.click('#closeSettingsBtn');
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
+    assert.equal(await panel.isVisible('.empty-watermark'), false, 'classic theme hides the minimal watermark');
+    assert.equal(await panel.isVisible('.empty-steps'), true, 'classic theme restores the example steps');
+    assert.equal(await panel.isVisible('#chatLogSummary'), true, 'classic theme restores the live chat bar');
+    assert.equal(await panel.isVisible('#sessionTitle'), true, 'classic theme restores the header session title');
+    assert.ok(await panel.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), 'classic theme does not overflow horizontally');
+    await panel.click('#brandCluster');
+    await panel.waitForSelector('#sessionMenu:not([hidden])');
+    await panel.keyboard.press('Escape');
+    await panel.waitForSelector('#sessionMenu', { state: 'hidden' });
+    await panel.click('#overflowBtn');
+    await panel.click('#settingsBtn');
+    await panel.waitForSelector('#settingsIndex:not([hidden])');
+    await panel.selectOption('#uiTheme', 'claude');
+    await panel.waitForFunction(() => document.documentElement.dataset.uiTheme === 'claude');
+    await panel.waitForFunction(async () => (await chrome.storage.local.get('settings')).settings?.uiTheme === 'claude');
+    await panel.click('#closeSettingsBtn');
+    await panel.waitForSelector('#settingsView', { state: 'hidden' });
     assert.deepEqual(errors, []);
     console.log('\n== scenario: composer ==\nempty canvas, borderless model control, Full access, RTL/themes at 320/360/400px, sizing, shortcuts and attachments passed');
     return [];

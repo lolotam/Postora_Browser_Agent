@@ -4,18 +4,18 @@
    and settings one focused page at a time. Ordinary controls are rectangular;
    the microphone and the composer's send action are circles. */
 :root {
-  --bg: #ffffff;
-  --surface: #f9f9f9;
-  --surface-2: #f0f0f0;
-  --border: #e6e6e6;
-  --border-strong: #d4d4d4;
-  --text: #282828;
-  --text-2: #5d5d5d;
-  --muted: #646a73;
-  --accent: #4ff7d1;
-  --on-accent: #000000;
-  --accent-text: #087c68;
-  --accent-soft: #e9faf5;
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --surface-2: #edeae2;
+  --border: #e5e2d8;
+  --border-strong: #d5d1c5;
+  --text: #1c1b18;
+  --text-2: #57554e;
+  --muted: #5c5a54;
+  --accent: #2563eb;
+  --on-accent: #ffffff;
+  --accent-text: #1d4ed8;
+  --accent-soft: #eff6ff;
   --danger: #d93636;
   --on-danger: #ffffff;
   --danger-bg: #fdecec;
@@ -23,24 +23,24 @@
   --success-bg: #e9f8ef;
   --warn: #995900;
   --warn-bg: #fff6e5;
-  --radius-card: 8px;
-  --radius-control: 6px;
+  --radius-card: 12px;
+  --radius-control: 8px;
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Tahoma, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #08090a;
-    --surface: #141516;
-    --surface-2: #1c1c1f;
-    --border: #23252a;
-    --border-strong: #34343a;
+    --bg: #171717;
+    --surface: #202020;
+    --surface-2: #2a2a2a;
+    --border: #333333;
+    --border-strong: #484848;
     --text: #f7f8f8;
     --text-2: #d0d6e0;
-    --muted: #8a8f98;
-    --accent-text: #4ff7d1;
-    --accent-soft: #12362e;
+    --muted: #9a9f98;
+    --accent-text: #6b9eff;
+    --accent-soft: #202d43;
     --danger: #ff6b6b;
     --on-danger: #08090a;
     --danger-bg: #2a1414;
@@ -151,18 +151,36 @@ html[dir="rtl"] .icon-back {
 .session-rename { flex: 1; padding: 4px 6px; }
 body { position: relative; }
 
-/* The overflow menu: the account, the interface language and feedback, as
-   plain labeled rows. */
-.overflow-menu { gap: 2px; padding: 6px; inset-inline: auto; inline-size: 220px; inset-inline-end: 8px; }
-.menu-row {
-  display: flex; align-items: center; gap: 8px; width: 100%; text-align: start;
-  border: none; background: transparent; padding: 7px 8px; border-radius: var(--radius-control);
-  color: var(--text); font-weight: 400;
+/* The overflow menu: settings, language submenu, account and feedback. */
+.overflow-menu {
+  gap: 2px; padding: 6px; inset-inline: auto; inline-size: 210px; inset-inline-end: 8px;
+  background: var(--surface); border-color: var(--border); border-radius: 14px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .12); overflow: visible; max-height: none;
 }
-.menu-row:hover { background: var(--surface-2); }
+.menu-divider { height: 1px; background: var(--border); margin: 4px 6px; }
+.menu-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: start;
+  border: none; background: transparent; padding: 8px 10px; border-radius: 9px;
+  color: var(--text); font-weight: 450; font-size: 13px;
+}
+.menu-row:hover, .menu-row.active { background: var(--surface-2); }
 .menu-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.menu-row svg { flex: none; color: var(--text-2); }
+.menu-row svg { flex: none; color: var(--text-2); width: 16px; height: 16px; stroke-width: 1.7; }
+.menu-row .submenu-chev { width: 14px; height: 14px; color: var(--muted); }
+:root[dir="rtl"] .menu-row .submenu-chev { transform: scaleX(-1); }
 .menu-tag { color: var(--muted); font-weight: 560; }
+.menu-shortcut { font: 11px/1 var(--font); color: var(--muted); flex: none; }
+.lang-menu-wrap { position: relative; }
+.lang-submenu {
+  display: none; position: absolute; top: calc(100% + 6px); inset-inline-end: 0;
+  inline-size: 200px; max-width: calc(100vw - 24px); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 14px; padding: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .14); z-index: 30;
+  flex-direction: column; gap: 2px;
+}
+.lang-menu-wrap:hover .lang-submenu, .lang-menu-wrap.open .lang-submenu { display: flex; }
+.check-icon { width: 15px; height: 15px; color: var(--accent-text); opacity: 0; flex: none; }
+.lang-option.active .check-icon, .access-option.active .check-icon { opacity: 1; stroke: var(--accent-text); }
 
 /* Feedback box and the rating card after a task. */
 .feedback-menu { gap: 8px; }

@@ -228,6 +228,7 @@ function renderAccessError() {
  */
 function applyAccessState(state) {
   accessUi.apply(state);
+  if (typeof syncAccessMenuState === 'function') syncAccessMenuState();
   if (!state || state.sessionId !== sessionId) return;
   // The worker spoke about the mode: the panel is in step with it again.
   accessErrorKey = '';
@@ -715,7 +716,7 @@ function onEvent(event) {
       node.prepend(heading);
       const totals = totalsLine(event.at);
       if (totals) node.append(totals);
-      node.append(reportActions(event.report));
+      node.append(reportActions(event.report, event.at));
       if (ui.replayed) askForRating(); // live finals only, not the history replayed on open
       const voiceEntry = voiceEntryFor(event);
       if (voiceEntry) {
@@ -1089,11 +1090,50 @@ function totalsLine(end) {
   return Object.assign(document.createElement('div'), { className: 'totals', textContent: parts.join(' · ') });
 }
 
-/** Copy and Markdown export, in the report's lower corner. */
-function reportActions(markdown) {
+function formatRelativeTime(at) {
+  if (!Number.isFinite(at)) return '';
+  const diffMs = Math.max(0, Date.now() - at);
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return t('report.justNow');
+  if (mins < 60) return t('report.minsAgo', { n: mins });
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return t('report.hoursAgo', { n: hours });
+  return t('report.daysAgo', { n: Math.floor(hours / 24) });
+}
+
+function thumbIcon(kind) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute(
+    'd',
+    kind === 'up'
+      ? 'M7 10v12M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z'
+      : 'M17 14V2M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z',
+  );
+  svg.append(path);
+  return svg;
+}
+
+/** Copy, helpfulness rating, Markdown export, and relative time under the report. */
+function reportActions(markdown, at = null) {
   const bar = document.createElement('div');
   bar.className = 'report-actions';
   const copy = reportButton('report.copy', copySquares());
+  const up = reportButton('report.helpful', thumbIcon('up'));
+  const down = reportButton('report.notHelpful', thumbIcon('down'));
+  up.addEventListener('click', () => {
+    const active = !up.classList.contains('active');
+    up.classList.toggle('active', active);
+    down.classList.remove('active');
+  });
+  down.addEventListener('click', () => {
+    const active = !down.classList.contains('active');
+    down.classList.toggle('active', active);
+    up.classList.remove('active');
+    if (active && $('feedbackMenu')?.hidden) $('feedbackBtn')?.click();
+  });
   const save = reportButton('report.export', Object.assign(document.createElement('span'), { className: 'md', textContent: 'md' }));
   copy.addEventListener('click', async () => {
     try {
@@ -1112,7 +1152,9 @@ function reportActions(markdown) {
     Object.assign(document.createElement('a'), { href: url, download: name }).click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   });
-  bar.append(copy, save);
+  const relative = formatRelativeTime(at);
+  const timeEl = relative ? Object.assign(document.createElement('span'), { className: 'report-time', textContent: relative }) : null;
+  bar.append(copy, up, down, save, ...(timeEl ? [timeEl] : []));
   return bar;
 }
 
@@ -1565,11 +1607,82 @@ function sendVoiceMessage(text, { tabId, signal, expectedSessionId } = {}) {
   });
 }
 
+function closeComposerMenus() {
+  $('composerPlusMenu').hidden = true;
+  $('attachBtn').classList.remove('active');
+  $('attachBtn').setAttribute('aria-expanded', 'false');
+  $('accessMenu').hidden = true;
+  $('accessControl').classList.remove('open');
+}
+
+function toggleComposerPlusMenu() {
+  const menu = $('composerPlusMenu');
+  const opening = menu.hidden;
+  closeSessionMenu();
+  closeOverflowMenu();
+  $('accountMenu').hidden = true;
+  $('feedbackMenu').hidden = true;
+  closeComposerMenus();
+  if (!opening) return;
+  menu.hidden = false;
+  $('attachBtn').classList.add('active');
+  $('attachBtn').setAttribute('aria-expanded', 'true');
+}
+
+function syncAccessMenuState() {
+  const mode = $('accessSelect')?.value === FULL_ACCESS ? FULL_ACCESS : ASK_FIRST;
+  $('accessOptionManual')?.classList?.toggle('active', mode === ASK_FIRST);
+  $('accessOptionAuto')?.classList?.toggle('active', mode === FULL_ACCESS);
+  $('accessOptionManual')?.setAttribute?.('aria-checked', String(mode === ASK_FIRST));
+  $('accessOptionAuto')?.setAttribute?.('aria-checked', String(mode === FULL_ACCESS));
+}
+
+function toggleAccessMenu() {
+  const menu = $('accessMenu');
+  const opening = menu.hidden;
+  closeSessionMenu();
+  closeOverflowMenu();
+  $('accountMenu').hidden = true;
+  $('feedbackMenu').hidden = true;
+  closeComposerMenus();
+  if (!opening) return;
+  syncAccessMenuState();
+  menu.hidden = false;
+  $('accessControl').classList.add('open');
+}
+
 $('composer').addEventListener('submit', (e) => {
   e.preventDefault();
+  closeComposerMenus();
   submitComposer($('input').value).catch(() => {});
 });
-$('attachBtn').addEventListener('click', () => $('fileInput').click());
+$('attachBtn').addEventListener('click', toggleComposerPlusMenu);
+$('uploadFilesBtn')?.addEventListener('click', () => {
+  closeComposerMenus();
+  $('fileInput').click();
+});
+$('projectBtn')?.addEventListener('click', closeComposerMenus);
+$('accessSelect').addEventListener('mousedown', (e) => {
+  if ($('accessMenu')) e.preventDefault();
+});
+$('accessSelect').addEventListener('click', (e) => {
+  if (e.detail > 0 && $('accessMenu')) {
+    e.preventDefault();
+    toggleAccessMenu();
+  }
+});
+$('accessSelect').addEventListener('change', syncAccessMenuState);
+for (const option of [$('accessOptionManual'), $('accessOptionAuto')]) {
+  option?.addEventListener('click', () => {
+    const mode = option.dataset.mode === FULL_ACCESS ? FULL_ACCESS : ASK_FIRST;
+    closeComposerMenus();
+    const select = $('accessSelect');
+    if (select.value !== mode) {
+      select.value = mode;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  });
+}
 $('fileInput').addEventListener('change', () => {
   addFiles([...$('fileInput').files]);
   $('fileInput').value = '';
@@ -2585,6 +2698,7 @@ async function deleteSessionAsked(meta) {
 function toggleSessionMenu() {
   if ($('sessionMenu').hidden) {
     closeOverflowMenu();
+    closeComposerMenus();
     $('sessionMenu').hidden = false;
     $('sessionBtn').setAttribute('aria-expanded', 'true');
     $('sessionSearch').value = '';
@@ -2608,8 +2722,17 @@ $('sessionSearch').addEventListener('input', renderSessionList);
 // browser owns it), then a menu, then a settings page. Nothing is skipped
 // past, and nothing is closed twice by one keypress.
 document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u' && !$('chatView').hidden) {
+    if ($('modelDialog').open || $('accessWarning').open || $('projectDialog').open || $('projectFilesDialog').open) return;
+    e.preventDefault();
+    closeComposerMenus();
+    $('fileInput').click();
+    return;
+  }
   if (e.key !== 'Escape' || e.defaultPrevented) return;
   if ($('modelDialog').open || $('accessWarning').open || $('projectDialog').open || $('projectFilesDialog').open) return;
+  if ($('composerPlusMenu') && !$('composerPlusMenu').hidden) { closeComposerMenus(); $('attachBtn').focus(); return; }
+  if ($('accessMenu') && !$('accessMenu').hidden) { closeComposerMenus(); $('accessSelect').focus(); return; }
   if (!$('sessionMenu').hidden) { closeSessionMenu(); $('sessionBtn').focus(); return; }
   if (!$('overflowMenu').hidden) { closeOverflowMenu(); $('overflowBtn').focus(); return; }
   if (!$('accountMenu').hidden) { closeAccountMenu(); return; }
@@ -2625,17 +2748,20 @@ document.addEventListener('keydown', (e) => {
   }
 });
 document.addEventListener('click', (e) => {
-  if (!$('sessionMenu').hidden && !$('sessionMenu').contains(e.target) && !$('sessionBtn').contains(e.target)) closeSessionMenu();
+  if (!$('sessionMenu').hidden && !$('sessionMenu').contains(e.target) && !$('sessionBtn').contains(e.target) && !$('brandCluster').contains(e.target)) closeSessionMenu();
+  if (!$('composerPlusMenu').hidden && !$('composerPlusMenu').contains(e.target) && !$('attachBtn').contains(e.target)) closeComposerMenus();
+  if (!$('accessMenu').hidden && !$('accessMenu').contains(e.target) && !$('accessControl').contains(e.target)) closeComposerMenus();
 });
 
-// The overflow holds the account, the interface language and feedback: one
-// click away, out of the header's way.
+// The overflow holds settings, the interface language, account and feedback.
 function toggleOverflowMenu() {
   if ($('overflowMenu').hidden) {
     closeSessionMenu();
+    closeComposerMenus();
     $('overflowMenu').hidden = false;
     $('overflowBtn').setAttribute('aria-expanded', 'true');
-    $('accountBtn').focus();
+    const first = !$('settingsBtn').hidden ? $('settingsBtn') : $('accountBtn');
+    first?.focus();
   } else {
     closeOverflowMenu();
   }
@@ -2648,7 +2774,7 @@ function closeOverflowMenu() {
 
 $('overflowBtn').addEventListener('click', toggleOverflowMenu);
 $('overflowMenu').addEventListener('keydown', (e) => {
-  const items = [...$('overflowMenu').querySelectorAll('[role="menuitem"]')];
+  const items = [...$('overflowMenu').querySelectorAll('[role="menuitem"]:not([hidden])')];
   const index = items.indexOf(document.activeElement);
   const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
     : e.key === 'ArrowDown' ? (index + 1) % items.length
@@ -2834,10 +2960,53 @@ const { askForRating } = createFeedbackUi({
 
 // ---------- language ----------
 
+function syncLanguageMenuState(language = currentLanguage()) {
+  $('langSubmenu')?.querySelectorAll('.lang-option')?.forEach((option) => {
+    const active = option.dataset.lang === language;
+    option.classList.toggle('active', active);
+    option.setAttribute('aria-checked', String(active));
+  });
+}
+
 $('langBtn').addEventListener('click', async () => {
   closeOverflowMenu();
   const next = currentLanguage() === 'ar' ? 'en' : 'ar';
   await applyAndSaveLanguage(next);
+});
+$('langSubmenu')?.addEventListener('click', async (e) => {
+  const option = e.target.closest?.('.lang-option');
+  if (!option) return;
+  closeOverflowMenu();
+  const next = option.dataset.lang === 'ar' ? 'ar' : 'en';
+  await applyAndSaveLanguage(next);
+});
+
+function applyTheme(theme = settings?.uiTheme) {
+  const resolved = theme === 'classic' ? 'classic' : 'claude';
+  document.documentElement.dataset.uiTheme = resolved;
+  if ($('uiTheme')) $('uiTheme').value = resolved;
+}
+
+async function applyAndSaveTheme(nextTheme) {
+  if (!settings) return;
+  const resolved = nextTheme === 'classic' ? 'classic' : 'claude';
+  const previous = settings.uiTheme === 'classic' ? 'classic' : 'claude';
+  applyTheme(resolved);
+  if (resolved === previous) return;
+  try {
+    await saveSettings((current) => ({ ...current, uiTheme: resolved }));
+    applyTheme(settings.uiTheme);
+  } catch (err) {
+    applyTheme(previous);
+    showSettingsError(err.message);
+  }
+}
+
+$('uiTheme').addEventListener('change', async () => {
+  await applyAndSaveTheme($('uiTheme').value);
+});
+$('brandCluster').addEventListener('click', () => {
+  if (document.documentElement.dataset.uiTheme === 'classic') toggleSessionMenu();
 });
 
 // The same choice lives in the Language page: applied and saved at once, so
@@ -2876,6 +3045,7 @@ async function applyAndSaveLanguage(language, savedPreference = language) {
 /** Static text is retranslated by setLanguage; text this file renders is redrawn here. */
 function applyLanguage(language) {
   setLanguage(language);
+  syncLanguageMenuState(language);
   // The words of the access control change; the mode the worker confirmed and
   // the chat it belongs to do not.
   accessUi.updateLanguage(t);
@@ -2940,8 +3110,9 @@ function syncHeaderContext() {
   $('brandCluster').hidden = settingsOpen || voiceOpen;
   $('settingsBarContext').hidden = !settingsOpen;
   $('voiceBarContext').hidden = !voiceOpen;
+  $('sessionBtn').hidden = settingsOpen || voiceOpen;
   $('newChatBtn').hidden = settingsOpen;
-  $('settingsBtn').hidden = settingsOpen || voiceOpen;
+  $('settingsBtn').hidden = settingsOpen;
   $('workspaceStopBtn').hidden = !ui.running || (!settingsOpen && !voiceOpen);
 }
 
@@ -3018,7 +3189,10 @@ $('provider').addEventListener('change', () => {
   if (ACCOUNT_PROVIDERS.includes(provider)) refreshAuthState(provider).catch(() => {});
 });
 
-$('settingsBtn').addEventListener('click', () => toggleSettings(true));
+$('settingsBtn').addEventListener('click', () => {
+  closeOverflowMenu();
+  toggleSettings(true);
+});
 
 // One focused settings page at a time: a searchable index, then a page per
 // section. The forms are never rebuilt by moving around, so an unsaved edit
@@ -3121,7 +3295,7 @@ function toggleSettings(open, section = null) {
     loadFastModels();
     loadFastFallbackModels();
   } else {
-    $('settingsBtn').focus();
+    $('overflowBtn').focus();
   }
 }
 
@@ -3165,14 +3339,14 @@ async function autoSaveControlField(key, readValue) {
 
 // Any edit in any page marks the draft, wherever the user walks afterwards.
 $('settingsView').addEventListener('input', (e) => {
-  if (e.target.id === 'uiLanguage') return;
+  if (e.target.id === 'uiLanguage' || e.target.id === 'uiTheme') return;
   if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
   if (e.target.closest?.(AUTO_SAVE_SETTING_CONTROLS)) return;
   markDirty();
   renderSettingsSummaries();
 });
 $('settingsView').addEventListener('change', (e) => {
-  if (e.target.id === 'uiLanguage') return;
+  if (e.target.id === 'uiLanguage' || e.target.id === 'uiTheme') return;
   if (e.target.closest?.(NOT_A_SETTING_EDIT)) return;
   if (e.target.closest?.(AUTO_SAVE_SETTING_CONTROLS)) return;
   markDirty();
@@ -3287,6 +3461,9 @@ async function init() {
   presets = data.presets;
   fastPresets = data.fastPresets;
   setLanguage(resolveLanguage(settings.uiLanguage, chrome.i18n.getUILanguage()));
+  applyTheme(settings.uiTheme);
+  syncLanguageMenuState(currentLanguage());
+  syncAccessMenuState();
   // The access control is drawn again in the language the panel settled on.
   // The mode it shows is still the one the worker confirmed.
   accessUi.updateLanguage(t);
@@ -3360,6 +3537,7 @@ function fillForm() {
   if ($('voiceEngine')) $('voiceEngine').value = settings.voiceEngine ?? 'postora';
   transcriptionForm.fill(settings.transcription);
   $('uiLanguage').value = settings.uiLanguage ?? 'auto';
+  applyTheme(settings.uiTheme);
   syncRecommended();
   markClean();
   renderModelFields();
@@ -4176,6 +4354,7 @@ async function refreshAuthStates() {
  */
 async function listenForSignIn() {
   while (picking) await picking.catch(() => {});
+  if (!sessionId) await showTabSession();
   if (!port && sessionId) connect();
 }
 
