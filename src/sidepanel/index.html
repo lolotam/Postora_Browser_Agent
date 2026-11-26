@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" dir="ltr">
+<html lang="en" dir="ltr" data-ui-theme="claude">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -14,12 +14,10 @@
        panel never stacks two bars. -->
   <header class="bar">
     <div class="brand" id="brandCluster">
-      <img class="logo" src="../../icons/logo.png" alt="" width="22" height="22" />
-      <button type="button" class="session-btn" id="sessionBtn" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="session.open">
-        <span id="sessionTitle" dir="auto"></span>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-      </button>
-      <span class="dot" id="statusDot"></span>
+      <img class="logo sr-only" src="../../icons/logo.png" alt="" width="22" height="22" />
+      <span id="sessionTitle" class="sr-only" dir="auto"></span>
+      <svg class="brand-chev sr-only" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+      <span class="dot" id="statusDot" hidden></span>
     </div>
     <div class="bar-context" id="settingsBarContext" hidden>
       <button type="button" class="ghost icon" id="closeSettingsBtn" data-i18n-title="common.back">
@@ -39,17 +37,17 @@
       </button>
     </div>
     <div class="actions">
-      <button type="button" class="ghost icon" id="newChatBtn" data-i18n-title="header.newChat">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+      <button type="button" class="ghost icon session-btn" id="sessionBtn" aria-haspopup="listbox" aria-expanded="false" data-i18n-title="session.open">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" /></svg>
       </button>
-      <button type="button" class="ghost icon" id="settingsBtn" data-i18n-title="header.settings">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+      <button type="button" class="ghost icon" id="newChatBtn" data-i18n-title="header.newChat">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20a8 8 0 1 1 7.4-5" /><path d="M18 15v6M15 18h6" /></svg>
       </button>
       <button type="button" class="danger icon" id="workspaceStopBtn" data-i18n-title="composer.stop" hidden>
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
       </button>
       <button type="button" class="ghost icon" id="overflowBtn" aria-haspopup="menu" aria-expanded="false" data-i18n-title="menu.more">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" /></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none" /></svg>
       </button>
     </div>
   </header>
@@ -58,23 +56,39 @@
     <small id="sessionListStatus" class="error" role="status" hidden></small>
     <ul id="sessionList" role="listbox"></ul>
   </div>
-  <!-- Account, the interface language and feedback live here, one click away
-       but out of the header's way. -->
+  <!-- Settings, interface language, account and feedback live in the overflow
+       menu, matching the minimalist 3-button header. -->
   <div id="overflowMenu" class="session-menu overflow-menu" role="menu" hidden>
+    <button type="button" class="menu-row" id="settingsBtn" role="menuitem" data-i18n-title="header.settings">
+      <span class="grow" data-i18n="header.settings"></span>
+    </button>
     <button type="button" class="menu-row" id="accountBtn" role="menuitem" aria-haspopup="dialog" data-i18n-title="account.open">
       <img class="avatar" id="accountAvatar" alt="" referrerpolicy="no-referrer" hidden />
       <svg id="accountIcon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
       <span class="grow" data-i18n="menu.account"></span>
     </button>
-    <button type="button" class="menu-row" id="langBtn" role="menuitem" data-i18n-title="lang.switchTitle">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h12M9 3v2M5 5c0 6 6 10 9 11M13 5c0 6-6 10-10 11M14 21l4-11 4 11M16 17h4" /></svg>
-      <span class="grow" data-i18n="menu.language"></span>
-      <bdi class="menu-tag" data-i18n="lang.switchLabel"></bdi>
-    </button>
     <button type="button" class="menu-row" id="feedbackBtn" role="menuitem" aria-haspopup="dialog" data-i18n-title="feedback.open">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z" /><path d="M8 9h8M8 12h5" /></svg>
       <span class="grow" data-i18n="menu.feedback"></span>
     </button>
+    <div class="menu-divider" role="separator"></div>
+    <div class="lang-menu-wrap" id="langMenuWrap">
+      <button type="button" class="menu-row has-submenu" id="langBtn" role="menuitem" aria-expanded="false" data-i18n-title="lang.switchTitle">
+        <span class="grow" data-i18n="menu.language"></span>
+        <bdi class="menu-tag sr-only" data-i18n="lang.switchLabel"></bdi>
+        <svg class="submenu-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+      </button>
+      <div id="langSubmenu" class="lang-submenu" role="menu">
+        <button type="button" class="menu-row lang-option" data-lang="en" role="menuitemradio">
+          <span class="grow">English</span>
+          <svg class="check-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
+        </button>
+        <button type="button" class="menu-row lang-option" data-lang="ar" role="menuitemradio">
+          <span class="grow">العربية</span>
+          <svg class="check-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
+        </button>
+      </div>
+    </div>
   </div>
   <div id="accountMenu" class="session-menu account-menu" role="dialog" hidden>
     <div id="accountSignedOut">
@@ -122,16 +136,21 @@
   <div id="approvals" class="approvals" role="region" aria-live="polite" hidden></div>
 
   <main id="chatView">
-    <!-- The whole live chat folds into one list: closed by default, and the
-         user opens it to watch the chat live. While the chat is still empty
-         it stays open, so the landing examples stay visible. -->
+    <!-- The whole live chat folds into one list: closed by default while a task
+         runs, and open on an empty chat so the centered watermark (Claude Minimal)
+         or landing examples (Postora Classic) stay visible. -->
     <details id="chatLog" open>
       <summary id="chatLogSummary"><span class="chat-log-dot"></span><span data-i18n="chat.live"></span><span id="chatLogStatus" class="chat-log-status" dir="auto"></span></summary>
       <section id="messages" aria-live="polite">
         <div class="empty" id="emptyState">
-          <strong class="empty-title" data-i18n="empty.title"></strong>
-          <p class="empty-body muted" data-i18n="empty.body"></p>
-          <div class="empty-steps">
+          <svg class="empty-watermark" viewBox="0 0 64 64" aria-hidden="true">
+            <rect x="8" y="8" width="48" height="48" rx="14" stroke="currentColor" stroke-width="2.5" fill="none" />
+            <path d="M22 44V20h11a9 9 0 0 1 0 18H22" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+            <circle cx="44" cy="43" r="3" fill="currentColor" stroke="none" />
+          </svg>
+          <strong class="empty-title sr-only" data-i18n="empty.title"></strong>
+          <p class="empty-body muted sr-only" data-i18n="empty.body"></p>
+          <div class="empty-steps sr-only">
             <button type="button" class="empty-step" data-example="empty.ex1"><span class="empty-step-num">1</span><span data-i18n="empty.ex1"></span></button>
             <button type="button" class="empty-step" data-example="empty.ex2"><span class="empty-step-num">2</span><span data-i18n="empty.ex2"></span></button>
             <button type="button" class="empty-step" data-example="empty.ex3"><span class="empty-step-num">3</span><span data-i18n="empty.ex3"></span></button>
@@ -159,35 +178,58 @@
       <div id="projectChip" class="project-chip" hidden></div>
       <ul id="composerSuggest" class="composer-suggest" role="listbox" hidden></ul>
       <div class="composer-box" id="composerBox">
+        <div id="composerPlusMenu" class="composer-popover plus-popover" role="menu" hidden>
+          <button type="button" class="menu-row" id="uploadFilesBtn" role="menuitem">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" /></svg>
+            <span class="grow" data-i18n="composer.uploadFiles"></span>
+            <kbd class="menu-shortcut" dir="ltr">Ctrl+U</kbd>
+          </button>
+          <button type="button" class="menu-row" id="projectBtn" role="menuitem" aria-haspopup="dialog" data-i18n-title="project.link">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2-3h9v16H3z" /><path d="M8 4h8" /></svg>
+            <span class="grow" data-i18n="project.addToProject"></span>
+            <svg class="submenu-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
+        </div>
+        <div id="accessMenu" class="composer-popover access-popover" role="menu" hidden>
+          <div class="access-popover-header" data-i18n="access.menuTitle"></div>
+          <button type="button" class="access-option" id="accessOptionManual" data-mode="ask-first" role="menuitemradio">
+            <div class="access-option-text">
+              <strong data-i18n="access.manualTitle"></strong>
+              <span data-i18n="access.manualDesc"></span>
+            </div>
+            <svg class="check-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
+          </button>
+          <button type="button" class="access-option" id="accessOptionAuto" data-mode="full-access" role="menuitemradio">
+            <div class="access-option-text">
+              <strong data-i18n="access.autoTitle"></strong>
+              <span data-i18n="access.autoDesc"></span>
+            </div>
+            <svg class="check-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
+          </button>
+        </div>
         <textarea id="input" rows="1" dir="auto" data-i18n-placeholder="composer.placeholder"></textarea>
         <div class="composer-toolbar">
           <!-- The worker still owns access; nesting the controls never grants it. -->
           <div class="access-row">
-            <button type="button" class="quick-control" id="modelQuickBtn" aria-haspopup="dialog" data-i18n-title="model.pickTitle">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>
-              <span class="quick-label" id="modelQuickLabel" dir="ltr"></span>
-              <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+            <button type="button" class="tool" id="attachBtn" aria-haspopup="menu" aria-expanded="false" data-i18n-title="composer.attach">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
             </button>
+            <input id="fileInput" type="file" multiple hidden />
             <label class="sr-only" for="accessSelect" data-i18n="access.label"></label>
-            <span class="access-control">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3" /></svg>
+            <span class="access-control" id="accessControl">
+              <svg class="icon-ff" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l7 6-7 6V6zM13 6l7 6-7 6V6z" /></svg>
               <select id="accessSelect" class="access-select" aria-describedby="accessState accessRisk">
                 <option value="ask-first" data-i18n="access.askFirst"></option>
                 <option value="full-access" data-i18n="access.full"></option>
               </select>
-              <svg class="chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
             </span>
             <span class="sr-only" id="accessState"></span>
             <span class="sr-only" id="accessRisk" hidden></span>
           </div>
           <div class="composer-tools">
-            <button type="button" class="tool" id="projectBtn" data-i18n-title="project.link" aria-haspopup="dialog">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2-3h9v16H3z"/></svg>
+            <button type="button" class="quick-control" id="modelQuickBtn" aria-haspopup="dialog" data-i18n-title="model.pickTitle">
+              <span class="quick-label" id="modelQuickLabel" dir="ltr"></span>
             </button>
-            <button type="button" class="tool" id="attachBtn" data-i18n-title="composer.attach">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" /></svg>
-            </button>
-            <input id="fileInput" type="file" multiple hidden />
             <button type="button" class="tool" id="voiceToggle" data-i18n-title="composer.voice">
               <svg class="icon-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4" /></svg>
             </button>
@@ -287,6 +329,13 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0" /></svg>
         <input id="settingsSearch" type="search" autocomplete="off" data-i18n-placeholder="settings.search" data-i18n-title="settings.search" />
       </div>
+      <label class="field settings-theme-field" id="settingsThemeField">
+        <span data-i18n="theme.label"></span>
+        <select id="uiTheme">
+          <option value="claude" data-i18n="theme.claude"></option>
+          <option value="classic" data-i18n="theme.classic"></option>
+        </select>
+      </label>
       <div class="settings-rows" id="settingsRows">
         <button type="button" class="settings-row" data-section="models" data-search="models providers main backup provider model key" id="settingsRowModels">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 5v10l-9 5-9-5V7l9-5M3 7l9 5 9-5M12 12v10" /></svg>

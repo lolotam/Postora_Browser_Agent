@@ -57,7 +57,10 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.waitForFunction(() => document.getElementById('sessionTitle')?.textContent.trim());
   }
   async function page(section) {
-    if (await panel.isHidden('#settingsView')) await panel.click('#settingsBtn');
+    if (await panel.isHidden('#settingsView')) {
+      if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
+      await panel.click('#settingsBtn');
+    }
     for (let n = 0; n < 3 && await panel.isHidden('#settingsIndex'); n++) await panel.click('#closeSettingsBtn');
     await panel.click(`#settingsRow${section}`);
   }
@@ -276,6 +279,7 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.waitForFunction(() => typeof window.__focusedReleaseSave === 'function');
     await panel.click('#overflowBtn');
     await panel.click('#langBtn');
+    await panel.click('#langSubmenu [data-lang="ar"]');
     await page('Behavior');
     await panel.fill('#maxSteps', '77');
     await panel.click('#saveBtn');
@@ -335,6 +339,7 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     }).catch(() => {});
     releaseSlow();
     await panel.close();
+    server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
 }

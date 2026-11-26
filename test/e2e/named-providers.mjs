@@ -18,6 +18,7 @@ export async function runNamedProvidersScenario(context, extensionId) {
   await context.route(verificationRoute, verificationHandler);
   async function openSettings() {
     await panel.bringToFront();
+    if (await panel.isHidden('#settingsBtn')) await panel.click('#overflowBtn');
     await panel.click('#settingsBtn');
     await panel.click('#settingsRowModels');
     await panel.click('#settingsRowMain');
