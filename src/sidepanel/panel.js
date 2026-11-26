@@ -2734,6 +2734,7 @@ document.addEventListener('keydown', (e) => {
   if ($('composerPlusMenu') && !$('composerPlusMenu').hidden) { closeComposerMenus(); $('attachBtn').focus(); return; }
   if ($('accessMenu') && !$('accessMenu').hidden) { closeComposerMenus(); $('accessSelect').focus(); return; }
   if (!$('sessionMenu').hidden) { closeSessionMenu(); $('sessionBtn').focus(); return; }
+  if ($('langMenuWrap').classList.contains('open')) { closeLanguageSubmenu(); $('langBtn').focus(); return; }
   if (!$('overflowMenu').hidden) { closeOverflowMenu(); $('overflowBtn').focus(); return; }
   if (!$('accountMenu').hidden) { closeAccountMenu(); return; }
   if (!$('feedbackMenu').hidden) { $('feedbackMenu').hidden = true; $('overflowBtn').focus(); return; }
@@ -2767,13 +2768,45 @@ function toggleOverflowMenu() {
   }
 }
 
+function closeLanguageSubmenu() {
+  $('langMenuWrap').classList.remove('open');
+  $('langBtn').setAttribute('aria-expanded', 'false');
+}
+
 function closeOverflowMenu() {
+  closeLanguageSubmenu();
   $('overflowMenu').hidden = true;
   $('overflowBtn').setAttribute('aria-expanded', 'false');
 }
 
 $('overflowBtn').addEventListener('click', toggleOverflowMenu);
 $('overflowMenu').addEventListener('keydown', (e) => {
+  const rtl = document.documentElement.dir === 'rtl';
+  const openKey = rtl ? 'ArrowLeft' : 'ArrowRight';
+  const closeKey = rtl ? 'ArrowRight' : 'ArrowLeft';
+  if (document.activeElement === $('langBtn') && e.key === openKey) {
+    e.preventDefault();
+    $('langBtn').click();
+    return;
+  }
+  if ($('langSubmenu').contains(document.activeElement)) {
+    if (e.key === closeKey) {
+      e.preventDefault();
+      closeLanguageSubmenu();
+      $('langBtn').focus();
+      return;
+    }
+    const opts = [...$('langSubmenu').querySelectorAll('.lang-option')];
+    const idx = opts.indexOf(document.activeElement);
+    const nextOpt = e.key === 'Home' ? 0 : e.key === 'End' ? opts.length - 1
+      : e.key === 'ArrowDown' ? (idx + 1) % opts.length
+        : e.key === 'ArrowUp' ? (idx - 1 + opts.length) % opts.length : null;
+    if (nextOpt !== null) {
+      e.preventDefault();
+      opts[nextOpt].focus();
+    }
+    return;
+  }
   const items = [...$('overflowMenu').querySelectorAll('[role="menuitem"]:not([hidden])')];
   const index = items.indexOf(document.activeElement);
   const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
@@ -2968,10 +3001,14 @@ function syncLanguageMenuState(language = currentLanguage()) {
   });
 }
 
-$('langBtn').addEventListener('click', async () => {
-  closeOverflowMenu();
-  const next = currentLanguage() === 'ar' ? 'en' : 'ar';
-  await applyAndSaveLanguage(next);
+$('langBtn').addEventListener('click', () => {
+  const open = !$('langMenuWrap').classList.contains('open');
+  $('langMenuWrap').classList.toggle('open', open);
+  $('langBtn').setAttribute('aria-expanded', String(open));
+  if (open) {
+    const active = $('langSubmenu').querySelector('.lang-option.active') ?? $('langSubmenu').querySelector('.lang-option');
+    active?.focus();
+  }
 });
 $('langSubmenu')?.addEventListener('click', async (e) => {
   const option = e.target.closest?.('.lang-option');
@@ -2990,14 +3027,12 @@ function applyTheme(theme = settings?.uiTheme) {
 async function applyAndSaveTheme(nextTheme) {
   if (!settings) return;
   const resolved = nextTheme === 'classic' ? 'classic' : 'claude';
-  const previous = settings.uiTheme === 'classic' ? 'classic' : 'claude';
   applyTheme(resolved);
-  if (resolved === previous) return;
   try {
     await saveSettings((current) => ({ ...current, uiTheme: resolved }));
     applyTheme(settings.uiTheme);
   } catch (err) {
-    applyTheme(previous);
+    applyTheme(settings.uiTheme);
     showSettingsError(err.message);
   }
 }

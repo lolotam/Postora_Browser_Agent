@@ -440,6 +440,7 @@ export async function runAccessUiScenario(context, extensionId) {
     // Arabic: the same control, read from the other side.
     await panel.click('#overflowBtn');
     await panel.click('#langBtn');
+    await panel.click('#langSubmenu [data-lang="ar"]');
     await panel.waitForFunction(() => document.documentElement.dir === 'rtl');
     const arabic = await layout(panel);
     if (arabic.scrollWidth > arabic.clientWidth + 1) failures.push('the panel overflows a narrow column in Arabic');
@@ -461,6 +462,7 @@ export async function runAccessUiScenario(context, extensionId) {
     // The language comes back, so the scenarios that follow read English.
     await panel.click('#overflowBtn');
     await panel.click('#langBtn');
+    await panel.click('#langSubmenu [data-lang="en"]');
     await panel.waitForFunction(() => document.documentElement.dir === 'ltr');
 
     // The worker is gone: the mode goes with it.

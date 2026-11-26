@@ -1834,9 +1834,7 @@ async function runUiLayoutScenario(context, extensionId) {
     // A real approval card, in the bounded region above the composer.
     target = await context.newPage();
     await target.goto(`${base}/page`);
-    await panel.bringToFront();
     await panel.fill('#input', 'Click the Go button and report the result\n\nUse the visible page.\nReport the outcome.\nDo not skip consent.');
-    await target.bringToFront();
     await panel.press('#input', 'Enter');
     await panel.waitForSelector('#approvals .permission-request', { timeout: 30000 });
     if (await panel.isVisible('#voiceToggle')) failures.push('the busy toolbar did not replace Voice with Stop');
@@ -1898,12 +1896,14 @@ async function runUiLayoutScenario(context, extensionId) {
     await panel.waitForSelector('#settingsIndex:not([hidden])');
     await panel.click('#overflowBtn');
     await panel.click('#langBtn');
+    await panel.click('#langSubmenu [data-lang="ar"]');
     await panel.waitForFunction(() => document.documentElement.dir === 'rtl');
     await overflows('the Arabic settings index in the dark theme');
     await shot(panel, 'ui-settings-index-ar-360-dark.png');
     await panel.emulateMedia({ colorScheme: 'light' });
     await panel.click('#overflowBtn');
     await panel.click('#langBtn');
+    await panel.click('#langSubmenu [data-lang="en"]');
     await panel.waitForFunction(() => document.documentElement.dir === 'ltr');
     await panel.click('#closeSettingsBtn');
     await panel.waitForSelector('#settingsView', { state: 'hidden' });

@@ -178,6 +178,9 @@ body { position: relative; }
   box-shadow: 0 10px 28px rgba(0, 0, 0, .14); z-index: 30;
   flex-direction: column; gap: 2px;
 }
+.lang-submenu::before {
+  content: ''; position: absolute; inset-inline: 0; top: -8px; height: 8px;
+}
 .lang-menu-wrap:hover .lang-submenu, .lang-menu-wrap.open .lang-submenu { display: flex; }
 .check-icon { width: 15px; height: 15px; color: var(--accent-text); opacity: 0; flex: none; }
 .lang-option.active .check-icon, .access-option.active .check-icon { opacity: 1; stroke: var(--accent-text); }

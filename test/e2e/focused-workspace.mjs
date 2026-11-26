@@ -279,6 +279,7 @@ export async function runFocusedWorkspaceScenario(context, extensionId) {
     await panel.waitForFunction(() => typeof window.__focusedReleaseSave === 'function');
     await panel.click('#overflowBtn');
     await panel.click('#langBtn');
+    await panel.click('#langSubmenu [data-lang="ar"]');
     await page('Behavior');
     await panel.fill('#maxSteps', '77');
     await panel.click('#saveBtn');

@@ -762,6 +762,7 @@ async function cardLooksRightEverywhere(panel, target, failures) {
   // The interface language lives in the overflow menu now.
   await panel.click('#overflowBtn');
   await panel.click('#langBtn');
+  await panel.click('#langSubmenu [data-lang="ar"]');
   await panel.waitForFunction(() => document.documentElement.dir === 'rtl');
   const arabic = await panel.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
@@ -785,6 +786,7 @@ async function cardLooksRightEverywhere(panel, target, failures) {
   await panel.emulateMedia({ colorScheme: 'light' });
   await panel.click('#overflowBtn');
   await panel.click('#langBtn');
+  await panel.click('#langSubmenu [data-lang="en"]');
   await panel.waitForFunction(() => document.documentElement.dir === 'ltr');
   await panel.click('#voiceBackBtn');
   await panel.waitForSelector('#voiceView', { state: 'hidden' });
